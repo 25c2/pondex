@@ -26,6 +26,10 @@ public sealed class ProjectSerializerTests
                     Loop = new LoopSettings { Enabled = true, StartSeconds = 1.25 }
                 }
             ],
+            GroupShortcuts =
+            [
+                new GroupShortcutDefinition { Group = "SE", Key = "G" }
+            ],
             Triggers =
             [
                 new TriggerDefinition
@@ -47,6 +51,9 @@ public sealed class ProjectSerializerTests
         Assert.Equal(soundId, Assert.Single(loaded.Sounds).Id);
         Assert.Equal(3, loaded.Settings.SoundListColumns);
         Assert.Equal(1.25, Assert.Single(loaded.Sounds).Loop.StartSeconds);
+        var groupShortcut = Assert.Single(loaded.GroupShortcuts);
+        Assert.Equal("SE", groupShortcut.Group);
+        Assert.Equal("G", groupShortcut.Key);
         Assert.Equal("SE", Assert.Single(loaded.Triggers).TargetGroup);
         Assert.False(File.ReadAllBytes(path).AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }));
     }

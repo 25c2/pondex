@@ -14,6 +14,8 @@ public sealed class ProjectModel
 
     public List<SoundDefinition> Sounds { get; set; } = [];
 
+    public List<GroupShortcutDefinition> GroupShortcuts { get; set; } = [];
+
     public List<TriggerDefinition> Triggers { get; set; } = [];
 
     [JsonIgnore]
@@ -67,6 +69,13 @@ public sealed class SoundDefinition
     public FadeSettings FadeOut { get; set; } = new();
 
     public string Memo { get; set; } = string.Empty;
+}
+
+public sealed class GroupShortcutDefinition
+{
+    public string Group { get; set; } = string.Empty;
+
+    public string Key { get; set; } = string.Empty;
 }
 
 public sealed class LoopSettings

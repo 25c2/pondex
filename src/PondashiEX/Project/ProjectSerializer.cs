@@ -151,6 +151,11 @@ public sealed class ProjectSerializer
             "sounds",
             "音源",
             model.LoadWarnings);
+        model.GroupShortcuts = DeserializeArray<GroupShortcutDefinition>(
+            root,
+            "groupShortcuts",
+            "グループショートカット",
+            model.LoadWarnings);
         model.Triggers = DeserializeArray<TriggerDefinition>(
             root,
             "triggers",
@@ -278,6 +283,15 @@ public sealed class ProjectSerializer
             sound.FadeOut ??= new FadeSettings();
             sound.FadeIn.Value = Math.Clamp(sound.FadeIn.Value, 0.0f, 60.0f);
             sound.FadeOut.Value = Math.Clamp(sound.FadeOut.Value, 0.0f, 60.0f);
+        }
+
+        model.GroupShortcuts = (model.GroupShortcuts ?? [])
+            .OfType<GroupShortcutDefinition>()
+            .ToList();
+        foreach (var shortcut in model.GroupShortcuts)
+        {
+            shortcut.Group = shortcut.Group?.Trim() ?? string.Empty;
+            shortcut.Key = shortcut.Key?.Trim() ?? string.Empty;
         }
 
         model.Triggers = (model.Triggers ?? []).OfType<TriggerDefinition>().ToList();

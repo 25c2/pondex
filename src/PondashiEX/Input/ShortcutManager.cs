@@ -9,6 +9,12 @@ public sealed class ShortcutManager
     public IReadOnlyList<ShortcutCommand> Resolve(
         Keys keyData,
         IEnumerable<SoundDefinition> sounds,
+        bool textEditing) => Resolve(keyData, sounds, [], textEditing);
+
+    public IReadOnlyList<ShortcutCommand> Resolve(
+        Keys keyData,
+        IEnumerable<SoundDefinition> sounds,
+        IEnumerable<GroupShortcutDefinition> groupShortcuts,
         bool textEditing)
     {
         var keyCode = keyData & Keys.KeyCode;
@@ -30,8 +36,16 @@ public sealed class ShortcutManager
             return [];
         }
 
+        var matchingGroups = groupShortcuts
+            .Where(shortcut => Matches(shortcut.Key, keyCode))
+            .Select(shortcut => shortcut.Group?.Trim() ?? string.Empty)
+            .Where(group => group.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
         return sounds
-            .Where(sound => Matches(sound.Key, keyCode))
+            .Where(sound => Matches(sound.Key, keyCode)
+                || matchingGroups.Contains(sound.Group?.Trim() ?? string.Empty))
+            .DistinctBy(sound => sound.Id)
             .Select(sound => new ShortcutCommand(
                 stop ? ShortcutCommandType.Stop : ShortcutCommandType.Play,
                 sound.Id))

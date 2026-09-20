@@ -41,4 +41,27 @@ public sealed class ShortcutDispatcherTests
 
         Assert.Equal(2, executions);
     }
+
+    [Fact]
+    public void OnKeyChanged_ResolvesCurrentGroupShortcuts()
+    {
+        var first = new SoundDefinition { Id = Guid.NewGuid(), Group = "SE" };
+        var second = new SoundDefinition { Id = Guid.NewGuid(), Group = "SE" };
+        var shortcuts = new List<GroupShortcutDefinition>
+        {
+            new() { Group = "SE", Key = "G" }
+        };
+        IReadOnlyList<ShortcutCommand>? executed = null;
+        var dispatcher = new ShortcutDispatcher(
+            new ShortcutManager(),
+            () => [first, second],
+            () => shortcuts,
+            () => false,
+            commands => executed = commands);
+
+        dispatcher.OnKeyChanged(Keys.G, isDown: true);
+
+        Assert.NotNull(executed);
+        Assert.Equal([first.Id, second.Id], executed.Select(command => command.SoundId));
+    }
 }

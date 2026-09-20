@@ -7,6 +7,16 @@ namespace PondashiEX.Tests;
 public sealed class SoundCardTests
 {
     [Fact]
+    public void Constructor_ShowsDragHandle()
+    {
+        using var card = new SoundCard(new SoundDefinition { Name = "ベル" });
+
+        Assert.Contains(
+            Descendants(card).OfType<Label>(),
+            label => label.Text == "↕ ベル" && label.Cursor == Cursors.SizeAll);
+    }
+
+    [Fact]
     public void DetailsExpansion_UsesContentHeightInsteadOfLargeFixedWhitespace()
     {
         using var card = new SoundCard(new SoundDefinition())
@@ -126,14 +136,33 @@ public sealed class SoundCardTests
     }
 
     [Fact]
-    public void VolumeChange_UpdatesVisiblePercentage()
+    public void VolumeSliderChange_UpdatesNumericPercentage()
     {
         using var card = new SoundCard(new SoundDefinition());
         var volume = Descendants(card).OfType<TrackBar>().Single();
+        var numeric = Descendants(card)
+            .OfType<NumericUpDown>()
+            .Single(control => control.Minimum == 0 && control.Maximum == 100 && control.DecimalPlaces == 0);
 
         volume.Value = 42;
 
-        Assert.Contains(Descendants(card).OfType<Label>(), label => label.Text == "42%");
+        Assert.Equal(42, numeric.Value);
+    }
+
+    [Fact]
+    public void NumericVolumeChange_UpdatesSliderAndSoundDefinition()
+    {
+        var sound = new SoundDefinition();
+        using var card = new SoundCard(sound);
+        var volume = Descendants(card).OfType<TrackBar>().Single();
+        var numeric = Descendants(card)
+            .OfType<NumericUpDown>()
+            .Single(control => control.Minimum == 0 && control.Maximum == 100 && control.DecimalPlaces == 0);
+
+        numeric.Value = 37;
+
+        Assert.Equal(37, volume.Value);
+        Assert.Equal(0.37f, sound.Volume);
     }
 
     [Fact]

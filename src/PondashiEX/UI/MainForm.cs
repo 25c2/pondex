@@ -101,9 +101,13 @@ public sealed class MainForm : Form
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = true,
             BackColor = Color.FromArgb(224, 228, 232),
-            Padding = new Padding(4)
+            Padding = new Padding(4),
+            AllowDrop = true
         };
         _soundList.MouseDown += (_, _) => EndTextEditing();
+        _soundList.DragEnter += OnDragEnter;
+        _soundList.DragOver += OnDragEnter;
+        _soundList.DragDrop += OnDragDrop;
         soundsTab.Controls.Add(_soundList);
         var triggersTab = new TabPage("イベントトリガ") { Padding = new Padding(4) };
         _triggerPanel = new TriggerPanel { Dock = DockStyle.Fill };
@@ -140,6 +144,7 @@ public sealed class MainForm : Form
         _shortcutDispatcher = new ShortcutDispatcher(
             new ShortcutManager(),
             () => _projectManager.Current.Sounds,
+            () => _projectManager.Current.GroupShortcuts,
             IsEditingText,
             ExecuteShortcuts);
         _messageFilter = new ShortcutMessageFilter(
@@ -194,8 +199,9 @@ public sealed class MainForm : Form
         {
             ShortcutKeyDisplayString = "Ctrl+R"
         };
+        var groupShortcuts = new ToolStripMenuItem("グループショートカット(&G)…", null, (_, _) => ShowGroupShortcuts());
         var diagnostics = new ToolStripMenuItem("動作診断(&D)…", null, async (_, _) => await RunSelfTestAsync());
-        operations.DropDownItems.AddRange([stopAllItem, new ToolStripSeparator(), diagnostics]);
+        operations.DropDownItems.AddRange([stopAllItem, groupShortcuts, new ToolStripSeparator(), diagnostics]);
 
         var settings = new ToolStripMenuItem("設定(&S)", null, (_, _) => ShowSettings());
         var help = new ToolStripMenuItem("ヘルプ(&H)");
@@ -255,13 +261,16 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill
         };
         masterVolume = masterVolumeControl;
-        var masterVolumeLabel = new Label
+        var masterVolumeValue = new NumericUpDown
         {
-            Text = "100%",
-            ForeColor = Color.White,
+            Minimum = 0,
+            Maximum = 100,
+            DecimalPlaces = 0,
+            Increment = 1,
+            Value = 100,
             Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.MiddleRight,
-            Font = UiTheme.CreateFont(9F, FontStyle.Bold)
+            TextAlign = HorizontalAlignment.Right,
+            Margin = new Padding(3, 5, 0, 5)
         };
         var masterMuteControl = new CheckBox
         {
@@ -277,16 +286,18 @@ public sealed class MainForm : Form
             Margin = new Padding(8, 4, 8, 4)
         };
         masterMute = masterMuteControl;
-        var masterPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3 };
+        var masterPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4 };
         masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
         masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
+        masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58));
+        masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 18));
         var masterCaption = HeaderLabel("MASTER", 8.5F, FontStyle.Bold);
         masterCaption.AutoEllipsis = false;
         masterCaption.UseCompatibleTextRendering = false;
         masterPanel.Controls.Add(masterCaption, 0, 0);
         masterPanel.Controls.Add(masterVolumeControl, 1, 0);
-        masterPanel.Controls.Add(masterVolumeLabel, 2, 0);
+        masterPanel.Controls.Add(masterVolumeValue, 2, 0);
+        masterPanel.Controls.Add(HeaderLabel("%", 9F, FontStyle.Bold), 3, 0);
 
         header.Controls.Add(projectLabel, 0, 0);
         header.Controls.Add(deviceLabel, 0, 1);
@@ -330,7 +341,11 @@ public sealed class MainForm : Form
         };
         masterVolumeControl.ValueChanged += (_, _) =>
         {
-            masterVolumeLabel.Text = $"{masterVolumeControl.Value}%";
+            if (masterVolumeValue.Value != masterVolumeControl.Value)
+            {
+                masterVolumeValue.Value = masterVolumeControl.Value;
+            }
+
             if (_applyingProjectSettings)
             {
                 return;
@@ -340,6 +355,14 @@ public sealed class MainForm : Form
             _audioEngine.MasterVolume = volume;
             _projectManager.Current.Settings.MasterVolume = volume;
             _projectManager.MarkDirty();
+        };
+        masterVolumeValue.ValueChanged += (_, _) =>
+        {
+            var value = decimal.ToInt32(masterVolumeValue.Value);
+            if (masterVolumeControl.Value != value)
+            {
+                masterVolumeControl.Value = value;
+            }
         };
         masterMuteControl.CheckedChanged += (_, _) =>
         {
@@ -582,6 +605,66 @@ public sealed class MainForm : Form
         _soundList.Controls.Add(card);
     }
 
+    private void ReorderSound(Guid sourceSoundId, Guid targetSoundId, bool insertAfter)
+    {
+        if (!ReorderSoundDefinitions(
+                _projectManager.Current.Sounds,
+                sourceSoundId,
+                targetSoundId,
+                insertAfter,
+                out var newIndex))
+        {
+            return;
+        }
+
+        if (_soundCards.TryGetValue(sourceSoundId, out var card))
+        {
+            _soundList.Controls.SetChildIndex(card, newIndex);
+            _soundList.PerformLayout();
+        }
+
+        _projectManager.MarkDirty();
+        SetStatus("音源を並べ替えました。", false);
+    }
+
+    internal static bool ReorderSoundDefinitions(
+        IList<SoundDefinition> sounds,
+        Guid sourceSoundId,
+        Guid targetSoundId,
+        bool insertAfter,
+        out int newIndex)
+    {
+        newIndex = -1;
+        var sourceIndex = sounds
+            .Select((sound, index) => (sound, index))
+            .FirstOrDefault(item => item.sound.Id == sourceSoundId)
+            .index;
+        var sourceExists = sourceIndex >= 0 && sourceIndex < sounds.Count
+            && sounds[sourceIndex].Id == sourceSoundId;
+        if (!sourceExists || sourceSoundId == targetSoundId)
+        {
+            return false;
+        }
+
+        var source = sounds[sourceIndex];
+        sounds.RemoveAt(sourceIndex);
+        var targetIndex = sounds
+            .Select((sound, index) => (sound, index))
+            .FirstOrDefault(item => item.sound.Id == targetSoundId)
+            .index;
+        var targetExists = targetIndex >= 0 && targetIndex < sounds.Count
+            && sounds[targetIndex].Id == targetSoundId;
+        if (!targetExists)
+        {
+            sounds.Insert(sourceIndex, source);
+            return false;
+        }
+
+        newIndex = targetIndex + (insertAfter ? 1 : 0);
+        sounds.Insert(newIndex, source);
+        return newIndex != sourceIndex;
+    }
+
     private void RefreshTriggerData(bool resetEngine = true)
     {
         _triggerPanel.SetData(_projectManager.Current.Triggers, _projectManager.Current.Sounds);
@@ -740,6 +823,22 @@ public sealed class MainForm : Form
         _projectManager.MarkDirty();
         ApplyProjectSettings();
         ResizeSoundCards();
+    }
+
+    private void ShowGroupShortcuts()
+    {
+        var groups = _projectManager.Current.Sounds
+            .Select(sound => sound.Group)
+            .Where(group => !string.IsNullOrWhiteSpace(group));
+        using var dialog = new GroupShortcutDialog(_projectManager.Current.GroupShortcuts, groups);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        _projectManager.Current.GroupShortcuts = dialog.Definitions.ToList();
+        _projectManager.MarkDirty();
+        SetStatus("グループショートカットを更新しました。", false);
     }
 
     private async Task RunSelfTestAsync()
@@ -1139,7 +1238,11 @@ public sealed class MainForm : Form
 
     private void OnDragEnter(object? sender, DragEventArgs eventArgs)
     {
-        if (eventArgs.Data?.GetDataPresent(DataFormats.FileDrop) == true)
+        if (eventArgs.Data?.GetData(typeof(SoundCard)) is SoundCard)
+        {
+            eventArgs.Effect = DragDropEffects.Move;
+        }
+        else if (eventArgs.Data?.GetDataPresent(DataFormats.FileDrop) == true)
         {
             eventArgs.Effect = DragDropEffects.Copy;
         }
@@ -1147,10 +1250,51 @@ public sealed class MainForm : Form
 
     private void OnDragDrop(object? sender, DragEventArgs eventArgs)
     {
+        if (eventArgs.Data?.GetData(typeof(SoundCard)) is SoundCard source)
+        {
+            ReorderDraggedSound(source, new Point(eventArgs.X, eventArgs.Y));
+            return;
+        }
+
         if (eventArgs.Data?.GetData(DataFormats.FileDrop) is string[] paths)
         {
             AddSoundFiles(paths);
         }
+    }
+
+    private void ReorderDraggedSound(SoundCard source, Point screenPoint)
+    {
+        var listBounds = _soundList.RectangleToScreen(_soundList.ClientRectangle);
+        if (!listBounds.Contains(screenPoint))
+        {
+            return;
+        }
+
+        var point = _soundList.PointToClient(screenPoint);
+        var target = _soundList.Controls
+            .OfType<SoundCard>()
+            .FirstOrDefault(card => card != source && card.Bounds.Contains(point));
+        if (target is null)
+        {
+            target = _soundList.Controls
+                .OfType<SoundCard>()
+                .LastOrDefault(card => card != source);
+            if (target is not null)
+            {
+                ReorderSound(source.Sound.Id, target.Sound.Id, insertAfter: true);
+            }
+
+            return;
+        }
+
+        var targetPoint = new Point(point.X - target.Left, point.Y - target.Top);
+        var hasMultipleColumns = _soundList.Controls
+            .OfType<SoundCard>()
+            .Any(card => card != target && Math.Abs(card.Top - target.Top) <= 4);
+        var insertAfter = hasMultipleColumns
+            ? targetPoint.X >= target.ClientSize.Width / 2
+            : targetPoint.Y >= target.ClientSize.Height / 2;
+        ReorderSound(source.Sound.Id, target.Sound.Id, insertAfter);
     }
 
     private bool IsEditingText()
