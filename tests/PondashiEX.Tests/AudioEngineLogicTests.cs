@@ -48,7 +48,7 @@ public sealed class AudioEngineLogicTests
     }
 
     [Fact]
-    public async Task SameGroup_ReplacesPreviousSound()
+    public async Task SameGroup_AllowsSimultaneousPlayback()
     {
         using var directory = new TestDirectory();
         var firstPath = CreateWaveFile(directory.GetPath("first.wav"));
@@ -60,32 +60,8 @@ public sealed class AudioEngineLogicTests
         await engine.PlayAsync(first, firstPath);
         await engine.PlayAsync(second, secondPath);
 
-        Assert.Equal([second.Id], engine.GetActiveSoundIds());
-    }
-
-    [Fact]
-    public async Task SameGroup_WithFadeOut_KeepsPreviousSoundDuringCrossfade()
-    {
-        using var directory = new TestDirectory();
-        var firstPath = CreateWaveFile(directory.GetPath("first.wav"));
-        var secondPath = CreateWaveFile(directory.GetPath("second.wav"));
-        using var engine = CreateEngine(out _);
-        var first = new SoundDefinition
-        {
-            Id = Guid.NewGuid(),
-            Name = "first",
-            Group = "BGM",
-            FadeOut = new FadeSettings { Enabled = true, Value = 1 }
-        };
-        var second = new SoundDefinition { Id = Guid.NewGuid(), Name = "second", Group = "BGM" };
-
-        await engine.PlayAsync(first, firstPath);
-        await engine.PlayAsync(second, secondPath);
-
         Assert.Contains(first.Id, engine.GetActiveSoundIds());
         Assert.Contains(second.Id, engine.GetActiveSoundIds());
-        Assert.Equal(PondashiEX.Audio.PlaybackState.Fading, engine.GetState(first.Id));
-        Assert.Equal(PondashiEX.Audio.PlaybackState.Playing, engine.GetState(second.Id));
     }
 
     [Fact]

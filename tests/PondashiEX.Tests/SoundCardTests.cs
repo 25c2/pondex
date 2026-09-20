@@ -22,7 +22,7 @@ public sealed class SoundCardTests
         detailsButton.PerformClick();
 
         Assert.True(card.Height > collapsedHeight);
-        Assert.True(card.Height < 250, $"展開後の高さが大きすぎます: {card.Height}px");
+        Assert.True(card.Height < 340, $"展開後の高さが大きすぎます: {card.Height}px");
 
         detailsButton.PerformClick();
         Assert.Equal(collapsedHeight, card.Height);
@@ -167,6 +167,26 @@ public sealed class SoundCardTests
 
         Assert.Equal(2.5, sound.Loop.StartSeconds);
         Assert.Equal(0, sound.Loop.StartSample);
+    }
+
+    [Fact]
+    public void PlayButton_CommitsTypedLoopSecondsBeforeRequestingPlayback()
+    {
+        var sound = new SoundDefinition { Loop = new LoopSettings { Enabled = true } };
+        using var card = new SoundCard(sound);
+        var loopStart = Descendants(card)
+            .OfType<NumericUpDown>()
+            .Single(numeric => numeric.DecimalPlaces == 2 && numeric.Maximum == 24 * 60 * 60);
+        var playButton = Descendants(card)
+            .OfType<Button>()
+            .Single(button => button.Text.Contains("再生", StringComparison.Ordinal));
+        loopStart.Text = "2.50";
+        double? secondsWhenRequested = null;
+        card.PlayRequested += (_, _) => secondsWhenRequested = sound.Loop.StartSeconds;
+
+        playButton.PerformClick();
+
+        Assert.Equal(2.5, secondsWhenRequested);
     }
 
     private static Button DetailsButton(SoundCard card) => Descendants(card)

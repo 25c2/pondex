@@ -64,7 +64,7 @@ internal static class Program
                 logDirectory);
             if (args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase))
             {
-                mainForm.Shown += (_, _) => mainForm.BeginInvoke(mainForm.Close);
+                mainForm.Shown += (_, _) => mainForm.BeginInvoke(mainForm.CloseWithoutSavePromptForSmokeTest);
             }
 
             Application.Run(mainForm);

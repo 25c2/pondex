@@ -56,6 +56,44 @@ public sealed class SoundInstanceTests
         Assert.Contains(buffer.Take(read), sample => Math.Abs(sample) > 0.001f);
     }
 
+    [Fact]
+    public void ApplyLiveSettings_UsesLoopStartSecondsOnNextLoop()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("loop-seconds.wav");
+        short[] sourceSamples = [1000, 2000, 3000, 4000];
+        using (var writer = new WaveFileWriter(path, new WaveFormat(44_100, 16, 1)))
+        {
+            foreach (var sample in sourceSamples)
+            {
+                var bytes = BitConverter.GetBytes(sample);
+                writer.Write(bytes, 0, bytes.Length);
+            }
+        }
+
+        var definition = new SoundDefinition
+        {
+            Id = Guid.NewGuid(),
+            Loop = new LoopSettings { Enabled = true }
+        };
+        using var instance = SoundInstance.Create(
+            definition,
+            path,
+            WaveFormat.CreateIeeeFloatWaveFormat(44_100, 2),
+            () => { });
+        definition.Loop.StartSeconds = 2.0 / 44_100;
+        instance.ApplyLiveSettings(definition);
+        var buffer = new float[12];
+
+        var read = instance.Output.Read(buffer, 0, buffer.Length);
+
+        Assert.Equal(buffer.Length, read);
+        Assert.Equal(sourceSamples[0] / 32768.0f, buffer[0], 5);
+        Assert.Equal(sourceSamples[3] / 32768.0f, buffer[6], 5);
+        Assert.Equal(sourceSamples[2] / 32768.0f, buffer[8], 5);
+        Assert.Equal(sourceSamples[3] / 32768.0f, buffer[10], 5);
+    }
+
     private static void WriteSineWave(string path)
     {
         const int sampleRate = 44_100;

@@ -251,7 +251,7 @@ public sealed class ProjectSerializer
         model.Project.ThemeColor ??= "#202020";
         model.Settings.OutputDevice ??= "default";
         model.Settings.MasterVolume = Math.Clamp(model.Settings.MasterVolume, 0.0f, 1.0f);
-        model.Settings.SoundListColumns = Math.Clamp(model.Settings.SoundListColumns, 1, 2);
+        model.Settings.SoundListColumns = Math.Clamp(model.Settings.SoundListColumns, 1, 8);
 
         model.Sounds = (model.Sounds ?? []).OfType<SoundDefinition>().ToList();
         var soundIds = new HashSet<Guid>();

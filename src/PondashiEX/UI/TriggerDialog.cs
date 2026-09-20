@@ -121,12 +121,6 @@ public sealed class TriggerDialog : Form
 
         var type = (TriggerType)_typeCombo.SelectedItem!;
         var action = (TriggerAction)_actionCombo.SelectedItem!;
-        if (action == TriggerAction.Play && target.Group is not null)
-        {
-            MessageBox.Show(this, "グループは複数候補があるため、再生アクションでは対象音源を1つ選んでください。グループ全体は停止・一時停止に使用できます。", "入力確認", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
         var needsSource = type is TriggerType.SoundEnded or TriggerType.SoundElapsed;
         if (needsSource && _sourceSoundCombo.SelectedItem is not SoundItem)
         {

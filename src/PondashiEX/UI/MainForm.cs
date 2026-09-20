@@ -141,7 +141,7 @@ public sealed class MainForm : Form
             new ShortcutManager(),
             () => _projectManager.Current.Sounds,
             IsEditingText,
-            ExecuteShortcut);
+            ExecuteShortcuts);
         _messageFilter = new ShortcutMessageFilter(
             _shortcutDispatcher.OnKeyChanged,
             () => !_projectManager.Current.Settings.BackgroundInput);
@@ -169,6 +169,12 @@ public sealed class MainForm : Form
         ApplyProjectSettings();
         RebuildSoundCards();
         RefreshRecentMenu();
+    }
+
+    internal void CloseWithoutSavePromptForSmokeTest()
+    {
+        _closingAfterSave = true;
+        Close();
     }
 
     private MenuStrip BuildMenu(out ToolStripMenuItem recentMenu)
@@ -272,10 +278,13 @@ public sealed class MainForm : Form
         };
         masterMute = masterMuteControl;
         var masterPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3 };
-        masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64));
+        masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
         masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
-        masterPanel.Controls.Add(HeaderLabel("MASTER", 9, FontStyle.Bold), 0, 0);
+        var masterCaption = HeaderLabel("MASTER", 8.5F, FontStyle.Bold);
+        masterCaption.AutoEllipsis = false;
+        masterCaption.UseCompatibleTextRendering = false;
+        masterPanel.Controls.Add(masterCaption, 0, 0);
         masterPanel.Controls.Add(masterVolumeControl, 1, 0);
         masterPanel.Controls.Add(masterVolumeLabel, 2, 0);
 
@@ -584,10 +593,13 @@ public sealed class MainForm : Form
 
     private void ResizeSoundCards()
     {
-        var availableWidth = Math.Max(480, _soundList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 20);
-        var requestedColumns = Math.Clamp(_projectManager.Current.Settings.SoundListColumns, 1, 2);
-        var columns = requestedColumns == 2 && availableWidth >= 980 ? 2 : 1;
-        var width = Math.Max(480, (availableWidth - ((columns - 1) * 12)) / columns);
+        const int minimumCardWidth = 340;
+        const int gap = 12;
+        var availableWidth = Math.Max(minimumCardWidth, _soundList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 20);
+        var requestedColumns = Math.Clamp(_projectManager.Current.Settings.SoundListColumns, 1, 8);
+        var columnsThatFit = Math.Max(1, availableWidth / (minimumCardWidth + gap));
+        var columns = Math.Min(requestedColumns, columnsThatFit);
+        var width = Math.Max(minimumCardWidth, (availableWidth - (columns * gap)) / columns);
         foreach (var card in _soundCards.Values)
         {
             card.Width = width;
@@ -653,7 +665,7 @@ public sealed class MainForm : Form
         SetStatus("すべての音源を停止しました。", false);
     }
 
-    private void ExecuteShortcut(ShortcutCommand command)
+    private void ExecuteShortcuts(IReadOnlyList<ShortcutCommand> commands)
     {
         if (IsDisposed || Disposing)
         {
@@ -662,21 +674,44 @@ public sealed class MainForm : Form
 
         if (InvokeRequired)
         {
-            TryBeginInvoke(() => ExecuteShortcut(command));
+            var commandSnapshot = commands.ToArray();
+            TryBeginInvoke(() => ExecuteShortcuts(commandSnapshot));
             return;
         }
 
-        switch (command.Type)
+        var playIds = commands
+            .Where(command => command.Type == ShortcutCommandType.Play && command.SoundId is not null)
+            .Select(command => command.SoundId!.Value)
+            .Distinct()
+            .ToArray();
+        if (playIds.Length > 1)
         {
-            case ShortcutCommandType.Play when command.SoundId is { } playId:
-                _ = PlaySoundAsync(playId);
-                break;
-            case ShortcutCommandType.Stop when command.SoundId is { } stopId:
-                _audioEngine.Stop(stopId);
-                break;
-            case ShortcutCommandType.StopAll:
-                StopAll();
-                break;
+            PlayShortcutBatch(playIds);
+            return;
+        }
+
+        foreach (var command in commands)
+        {
+            switch (command.Type)
+            {
+                case ShortcutCommandType.Play when command.SoundId is { } playId:
+                    _ = PlaySoundAsync(playId);
+                    break;
+                case ShortcutCommandType.Stop when command.SoundId is { } stopId:
+                    _audioEngine.Stop(stopId);
+                    break;
+                case ShortcutCommandType.StopAll:
+                    StopAll();
+                    break;
+            }
+        }
+    }
+
+    private void PlayShortcutBatch(IReadOnlyCollection<Guid> soundIds)
+    {
+        foreach (var soundId in soundIds)
+        {
+            _ = PlaySoundAsync(soundId);
         }
     }
 
@@ -886,12 +921,6 @@ public sealed class MainForm : Form
     private void OnTriggerFired(object? sender, TriggerFiredEventArgs eventArgs)
     {
         var trigger = eventArgs.Trigger;
-        if (trigger.Action == TriggerAction.Play && !string.IsNullOrWhiteSpace(trigger.TargetGroup))
-        {
-            SetStatus($"グループ「{trigger.TargetGroup}」は再生対象を1つに決められません。トリガ設定で音源を指定してください。", true);
-            return;
-        }
-
         var targetIds = (string.IsNullOrWhiteSpace(trigger.TargetGroup)
             ? [trigger.TargetSoundId]
             : _projectManager.Current.Sounds

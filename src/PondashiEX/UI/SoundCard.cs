@@ -1,3 +1,4 @@
+using System.Globalization;
 using PondashiEX.Audio;
 using PondashiEX.Project;
 
@@ -5,7 +6,7 @@ namespace PondashiEX.UI;
 
 public sealed class SoundCard : UserControl
 {
-    private const int CollapsedHeight = 108;
+    private const int CollapsedHeight = 144;
     private readonly Label _stateLabel;
     private readonly Label _nameLabel;
     private readonly Label _summaryLabel;
@@ -42,24 +43,23 @@ public sealed class SoundCard : UserControl
         BorderStyle = BorderStyle.FixedSingle;
         BackColor = Color.FromArgb(245, 245, 245);
         Margin = new Padding(6);
-        MinimumSize = new Size(480, CollapsedHeight);
+        MinimumSize = new Size(320, CollapsedHeight);
         Height = CollapsedHeight;
 
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 6,
-            RowCount = 3,
+            ColumnCount = 4,
+            RowCount = 4,
             Padding = new Padding(8)
         };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 84));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 84));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 84));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         _nameLabel = new Label
@@ -114,15 +114,15 @@ public sealed class SoundCard : UserControl
         volumePanel.Controls.Add(_volumeLabel, 2, 0);
 
         root.Controls.Add(_nameLabel, 0, 0);
-        root.Controls.Add(_summaryLabel, 1, 0);
-        root.SetColumnSpan(_summaryLabel, 4);
-        root.Controls.Add(_stateLabel, 5, 0);
-        root.Controls.Add(volumePanel, 0, 1);
-        root.SetColumnSpan(volumePanel, 2);
-        root.Controls.Add(playButton, 2, 1);
-        root.Controls.Add(stopButton, 3, 1);
-        root.Controls.Add(_pauseButton, 4, 1);
-        root.Controls.Add(_detailsButton, 5, 1);
+        root.SetColumnSpan(_nameLabel, 2);
+        root.Controls.Add(_summaryLabel, 2, 0);
+        root.Controls.Add(_stateLabel, 3, 0);
+        root.Controls.Add(playButton, 0, 1);
+        root.Controls.Add(stopButton, 1, 1);
+        root.Controls.Add(_pauseButton, 2, 1);
+        root.Controls.Add(_detailsButton, 3, 1);
+        root.Controls.Add(volumePanel, 0, 2);
+        root.SetColumnSpan(volumePanel, 4);
 
         _detailsPanel = new Panel
         {
@@ -210,16 +210,20 @@ public sealed class SoundCard : UserControl
         _toolTip.SetToolTip(_volumeTrack, "0～100%。ホイール、矢印キー、ドラッグで調整できます。");
         _toolTip.SetToolTip(_keyText, "空白は使用できません。A、2、F1などのキー名を入力します。");
         _toolTip.SetToolTip(_panValue, "-100で左、0で中央、+100で右。右クリックで中央へ戻せます。");
-        _toolTip.SetToolTip(_loopStart, "音源末尾からループで戻る位置を秒で指定します。0なら先頭へ戻ります。");
+        _toolTip.SetToolTip(_loopStart, "初回は0秒から再生し、音源末尾に達したときに戻る位置です。音源長以上なら先頭へ戻ります。");
         _toolTip.SetToolTip(_fadeInCheck, "再生開始時に、無音から設定音量まで指定秒数で上げます。");
         _toolTip.SetToolTip(_fadeOutCheck, "停止時や同じグループの切替時に、指定秒数で下げてから停止します。");
         _detailsPanel.Controls.Add(_detailsContent);
-        root.Controls.Add(_detailsPanel, 0, 2);
-        root.SetColumnSpan(_detailsPanel, 6);
+        root.Controls.Add(_detailsPanel, 0, 3);
+        root.SetColumnSpan(_detailsPanel, 4);
 
         Controls.Add(root);
 
-        playButton.Click += (_, _) => PlayRequested?.Invoke(this, EventArgs.Empty);
+        playButton.Click += (_, _) =>
+        {
+            CommitLoopStartInput();
+            PlayRequested?.Invoke(this, EventArgs.Empty);
+        };
         browseButton.Click += (_, _) => FileBrowseRequested?.Invoke(this, EventArgs.Empty);
         stopButton.Click += (_, _) => StopRequested?.Invoke(this, EventArgs.Empty);
         _pauseButton.Click += (_, _) =>
@@ -310,6 +314,7 @@ public sealed class SoundCard : UserControl
             _loopSecondsEdited = true;
             UpdateDefinition();
         };
+        _loopStart.Validated += (_, _) => CommitLoopStartInput();
         _fadeInCheck.CheckedChanged += (_, _) =>
         {
             SetDefaultFadeSecondsWhenEnabled(_fadeInCheck, _fadeInValue);
@@ -588,6 +593,26 @@ public sealed class SoundCard : UserControl
             }
         }
 
+        UpdateDefinition();
+    }
+
+    private void CommitLoopStartInput()
+    {
+        if (decimal.TryParse(
+                _loopStart.Text,
+                NumberStyles.Number,
+                CultureInfo.CurrentCulture,
+                out var typedValue))
+        {
+            var safeValue = Math.Clamp(typedValue, _loopStart.Minimum, _loopStart.Maximum);
+            if (_loopStart.Value != safeValue)
+            {
+                _loopStart.Value = safeValue;
+                return;
+            }
+        }
+
+        _loopSecondsEdited = true;
         UpdateDefinition();
     }
 

@@ -8,13 +8,13 @@ public sealed class ShortcutDispatcher
     private readonly ShortcutManager _manager;
     private readonly Func<IEnumerable<SoundDefinition>> _sounds;
     private readonly Func<bool> _textEditing;
-    private readonly Action<ShortcutCommand> _execute;
+    private readonly Action<IReadOnlyList<ShortcutCommand>> _execute;
 
     public ShortcutDispatcher(
         ShortcutManager manager,
         Func<IEnumerable<SoundDefinition>> sounds,
         Func<bool> textEditing,
-        Action<ShortcutCommand> execute)
+        Action<IReadOnlyList<ShortcutCommand>> execute)
     {
         _manager = manager;
         _sounds = sounds;
@@ -36,12 +36,12 @@ public sealed class ShortcutDispatcher
             return;
         }
 
-        foreach (var command in _manager.Resolve(keyData, _sounds(), _textEditing()))
+        var commands = _manager.Resolve(keyData, _sounds(), _textEditing());
+        if (commands.Count > 0)
         {
-            _execute(command);
+            _execute(commands);
         }
     }
 
     public void Reset() => _pressed.Clear();
 }
-

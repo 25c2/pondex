@@ -7,6 +7,7 @@ namespace PondashiEX.Audio;
 internal sealed class SoundInstance : IDisposable
 {
     private readonly WaveStream _decoder;
+    private readonly LoopProvider _loopProvider;
     private readonly PauseSampleProvider _pauseProvider;
     private readonly StereoBalanceSampleProvider _balanceProvider;
     private readonly RampedVolumeSampleProvider _volumeProvider;
@@ -17,6 +18,7 @@ internal sealed class SoundInstance : IDisposable
     private SoundInstance(
         SoundDefinition definition,
         WaveStream decoder,
+        LoopProvider loopProvider,
         PauseSampleProvider pauseProvider,
         StereoBalanceSampleProvider balanceProvider,
         RampedVolumeSampleProvider volumeProvider,
@@ -26,6 +28,7 @@ internal sealed class SoundInstance : IDisposable
     {
         Definition = definition;
         _decoder = decoder;
+        _loopProvider = loopProvider;
         _pauseProvider = pauseProvider;
         _balanceProvider = balanceProvider;
         _volumeProvider = volumeProvider;
@@ -58,7 +61,8 @@ internal sealed class SoundInstance : IDisposable
             var loopStartSample = definition.Loop.StartSeconds > 0
                 ? (long)Math.Round(definition.Loop.StartSeconds * decoder.WaveFormat.SampleRate)
                 : definition.Loop.StartSample;
-            ISampleProvider provider = new LoopProvider(decoder, definition.Loop.Enabled, loopStartSample);
+            var loopProvider = new LoopProvider(decoder, definition.Loop.Enabled, loopStartSample);
+            ISampleProvider provider = loopProvider;
             provider = NormalizeChannels(provider);
 
             if (provider.WaveFormat.SampleRate != mixerFormat.SampleRate)
@@ -96,6 +100,7 @@ internal sealed class SoundInstance : IDisposable
             return new SoundInstance(
                 definition,
                 decoder,
+                loopProvider,
                 pauseProvider,
                 balanceProvider,
                 volumeProvider,
@@ -147,6 +152,10 @@ internal sealed class SoundInstance : IDisposable
     {
         _volumeProvider.Volume = Math.Clamp(definition.Volume, 0.0f, 1.0f);
         _balanceProvider.Pan = definition.Pan;
+        var loopStartSample = definition.Loop.StartSeconds > 0
+            ? (long)Math.Round(definition.Loop.StartSeconds * _decoder.WaveFormat.SampleRate)
+            : definition.Loop.StartSample;
+        _loopProvider.Configure(definition.Loop.Enabled, loopStartSample);
     }
 
     public void Dispose()

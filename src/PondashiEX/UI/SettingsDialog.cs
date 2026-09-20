@@ -76,8 +76,8 @@ public sealed class SettingsDialog : Form
         _soundListColumns = new NumericUpDown
         {
             Minimum = 1,
-            Maximum = 2,
-            Value = Math.Clamp(settings.SoundListColumns, 1, 2),
+            Maximum = 8,
+            Value = Math.Clamp(settings.SoundListColumns, 1, 8),
             Width = 72
         };
 
@@ -91,7 +91,7 @@ public sealed class SettingsDialog : Form
         root.Controls.Add(_backgroundInputCheck, 1, 3);
         root.Controls.Add(new Label { Text = "無音ループ", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 4);
         root.Controls.Add(_silentLoopCheck, 1, 4);
-        root.Controls.Add(new Label { Text = "音源一覧の列数", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 5);
+        root.Controls.Add(new Label { Text = "音源一覧の列数 (1～8)", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 5);
         root.Controls.Add(_soundListColumns, 1, 5);
 
         var buttons = new FlowLayoutPanel

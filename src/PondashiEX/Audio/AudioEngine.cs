@@ -184,15 +184,6 @@ public sealed class AudioEngine : IAudioEngine
 
                 EnsureOutputCreated();
 
-                var conflicts = GroupPlaybackPolicy.FindConflicts(
-                    sound,
-                    _instances.Values.Select(instance => instance.Definition));
-                foreach (var conflictId in conflicts)
-                {
-                    NextOperationVersion(conflictId);
-                    StopWithFadeCore(conflictId, PlaybackEndReason.Replaced);
-                }
-
                 StopCore(sound.Id, PlaybackEndReason.Replaced);
                 _instances.Add(sound.Id, prepared);
                 _mixer.AddMixerInput(prepared.Output);

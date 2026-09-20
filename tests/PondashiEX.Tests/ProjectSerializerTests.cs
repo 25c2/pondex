@@ -14,7 +14,7 @@ public sealed class ProjectSerializerTests
         var model = new ProjectModel
         {
             Project = new ProjectMetadata { Name = "文化祭" },
-            Settings = new ProjectSettings { SoundListColumns = 2 },
+            Settings = new ProjectSettings { SoundListColumns = 3 },
             Sounds =
             [
                 new SoundDefinition
@@ -45,7 +45,7 @@ public sealed class ProjectSerializerTests
         Assert.Equal(ProjectModel.CurrentFormatVersion, loaded.FormatVersion);
         Assert.Equal("文化祭", loaded.Project.Name);
         Assert.Equal(soundId, Assert.Single(loaded.Sounds).Id);
-        Assert.Equal(2, loaded.Settings.SoundListColumns);
+        Assert.Equal(3, loaded.Settings.SoundListColumns);
         Assert.Equal(1.25, Assert.Single(loaded.Sounds).Loop.StartSeconds);
         Assert.Equal("SE", Assert.Single(loaded.Triggers).TargetGroup);
         Assert.False(File.ReadAllBytes(path).AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }));
