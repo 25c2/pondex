@@ -1,0 +1,52 @@
+# Visual Studio / editors
+.vs/
+.vscode/
+.idea/
+.fleet/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.rsuser
+
+# .NET build outputs
+**/[Bb]in/
+**/[Oo]bj/
+[Aa]rtifacts/
+[Pp]ublish/
+*.binlog
+
+# Tests and coverage
+[Tt]est[Rr]esults/
+coverage/
+coverage-*.xml
+*.coverage
+*.coveragexml
+*.trx
+
+# NuGet / local toolchains
+*.nupkg
+*.snupkg
+packages/
+.nuget-packages/
+.dotnet-sdk/
+.dotnet-home/
+.dotnet-tools/
+.dotnet-install.ps1
+
+# Runtime and user-generated data
+[Ll]ogs/
+*.log
+*.pondex
+*.pondex.tmp
+*.pondex.bak
+recent-projects.json
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local reference copy of the original application. It is not part of EX and
+# may contain third-party binaries that must not be redistributed.
+PonDashiKun/

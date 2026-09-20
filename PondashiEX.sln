@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PondashiEX", "src\PondashiEX\PondashiEX.csproj", "{4D4E57A9-A4D8-4EF3-9A0F-3A60E2FC5C81}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PondashiEX.Tests", "tests\PondashiEX.Tests\PondashiEX.Tests.csproj", "{D2FD8685-0AE3-4D86-BBFD-BF50A7E201EF}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{4D4E57A9-A4D8-4EF3-9A0F-3A60E2FC5C81}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4D4E57A9-A4D8-4EF3-9A0F-3A60E2FC5C81}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4D4E57A9-A4D8-4EF3-9A0F-3A60E2FC5C81}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4D4E57A9-A4D8-4EF3-9A0F-3A60E2FC5C81}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D2FD8685-0AE3-4D86-BBFD-BF50A7E201EF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D2FD8685-0AE3-4D86-BBFD-BF50A7E201EF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D2FD8685-0AE3-4D86-BBFD-BF50A7E201EF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D2FD8685-0AE3-4D86-BBFD-BF50A7E201EF}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

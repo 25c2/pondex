@@ -1,0 +1,36 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{cs,csproj,props,targets}]
+indent_style = space
+indent_size = 4
+
+[*.{json,md,yml,yaml}]
+indent_style = space
+indent_size = 2
+
+[*.sln]
+end_of_line = crlf
+
+# These names are established stage-control domain commands and match the
+# public API used throughout the specification.
+[src/PondashiEX/Audio/IAudioEngine.cs]
+dotnet_diagnostic.CA1716.severity = none
+
+[src/PondashiEX/Utility/IAppLogger.cs]
+dotnet_diagnostic.CA1716.severity = none
+
+# Keep device discovery injectable as a service even though its current
+# implementation does not need instance state.
+[src/PondashiEX/Audio/AudioDeviceManager.cs]
+dotnet_diagnostic.CA1822.severity = none
+
+# xUnit test names intentionally use Method_Scenario_ExpectedResult for
+# readable failure output.
+[tests/**/*.cs]
+dotnet_diagnostic.CA1707.severity = none
