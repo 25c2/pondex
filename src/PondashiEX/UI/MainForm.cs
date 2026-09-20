@@ -32,6 +32,7 @@ public sealed class MainForm : Form
     private readonly Label _clockModeLabel;
     private readonly ToolStripStatusLabel _statusLabel;
     private readonly ToolStripMenuItem _recentMenu;
+    private readonly ToolStripMenuItem _muteMenuItem;
     private readonly TrackBar _masterVolume;
     private readonly CheckBox _masterMute;
     private bool _stopwatchMode;
@@ -68,7 +69,7 @@ public sealed class MainForm : Form
         KeyPreview = false;
         AllowDrop = true;
 
-        var menu = BuildMenu(out _recentMenu);
+        var menu = BuildMenu(out _recentMenu, out _muteMenuItem);
         MainMenuStrip = menu;
 
         var root = new TableLayoutPanel
@@ -182,7 +183,9 @@ public sealed class MainForm : Form
         Close();
     }
 
-    private MenuStrip BuildMenu(out ToolStripMenuItem recentMenu)
+    private MenuStrip BuildMenu(
+        out ToolStripMenuItem recentMenu,
+        out ToolStripMenuItem muteMenuItem)
     {
         var menu = new MenuStrip { Dock = DockStyle.Fill };
         var file = new ToolStripMenuItem("ファイル(&F)");
@@ -199,9 +202,11 @@ public sealed class MainForm : Form
         {
             ShortcutKeyDisplayString = "Ctrl+R"
         };
+        muteMenuItem = new ToolStripMenuItem("ミュート(&M)", null, (_, _) => ToggleMasterMute());
         var groupShortcuts = new ToolStripMenuItem("グループショートカット(&G)…", null, (_, _) => ShowGroupShortcuts());
         var diagnostics = new ToolStripMenuItem("動作診断(&D)…", null, async (_, _) => await RunSelfTestAsync());
-        operations.DropDownItems.AddRange([stopAllItem, groupShortcuts, new ToolStripSeparator(), diagnostics]);
+        operations.DropDownItems.AddRange(
+            [stopAllItem, muteMenuItem, new ToolStripSeparator(), groupShortcuts, new ToolStripSeparator(), diagnostics]);
 
         var settings = new ToolStripMenuItem("設定(&S)", null, (_, _) => ShowSettings());
         var help = new ToolStripMenuItem("ヘルプ(&H)");
@@ -367,6 +372,7 @@ public sealed class MainForm : Form
         masterMuteControl.CheckedChanged += (_, _) =>
         {
             UpdateMuteAppearance(masterMuteControl);
+            _muteMenuItem.Checked = masterMuteControl.Checked;
             if (_applyingProjectSettings)
             {
                 return;
@@ -590,6 +596,8 @@ public sealed class MainForm : Form
         card.PauseRequested += (_, _) => _audioEngine.Pause(sound.Id);
         card.ResumeRequested += (_, _) => _audioEngine.Resume(sound.Id);
         card.FileBrowseRequested += (_, _) => BrowseReplacementFile(sound, card);
+        card.ReorderDropRequested += (_, eventArgs) => ReorderDraggedSound(card, eventArgs.ScreenPoint);
+        card.GroupChangeCommitted += (_, eventArgs) => OnSoundGroupChangeCommitted(eventArgs);
         card.VolumeFadeRequested += (_, eventArgs) =>
         {
             _audioEngine.FadeVolume(sound.Id, eventArgs.TargetVolume, eventArgs.Duration);
@@ -748,6 +756,12 @@ public sealed class MainForm : Form
         SetStatus("すべての音源を停止しました。", false);
     }
 
+    private void ToggleMasterMute()
+    {
+        _masterMute.Checked = !_masterMute.Checked;
+        SetStatus(_masterMute.Checked ? "ミュートしました。" : "ミュートを解除しました。", false);
+    }
+
     private void ExecuteShortcuts(IReadOnlyList<ShortcutCommand> commands)
     {
         if (IsDisposed || Disposing)
@@ -812,18 +826,54 @@ public sealed class MainForm : Form
         var selectedDevice = devices.FirstOrDefault(
             device => device.DeviceNumber == dialog.SelectedDeviceNumber)
             ?? AudioDeviceInfo.Default;
+        var project = _projectManager.Current.Project;
+        var projectName = string.IsNullOrWhiteSpace(dialog.ProjectName)
+            ? "名称未設定"
+            : dialog.ProjectName;
+        var changed = HasProjectSettingsChanges(
+            settings,
+            project,
+            selectedDevice.PersistentId,
+            dialog.BackgroundInput,
+            dialog.SilentLoop,
+            dialog.FadeOutOnStop,
+            dialog.SoundListColumns,
+            projectName,
+            dialog.ThemeColor);
         settings.OutputDevice = selectedDevice.PersistentId;
         settings.BackgroundInput = dialog.BackgroundInput;
         settings.SilentLoop = dialog.SilentLoop;
+        settings.FadeOutOnStop = dialog.FadeOutOnStop;
         settings.SoundListColumns = dialog.SoundListColumns;
-        _projectManager.Current.Project.Name = string.IsNullOrWhiteSpace(dialog.ProjectName)
-            ? "名称未設定"
-            : dialog.ProjectName;
-        _projectManager.Current.Project.ThemeColor = dialog.ThemeColor;
-        _projectManager.MarkDirty();
+        project.Name = projectName;
+        project.ThemeColor = dialog.ThemeColor;
+        if (changed)
+        {
+            _projectManager.MarkDirty();
+        }
+
         ApplyProjectSettings();
         ResizeSoundCards();
+        SetStatus(changed ? "設定を更新しました。" : "設定に変更はありません。", false);
     }
+
+    internal static bool HasProjectSettingsChanges(
+        ProjectSettings settings,
+        ProjectMetadata project,
+        string outputDevice,
+        bool backgroundInput,
+        bool silentLoop,
+        bool fadeOutOnStop,
+        int soundListColumns,
+        string projectName,
+        string themeColor) =>
+        !string.Equals(settings.OutputDevice, outputDevice, StringComparison.Ordinal)
+        || settings.BackgroundInput != backgroundInput
+        || settings.SilentLoop != silentLoop
+        || settings.FadeOutOnStop != fadeOutOnStop
+        || settings.SoundListColumns != soundListColumns
+        || !string.Equals(project.Name, projectName, StringComparison.Ordinal)
+        || !string.Equals(project.ThemeColor, themeColor, StringComparison.Ordinal);
 
     private void ShowGroupShortcuts()
     {
@@ -836,10 +886,91 @@ public sealed class MainForm : Form
             return;
         }
 
-        _projectManager.Current.GroupShortcuts = dialog.Definitions.ToList();
+        var definitions = dialog.Definitions.ToList();
+        if (GroupShortcutsEqual(_projectManager.Current.GroupShortcuts, definitions))
+        {
+            SetStatus("グループショートカットに変更はありません。", false);
+            return;
+        }
+
+        _projectManager.Current.GroupShortcuts = definitions;
         _projectManager.MarkDirty();
         SetStatus("グループショートカットを更新しました。", false);
     }
+
+    internal static bool GroupShortcutsEqual(
+        IReadOnlyList<GroupShortcutDefinition> first,
+        IReadOnlyList<GroupShortcutDefinition> second) => first.Count == second.Count
+        && first.Zip(second).All(pair =>
+            string.Equals(pair.First.Group, pair.Second.Group, StringComparison.Ordinal)
+            && string.Equals(pair.First.Key, pair.Second.Key, StringComparison.Ordinal));
+
+    private void OnSoundGroupChangeCommitted(GroupChangedEventArgs eventArgs)
+    {
+        var previousGroup = eventArgs.PreviousGroup.Trim();
+        var currentGroup = eventArgs.CurrentGroup.Trim();
+        if (previousGroup.Length == 0
+            || string.Equals(previousGroup, currentGroup, StringComparison.Ordinal)
+            || _projectManager.Current.Sounds.Any(sound =>
+                string.Equals(sound.Group, previousGroup, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        var referenceCount = CountGroupReferences(_projectManager.Current, previousGroup);
+        if (referenceCount == 0)
+        {
+            return;
+        }
+
+        if (currentGroup.Length == 0)
+        {
+            SetStatus($"グループ「{previousGroup}」を参照する設定が{referenceCount}件残っています。", true);
+            return;
+        }
+
+        var updated = RetargetGroupReferences(_projectManager.Current, previousGroup, currentGroup);
+        RefreshTriggerData(resetEngine: false);
+        _projectManager.MarkDirty();
+        SetStatus($"グループ名の変更に合わせて関連設定を{updated}件更新しました。", false);
+    }
+
+    internal static int RetargetGroupReferences(ProjectModel model, string previousGroup, string currentGroup)
+    {
+        var updated = 0;
+        foreach (var shortcut in model.GroupShortcuts.Where(shortcut =>
+                     string.Equals(shortcut.Group, previousGroup, StringComparison.OrdinalIgnoreCase)))
+        {
+            shortcut.Group = currentGroup;
+            updated++;
+        }
+
+        foreach (var trigger in model.Triggers.Where(trigger =>
+                     string.Equals(trigger.TargetGroup, previousGroup, StringComparison.OrdinalIgnoreCase)))
+        {
+            trigger.TargetGroup = currentGroup;
+            updated++;
+        }
+
+        var uniqueShortcuts = new List<GroupShortcutDefinition>();
+        var seenShortcuts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var shortcut in model.GroupShortcuts)
+        {
+            if (seenShortcuts.Add($"{shortcut.Group}\0{shortcut.Key}"))
+            {
+                uniqueShortcuts.Add(shortcut);
+            }
+        }
+
+        model.GroupShortcuts = uniqueShortcuts;
+        return updated;
+    }
+
+    private static int CountGroupReferences(ProjectModel model, string group) =>
+        model.GroupShortcuts.Count(shortcut =>
+            string.Equals(shortcut.Group, group, StringComparison.OrdinalIgnoreCase))
+        + model.Triggers.Count(trigger =>
+            string.Equals(trigger.TargetGroup, group, StringComparison.OrdinalIgnoreCase));
 
     private async Task RunSelfTestAsync()
     {
@@ -896,6 +1027,7 @@ public sealed class MainForm : Form
 
         _audioEngine.MasterVolume = settings.MasterVolume;
         _audioEngine.MasterMute = settings.MasterMute;
+        _audioEngine.FadeOutOnStopEnabled = settings.FadeOutOnStop;
 
         var devices = _deviceManager.GetOutputDevices();
         var selected = AudioDeviceManager.FindConfiguredDevice(devices, settings.OutputDevice);
@@ -1238,11 +1370,7 @@ public sealed class MainForm : Form
 
     private void OnDragEnter(object? sender, DragEventArgs eventArgs)
     {
-        if (eventArgs.Data?.GetData(typeof(SoundCard)) is SoundCard)
-        {
-            eventArgs.Effect = DragDropEffects.Move;
-        }
-        else if (eventArgs.Data?.GetDataPresent(DataFormats.FileDrop) == true)
+        if (eventArgs.Data?.GetDataPresent(DataFormats.FileDrop) == true)
         {
             eventArgs.Effect = DragDropEffects.Copy;
         }
@@ -1250,12 +1378,6 @@ public sealed class MainForm : Form
 
     private void OnDragDrop(object? sender, DragEventArgs eventArgs)
     {
-        if (eventArgs.Data?.GetData(typeof(SoundCard)) is SoundCard source)
-        {
-            ReorderDraggedSound(source, new Point(eventArgs.X, eventArgs.Y));
-            return;
-        }
-
         if (eventArgs.Data?.GetData(DataFormats.FileDrop) is string[] paths)
         {
             AddSoundFiles(paths);

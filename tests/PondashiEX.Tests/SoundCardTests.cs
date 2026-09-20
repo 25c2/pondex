@@ -17,6 +17,45 @@ public sealed class SoundCardTests
     }
 
     [Fact]
+    public void DraggingNamePastThreshold_RaisesReorderDropRequest()
+    {
+        using var form = new Form();
+        using var card = new SoundCard(new SoundDefinition { Name = "ベル" });
+        form.Controls.Add(card);
+        form.Show();
+        var nameLabel = Descendants(card)
+            .OfType<Label>()
+            .Single(label => label.Text == "↕ ベル");
+        SoundReorderDropEventArgs? requested = null;
+        card.ReorderDropRequested += (_, eventArgs) => requested = eventArgs;
+
+        RaiseMouseEvent(nameLabel, "OnMouseDown", new MouseEventArgs(MouseButtons.Left, 1, 2, 2, 0));
+        RaiseMouseEvent(nameLabel, "OnMouseMove", new MouseEventArgs(MouseButtons.Left, 0, 80, 20, 0));
+        RaiseMouseEvent(nameLabel, "OnMouseUp", new MouseEventArgs(MouseButtons.Left, 1, 80, 20, 0));
+
+        Assert.NotNull(requested);
+    }
+
+    [Fact]
+    public void ValidatingChangedGroup_RaisesCommittedChange()
+    {
+        var sound = new SoundDefinition { Group = "SE" };
+        using var card = new SoundCard(sound);
+        var groupEditor = Descendants(card)
+            .OfType<TextBox>()
+            .Single(textBox => textBox.Width == 100);
+        GroupChangedEventArgs? changed = null;
+        card.GroupChangeCommitted += (_, eventArgs) => changed = eventArgs;
+        groupEditor.Text = "SFX";
+
+        RaiseEvent(groupEditor, "OnValidated", EventArgs.Empty);
+
+        Assert.NotNull(changed);
+        Assert.Equal("SE", changed.PreviousGroup);
+        Assert.Equal("SFX", changed.CurrentGroup);
+    }
+
+    [Fact]
     public void DetailsExpansion_UsesContentHeightInsteadOfLargeFixedWhitespace()
     {
         using var card = new SoundCard(new SoundDefinition())
@@ -234,12 +273,23 @@ public sealed class SoundCardTests
 
     private static void RaiseMouseDown(Control control)
     {
-        var method = typeof(Control).GetMethod(
-            "OnMouseDown",
-            BindingFlags.Instance | BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("Control.OnMouseDownが見つかりません。");
-        method.Invoke(control, [new MouseEventArgs(MouseButtons.Left, 1, 1, 1, 0)]);
+        RaiseMouseEvent(control, "OnMouseDown", new MouseEventArgs(MouseButtons.Left, 1, 1, 1, 0));
         Application.DoEvents();
+    }
+
+    private static void RaiseMouseEvent(Control control, string methodName, MouseEventArgs eventArgs)
+    {
+        RaiseEvent(control, methodName, eventArgs);
+        Application.DoEvents();
+    }
+
+    private static void RaiseEvent(Control control, string methodName, EventArgs eventArgs)
+    {
+        var method = typeof(Control).GetMethod(
+            methodName,
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException($"Control.{methodName}が見つかりません。");
+        method.Invoke(control, [eventArgs]);
     }
 
     private static IEnumerable<Control> Descendants(Control parent)

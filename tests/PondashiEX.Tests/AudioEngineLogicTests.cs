@@ -28,6 +28,48 @@ public sealed class AudioEngineLogicTests
     }
 
     [Fact]
+    public async Task Stop_UsesConfiguredFadeOutWhenEnabled()
+    {
+        using var directory = new TestDirectory();
+        var path = CreateWaveFile(directory.GetPath("fade-stop.wav"));
+        using var engine = CreateEngine(out _);
+        var sound = new SoundDefinition
+        {
+            Id = Guid.NewGuid(),
+            Name = "fade stop",
+            FadeOut = new FadeSettings { Enabled = true, Value = 1.0f }
+        };
+
+        await engine.PlayAsync(sound, path);
+        engine.FadeOutOnStopEnabled = true;
+        engine.Stop(sound.Id);
+
+        Assert.Equal(PondashiEX.Audio.PlaybackState.Fading, engine.GetState(sound.Id));
+        Assert.Contains(sound.Id, engine.GetActiveSoundIds());
+    }
+
+    [Fact]
+    public async Task Stop_BypassesConfiguredFadeOutWhenDisabled()
+    {
+        using var directory = new TestDirectory();
+        var path = CreateWaveFile(directory.GetPath("immediate-stop.wav"));
+        using var engine = CreateEngine(out _);
+        var sound = new SoundDefinition
+        {
+            Id = Guid.NewGuid(),
+            Name = "immediate stop",
+            FadeOut = new FadeSettings { Enabled = true, Value = 1.0f }
+        };
+
+        await engine.PlayAsync(sound, path);
+        engine.FadeOutOnStopEnabled = false;
+        engine.Stop(sound.Id);
+
+        Assert.Equal(PondashiEX.Audio.PlaybackState.Stopped, engine.GetState(sound.Id));
+        Assert.DoesNotContain(sound.Id, engine.GetActiveSoundIds());
+    }
+
+    [Fact]
     public async Task InvalidSound_DoesNotDestroyAlreadyPlayingSound()
     {
         using var directory = new TestDirectory();

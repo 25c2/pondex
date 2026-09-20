@@ -39,6 +39,8 @@ public sealed class ProjectSettings
 
     public bool SilentLoop { get; set; }
 
+    public bool FadeOutOnStop { get; set; } = true;
+
     public bool BackgroundInput { get; set; }
 
     public int SoundListColumns { get; set; } = 1;

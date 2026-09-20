@@ -18,6 +18,8 @@ public interface IAudioEngine : IDisposable
 
     bool MasterMute { get; set; }
 
+    bool FadeOutOnStopEnabled { get; set; }
+
     bool SilentLoopEnabled { get; set; }
 
     int OutputDeviceNumber { get; }

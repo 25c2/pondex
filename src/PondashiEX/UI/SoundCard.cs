@@ -36,10 +36,13 @@ public sealed class SoundCard : UserControl
     private bool _normalizingKey;
     private bool _loopSecondsEdited;
     private Point? _dragStart;
+    private bool _reorderDragging;
+    private string _committedGroup;
 
     public SoundCard(SoundDefinition sound)
     {
         Sound = sound;
+        _committedGroup = sound.Group;
         AutoScaleMode = AutoScaleMode.Dpi;
         BorderStyle = BorderStyle.FixedSingle;
         BackColor = Color.FromArgb(245, 245, 245);
@@ -220,7 +223,7 @@ public sealed class SoundCard : UserControl
         _toolTip.SetToolTip(_panValue, "-100で左、0で中央、+100で右。右クリックで中央へ戻せます。");
         _toolTip.SetToolTip(_loopStart, "初回は0秒から再生し、音源末尾に達したときに戻る位置です。音源長以上なら先頭へ戻ります。");
         _toolTip.SetToolTip(_fadeInCheck, "再生開始時に、無音から設定音量まで指定秒数で上げます。");
-        _toolTip.SetToolTip(_fadeOutCheck, "停止時や同じグループの切替時に、指定秒数で下げてから停止します。");
+        _toolTip.SetToolTip(_fadeOutCheck, "停止時に、指定秒数で音量を下げてから停止します。");
         _toolTip.SetToolTip(_nameLabel, "ここをドラッグして音源を並べ替えます。");
         _detailsPanel.Controls.Add(_detailsContent);
         root.Controls.Add(_detailsPanel, 0, 3);
@@ -264,9 +267,21 @@ public sealed class SoundCard : UserControl
             if (eventArgs.Button == MouseButtons.Left)
             {
                 _dragStart = eventArgs.Location;
+                _nameLabel.Capture = true;
             }
         };
-        _nameLabel.MouseUp += (_, _) => _dragStart = null;
+        _nameLabel.MouseUp += (_, eventArgs) =>
+        {
+            var shouldReorder = eventArgs.Button == MouseButtons.Left && _reorderDragging;
+            var screenPoint = _nameLabel.PointToScreen(eventArgs.Location);
+            _dragStart = null;
+            _reorderDragging = false;
+            _nameLabel.Capture = false;
+            if (shouldReorder)
+            {
+                ReorderDropRequested?.Invoke(this, new SoundReorderDropEventArgs(screenPoint));
+            }
+        };
         _nameLabel.MouseMove += (_, eventArgs) =>
         {
             if (eventArgs.Button != MouseButtons.Left || _dragStart is not { } dragStart)
@@ -285,8 +300,8 @@ public sealed class SoundCard : UserControl
                 return;
             }
 
-            _dragStart = null;
-            DoDragDrop(this, DragDropEffects.Move);
+            _reorderDragging = true;
+            _nameLabel.Capture = true;
         };
         _volumeTrack.ValueChanged += (_, _) =>
         {
@@ -349,6 +364,7 @@ public sealed class SoundCard : UserControl
         _nameText.TextChanged += (_, _) => UpdateDefinition();
         _keyText.TextChanged += (_, _) => NormalizeKeyAndUpdate();
         _groupText.TextChanged += (_, _) => UpdateDefinition();
+        _groupText.Validated += (_, _) => CommitGroupChange();
         _panValue.ValueChanged += (_, _) => UpdateDefinition();
         _panValue.MouseDown += (_, eventArgs) =>
         {
@@ -409,6 +425,10 @@ public sealed class SoundCard : UserControl
     public event EventHandler? FileBrowseRequested;
 
     public event EventHandler<VolumeFadeRequestedEventArgs>? VolumeFadeRequested;
+
+    public event EventHandler<SoundReorderDropEventArgs>? ReorderDropRequested;
+
+    public event EventHandler<GroupChangedEventArgs>? GroupChangeCommitted;
 
     public void UpdateState(PlaybackState state)
     {
@@ -667,11 +687,47 @@ public sealed class SoundCard : UserControl
         UpdateDefinition();
     }
 
+    private void CommitGroupChange()
+    {
+        var currentGroup = Sound.Group;
+        if (string.Equals(_committedGroup, currentGroup, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var previousGroup = _committedGroup;
+        _committedGroup = currentGroup;
+        GroupChangeCommitted?.Invoke(this, new GroupChangedEventArgs(previousGroup, currentGroup));
+    }
+
     private string SummaryText() => $"キー: {DisplayOrDash(Sound.Key)}   グループ: {DisplayOrDash(Sound.Group)}";
 
     private static string DragLabelText(string name) => $"↕ {name}";
 
     private static string DisplayOrDash(string value) => string.IsNullOrWhiteSpace(value) ? "—" : value;
+}
+
+public sealed class SoundReorderDropEventArgs : EventArgs
+{
+    public SoundReorderDropEventArgs(Point screenPoint)
+    {
+        ScreenPoint = screenPoint;
+    }
+
+    public Point ScreenPoint { get; }
+}
+
+public sealed class GroupChangedEventArgs : EventArgs
+{
+    public GroupChangedEventArgs(string previousGroup, string currentGroup)
+    {
+        PreviousGroup = previousGroup;
+        CurrentGroup = currentGroup;
+    }
+
+    public string PreviousGroup { get; }
+
+    public string CurrentGroup { get; }
 }
 
 public sealed class VolumeFadeRequestedEventArgs : EventArgs

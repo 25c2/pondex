@@ -8,6 +8,7 @@ public sealed class SettingsDialog : Form
     private readonly ComboBox _deviceCombo;
     private readonly CheckBox _backgroundInputCheck;
     private readonly CheckBox _silentLoopCheck;
+    private readonly CheckBox _fadeOutOnStopCheck;
     private readonly TextBox _projectNameText;
     private readonly TextBox _themeColorText;
     private readonly NumericUpDown _soundListColumns;
@@ -20,8 +21,8 @@ public sealed class SettingsDialog : Form
         StartPosition = FormStartPosition.CenterParent;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(560, 346);
-        MinimumSize = new Size(440, 260);
+        ClientSize = new Size(560, 388);
+        MinimumSize = new Size(440, 300);
         DpiWindowHelper.Attach(this);
 
         var root = new TableLayoutPanel
@@ -29,7 +30,7 @@ public sealed class SettingsDialog : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(14),
             ColumnCount = 2,
-            RowCount = 7,
+            RowCount = 8,
             AutoScroll = true
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
@@ -37,6 +38,7 @@ public sealed class SettingsDialog : Form
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
@@ -73,6 +75,12 @@ public sealed class SettingsDialog : Form
             Checked = settings.SilentLoop,
             AutoSize = true
         };
+        _fadeOutOnStopCheck = new CheckBox
+        {
+            Text = "通常の停止操作でFade Outを使う",
+            Checked = settings.FadeOutOnStop,
+            AutoSize = true
+        };
         _soundListColumns = new NumericUpDown
         {
             Minimum = 1,
@@ -91,8 +99,10 @@ public sealed class SettingsDialog : Form
         root.Controls.Add(_backgroundInputCheck, 1, 3);
         root.Controls.Add(new Label { Text = "無音ループ", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 4);
         root.Controls.Add(_silentLoopCheck, 1, 4);
-        root.Controls.Add(new Label { Text = "音源一覧の列数 (1～8)", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 5);
-        root.Controls.Add(_soundListColumns, 1, 5);
+        root.Controls.Add(new Label { Text = "停止時フェード", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 5);
+        root.Controls.Add(_fadeOutOnStopCheck, 1, 5);
+        root.Controls.Add(new Label { Text = "音源一覧の列数 (1～8)", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 6);
+        root.Controls.Add(_soundListColumns, 1, 6);
 
         var buttons = new FlowLayoutPanel
         {
@@ -103,7 +113,7 @@ public sealed class SettingsDialog : Form
         var cancelButton = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, Width = 90, Height = 32 };
         buttons.Controls.Add(okButton);
         buttons.Controls.Add(cancelButton);
-        root.Controls.Add(buttons, 0, 6);
+        root.Controls.Add(buttons, 0, 7);
         root.SetColumnSpan(buttons, 2);
         Controls.Add(root);
         AcceptButton = okButton;
@@ -115,6 +125,8 @@ public sealed class SettingsDialog : Form
     public bool BackgroundInput => _backgroundInputCheck.Checked;
 
     public bool SilentLoop => _silentLoopCheck.Checked;
+
+    public bool FadeOutOnStop => _fadeOutOnStopCheck.Checked;
 
     public int SoundListColumns => (int)_soundListColumns.Value;
 

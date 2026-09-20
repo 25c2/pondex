@@ -20,6 +20,7 @@ public sealed class AudioEngine : IAudioEngine
     private int _deviceNumber = -1;
     private float _masterVolume = 1.0f;
     private bool _masterMute;
+    private bool _fadeOutOnStopEnabled = true;
     private bool _silentLoopEnabled;
     private bool _disposed;
     private int _outputRecoveryQueued;
@@ -88,6 +89,24 @@ public sealed class AudioEngine : IAudioEngine
             {
                 _masterMute = value;
                 ApplyMasterVolume();
+            }
+        }
+    }
+
+    public bool FadeOutOnStopEnabled
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _fadeOutOnStopEnabled;
+            }
+        }
+        set
+        {
+            lock (_sync)
+            {
+                _fadeOutOnStopEnabled = value;
             }
         }
     }
@@ -219,7 +238,15 @@ public sealed class AudioEngine : IAudioEngine
         lock (_sync)
         {
             NextOperationVersion(soundId);
-            StopWithFadeCore(soundId, PlaybackEndReason.Stopped);
+            if (_fadeOutOnStopEnabled)
+            {
+                StopWithFadeCore(soundId, PlaybackEndReason.Stopped);
+            }
+            else
+            {
+                StopCore(soundId, PlaybackEndReason.Stopped);
+            }
+
             StopOutputWhenIdle();
         }
     }
