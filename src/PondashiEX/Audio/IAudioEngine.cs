@@ -28,6 +28,8 @@ public interface IAudioEngine : IDisposable
 
     void Stop(Guid soundId);
 
+    void StopImmediately(Guid soundId);
+
     void Pause(Guid soundId);
 
     void Resume(Guid soundId);

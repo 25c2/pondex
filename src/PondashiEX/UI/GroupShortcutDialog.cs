@@ -1,4 +1,5 @@
 using PondashiEX.Project;
+using PondashiEX.Input;
 
 namespace PondashiEX.UI;
 
@@ -7,7 +8,6 @@ public sealed class GroupShortcutDialog : Form
     private readonly ComboBox _groupCombo;
     private readonly TextBox _keyText;
     private readonly ListView _shortcutList;
-    private readonly KeysConverter _keysConverter = new();
 
     public GroupShortcutDialog(
         IEnumerable<GroupShortcutDefinition> definitions,
@@ -176,7 +176,7 @@ public sealed class GroupShortcutDialog : Form
             return;
         }
 
-        if (!TryNormalizeKey(_keyText.Text, out var key))
+        if (!ShortcutKey.TryNormalize(_keyText.Text, out var key))
         {
             MessageBox.Show(this, "キーは A、2、F1 など、修飾キーを含まない1つのキーで指定してください。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             _keyText.Focus();
@@ -213,38 +213,6 @@ public sealed class GroupShortcutDialog : Form
         };
         item.SubItems.Add(definition.Key);
         _shortcutList.Items.Add(item);
-    }
-
-    private bool TryNormalizeKey(string input, out string normalized)
-    {
-        normalized = string.Empty;
-        var candidate = new string(input.Where(character => !char.IsWhiteSpace(character)).ToArray());
-        if (candidate.Length == 0)
-        {
-            return false;
-        }
-
-        try
-        {
-            if (_keysConverter.ConvertFromInvariantString(candidate.ToUpperInvariant()) is not Keys keys)
-            {
-                return false;
-            }
-
-            var keyCode = keys & Keys.KeyCode;
-            if ((keys & Keys.Modifiers) != Keys.None
-                || keyCode is Keys.None or Keys.ShiftKey or Keys.ControlKey or Keys.Menu)
-            {
-                return false;
-            }
-
-            normalized = _keysConverter.ConvertToInvariantString(keyCode) ?? keyCode.ToString();
-            return normalized.Length > 0;
-        }
-        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or FormatException)
-        {
-            return false;
-        }
     }
 
     private static Label CreateEditorLabel(string text) => new()

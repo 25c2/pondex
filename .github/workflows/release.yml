@@ -75,6 +75,21 @@ jobs:
             exit $LASTEXITCODE
           }
 
+      - name: Smoke test published app
+        shell: pwsh
+        run: |
+          $publishDirectory = "artifacts/PondashiEX-win-x64"
+          $executable = Join-Path $publishDirectory "PondashiEX.exe"
+          $process = Start-Process -FilePath $executable -ArgumentList "--smoke-test" -WindowStyle Hidden -PassThru -Wait
+          if ($process.ExitCode -ne 0) {
+            throw "公開用アプリの起動確認に失敗しました。終了コード: $($process.ExitCode)"
+          }
+
+          $smokeLogs = Join-Path $publishDirectory "Logs"
+          if (Test-Path -LiteralPath $smokeLogs) {
+            Remove-Item -LiteralPath $smokeLogs -Recurse -Force
+          }
+
       - name: Package release
         shell: pwsh
         run: |

@@ -10,6 +10,7 @@ public sealed class TriggerEngine
     private readonly HashSet<Guid> _latchedTriggers = [];
     private readonly TimeProvider _timeProvider;
     private IReadOnlyList<TriggerDefinition> _triggers = [];
+    private DateTimeOffset? _lastTickNow;
 
     public TriggerEngine(TimeProvider? timeProvider = null)
     {
@@ -18,14 +19,25 @@ public sealed class TriggerEngine
 
     public event EventHandler<TriggerFiredEventArgs>? TriggerFired;
 
-    public void SetTriggers(IReadOnlyList<TriggerDefinition> triggers)
+    public void SetTriggers(IReadOnlyList<TriggerDefinition> triggers, bool preserveRuntimeState = false)
     {
         lock (_sync)
         {
             _triggers = triggers;
-            _soundStarted.Clear();
-            _soundEndedSinceTick.Clear();
-            _latchedTriggers.Clear();
+            if (!preserveRuntimeState)
+            {
+                _soundStarted.Clear();
+                _soundEndedSinceTick.Clear();
+                _latchedTriggers.Clear();
+                _lastTickNow = null;
+                return;
+            }
+
+            var triggerIds = triggers
+                .Where(trigger => trigger.Enabled)
+                .Select(trigger => trigger.Id)
+                .ToHashSet();
+            _latchedTriggers.RemoveWhere(triggerId => !triggerIds.Contains(triggerId));
         }
     }
 
@@ -66,7 +78,7 @@ public sealed class TriggerEngine
             fired = [];
             foreach (var trigger in _triggers.Where(trigger => trigger.Enabled))
             {
-                var shouldFire = ShouldFire(trigger, now, stopwatchElapsed);
+                var shouldFire = ShouldFire(trigger, now, stopwatchElapsed, _lastTickNow);
                 if (!shouldFire)
                 {
                     if (trigger.TriggerType is TriggerType.ClockTime or TriggerType.StopwatchElapsed)
@@ -77,13 +89,15 @@ public sealed class TriggerEngine
                     continue;
                 }
 
-                if (trigger.TriggerType == TriggerType.SoundEnded || _latchedTriggers.Add(trigger.Id))
+                if (trigger.TriggerType is TriggerType.ClockTime or TriggerType.SoundEnded
+                    || _latchedTriggers.Add(trigger.Id))
                 {
                     fired.Add(trigger);
                 }
             }
 
             _soundEndedSinceTick.Clear();
+            _lastTickNow = now;
         }
 
         foreach (var trigger in fired)
@@ -97,13 +111,14 @@ public sealed class TriggerEngine
     private bool ShouldFire(
         TriggerDefinition trigger,
         DateTimeOffset now,
-        TimeSpan stopwatchElapsed)
+        TimeSpan stopwatchElapsed,
+        DateTimeOffset? previousNow)
     {
         var parameters = trigger.Parameters;
         return trigger.TriggerType switch
         {
             TriggerType.ClockTime => parameters.ClockTime is { } clockTime
-                && TimeOnly.FromDateTime(now.DateTime) >= clockTime,
+                && CrossedClockTime(previousNow, now, clockTime),
             TriggerType.StopwatchElapsed => parameters.Elapsed is { } stopwatchTarget
                 && stopwatchElapsed >= stopwatchTarget,
             TriggerType.SoundEnded => parameters.SourceSoundId is { } endedSoundId
@@ -114,6 +129,34 @@ public sealed class TriggerEngine
                 && _timeProvider.GetElapsedTime(startedTimestamp) >= soundTarget,
             _ => false
         };
+    }
+
+    private static bool CrossedClockTime(
+        DateTimeOffset? previousNow,
+        DateTimeOffset now,
+        TimeOnly target)
+    {
+        if (previousNow is not { } previous || now <= previous)
+        {
+            return false;
+        }
+
+        var previousAtCurrentOffset = previous.ToOffset(now.Offset);
+        var candidate = new DateTimeOffset(
+            previousAtCurrentOffset.Year,
+            previousAtCurrentOffset.Month,
+            previousAtCurrentOffset.Day,
+            target.Hour,
+            target.Minute,
+            target.Second,
+            target.Millisecond,
+            now.Offset);
+        if (candidate <= previousAtCurrentOffset)
+        {
+            candidate = candidate.AddDays(1);
+        }
+
+        return candidate <= now;
     }
 }
 

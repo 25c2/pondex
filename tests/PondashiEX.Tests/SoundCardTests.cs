@@ -220,6 +220,25 @@ public sealed class SoundCardTests
     }
 
     [Fact]
+    public void InvalidKey_WhenEditingEndsClearsAssignmentAndRaisesNotice()
+    {
+        var sound = new SoundDefinition();
+        using var card = new SoundCard(sound);
+        var keyEditor = Descendants(card)
+            .OfType<TextBox>()
+            .Single(textBox => textBox.MaxLength == 20);
+        var rejected = false;
+        card.InvalidKeyRejected += (_, _) => rejected = true;
+        keyEditor.Text = "い";
+
+        RaiseEvent(keyEditor, "OnValidated", EventArgs.Empty);
+
+        Assert.True(rejected);
+        Assert.Empty(keyEditor.Text);
+        Assert.Empty(sound.Key);
+    }
+
+    [Fact]
     public void LoopStartEditor_StoresSecondsAndClearsLegacySample()
     {
         var sound = new SoundDefinition

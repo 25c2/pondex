@@ -114,7 +114,7 @@ public sealed class MainForm : Form
         _triggerPanel = new TriggerPanel { Dock = DockStyle.Fill };
         _triggerPanel.DefinitionsChanged += (_, _) =>
         {
-            _triggerEngine.SetTriggers(_projectManager.Current.Triggers);
+            _triggerEngine.SetTriggers(_projectManager.Current.Triggers, preserveRuntimeState: true);
             _projectManager.MarkDirty();
         };
         triggersTab.Controls.Add(_triggerPanel);
@@ -596,6 +596,9 @@ public sealed class MainForm : Form
         card.PauseRequested += (_, _) => _audioEngine.Pause(sound.Id);
         card.ResumeRequested += (_, _) => _audioEngine.Resume(sound.Id);
         card.FileBrowseRequested += (_, _) => BrowseReplacementFile(sound, card);
+        card.DeleteRequested += (_, _) => DeleteSound(sound, card);
+        card.InvalidKeyRejected += (_, _) =>
+            SetStatus("使用できないキー名だったため、割り当てを解除しました。A、2、F1などを入力してください。", true);
         card.ReorderDropRequested += (_, eventArgs) => ReorderDraggedSound(card, eventArgs.ScreenPoint);
         card.GroupChangeCommitted += (_, eventArgs) => OnSoundGroupChangeCommitted(eventArgs);
         card.VolumeFadeRequested += (_, eventArgs) =>
@@ -676,10 +679,89 @@ public sealed class MainForm : Form
     private void RefreshTriggerData(bool resetEngine = true)
     {
         _triggerPanel.SetData(_projectManager.Current.Triggers, _projectManager.Current.Sounds);
-        if (resetEngine)
+        _triggerEngine.SetTriggers(
+            _projectManager.Current.Triggers,
+            preserveRuntimeState: !resetEngine);
+    }
+
+    private void DeleteSound(SoundDefinition sound, SoundCard card)
+    {
+        var relatedSettings = CountSoundRemovalReferences(_projectManager.Current, sound);
+        var relatedMessage = relatedSettings == 0
+            ? string.Empty
+            : $"\n\nこの音源を参照するトリガ・グループ設定 {relatedSettings} 件も削除します。";
+        var confirmation = MessageBox.Show(
+            this,
+            $"「{sound.Name}」をプロジェクトから削除しますか？\n音声ファイル自体は削除しません。{relatedMessage}",
+            "音源の削除",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (confirmation != DialogResult.Yes)
         {
-            _triggerEngine.SetTriggers(_projectManager.Current.Triggers);
+            return;
         }
+
+        _audioEngine.StopImmediately(sound.Id);
+        var result = RemoveSoundDefinition(_projectManager.Current, sound.Id);
+        if (!result.Removed)
+        {
+            return;
+        }
+
+        _soundCards.Remove(sound.Id);
+        _soundList.Controls.Remove(card);
+        card.Dispose();
+        RefreshTriggerData(resetEngine: false);
+        ResizeSoundCards();
+        _projectManager.MarkDirty();
+        var suffix = result.RelatedSettingsRemoved == 0
+            ? string.Empty
+            : $"（関連設定 {result.RelatedSettingsRemoved} 件も削除）";
+        SetStatus($"音源を削除しました: {sound.Name}{suffix}", false);
+    }
+
+    internal static int CountSoundRemovalReferences(ProjectModel model, SoundDefinition sound)
+    {
+        var isLastGroupMember = !string.IsNullOrWhiteSpace(sound.Group)
+            && !model.Sounds.Any(candidate => candidate.Id != sound.Id
+                && string.Equals(candidate.Group, sound.Group, StringComparison.OrdinalIgnoreCase));
+        var affectedTriggers = model.Triggers.Count(trigger =>
+            trigger.TargetSoundId == sound.Id
+            || trigger.Parameters.SourceSoundId == sound.Id
+            || (isLastGroupMember
+                && string.Equals(trigger.TargetGroup, sound.Group, StringComparison.OrdinalIgnoreCase)));
+        var affectedShortcuts = isLastGroupMember
+            ? model.GroupShortcuts.Count(shortcut =>
+                string.Equals(shortcut.Group, sound.Group, StringComparison.OrdinalIgnoreCase))
+            : 0;
+        return affectedTriggers + affectedShortcuts;
+    }
+
+    internal static SoundRemovalResult RemoveSoundDefinition(ProjectModel model, Guid soundId)
+    {
+        var sound = model.Sounds.FirstOrDefault(candidate => candidate.Id == soundId);
+        if (sound is null)
+        {
+            return new SoundRemovalResult(false, 0);
+        }
+
+        var removedTriggerCount = model.Triggers.RemoveAll(trigger =>
+            trigger.TargetSoundId == soundId || trigger.Parameters.SourceSoundId == soundId);
+        var removedGroupSettings = 0;
+        var isLastGroupMember = !string.IsNullOrWhiteSpace(sound.Group)
+            && !model.Sounds.Any(candidate => candidate.Id != soundId
+                && string.Equals(candidate.Group, sound.Group, StringComparison.OrdinalIgnoreCase));
+        if (isLastGroupMember)
+        {
+            removedGroupSettings += model.GroupShortcuts.RemoveAll(shortcut =>
+                string.Equals(shortcut.Group, sound.Group, StringComparison.OrdinalIgnoreCase));
+            removedGroupSettings += model.Triggers.RemoveAll(trigger =>
+                string.Equals(trigger.TargetGroup, sound.Group, StringComparison.OrdinalIgnoreCase));
+        }
+
+        model.Sounds.Remove(sound);
+        return new SoundRemovalResult(true, removedTriggerCount + removedGroupSettings);
     }
 
     private void ResizeSoundCards()
@@ -1516,3 +1598,5 @@ public sealed class MainForm : Form
         return string.IsNullOrWhiteSpace(sanitized) ? "show" : sanitized;
     }
 }
+
+internal readonly record struct SoundRemovalResult(bool Removed, int RelatedSettingsRemoved);

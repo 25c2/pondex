@@ -1,5 +1,6 @@
 using System.Globalization;
 using PondashiEX.Audio;
+using PondashiEX.Input;
 using PondashiEX.Project;
 
 namespace PondashiEX.UI;
@@ -215,9 +216,19 @@ public sealed class SoundCard : UserControl
             Margin = Padding.Empty
         };
         var browseButton = new Button { Text = "参照…", Width = 76, Height = 28, Margin = new Padding(4, 0, 0, 0) };
+        var deleteButton = new Button
+        {
+            Text = "この音源を削除…",
+            AutoSize = true,
+            Height = 28,
+            BackColor = Color.FromArgb(255, 225, 225),
+            UseVisualStyleBackColor = false,
+            Margin = new Padding(8, 2, 4, 2)
+        };
         filePanel.Controls.Add(_fileText);
         filePanel.Controls.Add(browseButton);
         AddLabeled(_detailsContent, "ファイル", filePanel);
+        _detailsContent.Controls.Add(deleteButton);
         _toolTip.SetToolTip(_volumeTrack, "0～100%。ホイール、矢印キー、ドラッグで調整できます。");
         _toolTip.SetToolTip(_keyText, "空白は使用できません。A、2、F1などのキー名を入力します。");
         _toolTip.SetToolTip(_panValue, "-100で左、0で中央、+100で右。右クリックで中央へ戻せます。");
@@ -225,6 +236,7 @@ public sealed class SoundCard : UserControl
         _toolTip.SetToolTip(_fadeInCheck, "再生開始時に、無音から設定音量まで指定秒数で上げます。");
         _toolTip.SetToolTip(_fadeOutCheck, "停止時に、指定秒数で音量を下げてから停止します。");
         _toolTip.SetToolTip(_nameLabel, "ここをドラッグして音源を並べ替えます。");
+        _toolTip.SetToolTip(deleteButton, "音声ファイル自体は削除せず、このプロジェクトから登録だけを削除します。");
         _detailsPanel.Controls.Add(_detailsContent);
         root.Controls.Add(_detailsPanel, 0, 3);
         root.SetColumnSpan(_detailsPanel, 4);
@@ -237,6 +249,7 @@ public sealed class SoundCard : UserControl
             PlayRequested?.Invoke(this, EventArgs.Empty);
         };
         browseButton.Click += (_, _) => FileBrowseRequested?.Invoke(this, EventArgs.Empty);
+        deleteButton.Click += (_, _) => DeleteRequested?.Invoke(this, EventArgs.Empty);
         stopButton.Click += (_, _) => StopRequested?.Invoke(this, EventArgs.Empty);
         _pauseButton.Click += (_, _) =>
         {
@@ -363,6 +376,7 @@ public sealed class SoundCard : UserControl
         };
         _nameText.TextChanged += (_, _) => UpdateDefinition();
         _keyText.TextChanged += (_, _) => NormalizeKeyAndUpdate();
+        _keyText.Validated += (_, _) => CommitKeyInput();
         _groupText.TextChanged += (_, _) => UpdateDefinition();
         _groupText.Validated += (_, _) => CommitGroupChange();
         _panValue.ValueChanged += (_, _) => UpdateDefinition();
@@ -423,6 +437,10 @@ public sealed class SoundCard : UserControl
     public event EventHandler? DefinitionChanged;
 
     public event EventHandler? FileBrowseRequested;
+
+    public event EventHandler? DeleteRequested;
+
+    public event EventHandler? InvalidKeyRejected;
 
     public event EventHandler<VolumeFadeRequestedEventArgs>? VolumeFadeRequested;
 
@@ -665,6 +683,32 @@ public sealed class SoundCard : UserControl
         }
 
         UpdateDefinition();
+    }
+
+    private void CommitKeyInput()
+    {
+        if (string.IsNullOrWhiteSpace(_keyText.Text))
+        {
+            return;
+        }
+
+        var valid = ShortcutKey.TryNormalize(_keyText.Text, out var normalized);
+        _normalizingKey = true;
+        try
+        {
+            _keyText.Text = valid ? normalized : string.Empty;
+            _keyText.SelectionStart = _keyText.TextLength;
+        }
+        finally
+        {
+            _normalizingKey = false;
+        }
+
+        UpdateDefinition();
+        if (!valid)
+        {
+            InvalidKeyRejected?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     private void CommitLoopStartInput()

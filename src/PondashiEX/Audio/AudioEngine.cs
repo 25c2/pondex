@@ -251,6 +251,16 @@ public sealed class AudioEngine : IAudioEngine
         }
     }
 
+    public void StopImmediately(Guid soundId)
+    {
+        lock (_sync)
+        {
+            NextOperationVersion(soundId);
+            StopCore(soundId, PlaybackEndReason.Stopped);
+            StopOutputWhenIdle();
+        }
+    }
+
     public void Pause(Guid soundId)
     {
         lock (_sync)

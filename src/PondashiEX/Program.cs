@@ -17,17 +17,21 @@ internal static class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
+        var smokeTest = args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase);
         var (logger, logDirectory) = CreateLogger();
         logger.Info("PondashiEXを起動しました。");
 
         Application.ThreadException += (_, eventArgs) =>
         {
             logger.Error("UIスレッドで未処理例外が発生しました。", eventArgs.Exception);
-            MessageBox.Show(
-                $"予期しないエラーが発生しました。操作を続行できる場合があります。\n\n{eventArgs.Exception.Message}",
-                "PondashiEX",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
+            if (!smokeTest)
+            {
+                MessageBox.Show(
+                    $"予期しないエラーが発生しました。操作を続行できる場合があります。\n\n{eventArgs.Exception.Message}",
+                    "PondashiEX",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
         };
         AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) =>
         {
@@ -52,7 +56,9 @@ internal static class Program
                 return result.Success ? 0 : 2;
             }
 
-            using var audioEngine = new AudioEngine(logger);
+            using var audioEngine = smokeTest
+                ? new AudioEngine(logger, static (_, _) => new SmokeTestAudioOutput())
+                : new AudioEngine(logger);
             var projectManager = new ProjectManager(new ProjectSerializer());
             var triggerEngine = new TriggerEngine();
             var mainForm = new MainForm(
@@ -62,7 +68,7 @@ internal static class Program
                 triggerEngine,
                 logger,
                 logDirectory);
-            if (args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase))
+            if (smokeTest)
             {
                 mainForm.Shown += (_, _) => mainForm.BeginInvoke(mainForm.CloseWithoutSavePromptForSmokeTest);
             }
@@ -73,11 +79,14 @@ internal static class Program
         catch (Exception exception)
         {
             logger.Error("アプリケーションを継続できないエラーが発生しました。", exception);
-            MessageBox.Show(
-                $"PondashiEXを継続できません。\n\n{exception.Message}\n\n詳細は次のログフォルダを確認してください。\n{logDirectory}",
-                "PondashiEX",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
+            if (!smokeTest)
+            {
+                MessageBox.Show(
+                    $"PondashiEXを継続できません。\n\n{exception.Message}\n\n詳細は次のログフォルダを確認してください。\n{logDirectory}",
+                    "PondashiEX",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
             return 1;
         }
         finally
@@ -106,5 +115,22 @@ internal static class Program
                 $"実行フォルダへログを書き込めないため、ユーザーログへ切り替えました: {exception.Message}");
             return (logger, fallbackDirectory);
         }
+    }
+
+    private sealed class SmokeTestAudioOutput : IAudioOutput
+    {
+        public event EventHandler<NAudio.Wave.StoppedEventArgs>? PlaybackStopped
+        {
+            add { }
+            remove { }
+        }
+
+        public NAudio.Wave.PlaybackState PlaybackState { get; private set; }
+
+        public void Play() => PlaybackState = NAudio.Wave.PlaybackState.Playing;
+
+        public void Stop() => PlaybackState = NAudio.Wave.PlaybackState.Stopped;
+
+        public void Dispose() => PlaybackState = NAudio.Wave.PlaybackState.Stopped;
     }
 }

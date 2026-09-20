@@ -89,6 +89,56 @@ public sealed class SoundOrderingTests
     }
 
     [Fact]
+    public void RemoveSoundDefinition_RemovesDirectAndOrphanedGroupReferences()
+    {
+        var sound = new SoundDefinition { Group = "SE" };
+        var model = new ProjectModel
+        {
+            Sounds = [sound],
+            GroupShortcuts = [new GroupShortcutDefinition { Group = "se", Key = "G" }],
+            Triggers =
+            [
+                new TriggerDefinition { TargetSoundId = sound.Id, TargetGroup = "SE" },
+                new TriggerDefinition { Parameters = new TriggerParameters { SourceSoundId = sound.Id } },
+                new TriggerDefinition { TargetGroup = "SE" }
+            ]
+        };
+
+        var references = MainForm.CountSoundRemovalReferences(model, sound);
+        var result = MainForm.RemoveSoundDefinition(model, sound.Id);
+
+        Assert.Equal(4, references);
+        Assert.True(result.Removed);
+        Assert.Equal(4, result.RelatedSettingsRemoved);
+        Assert.Empty(model.Sounds);
+        Assert.Empty(model.GroupShortcuts);
+        Assert.Empty(model.Triggers);
+    }
+
+    [Fact]
+    public void RemoveSoundDefinition_PreservesGroupReferencesWhileAnotherMemberExists()
+    {
+        var removed = new SoundDefinition { Group = "SE" };
+        var remaining = new SoundDefinition { Group = "se" };
+        var groupShortcut = new GroupShortcutDefinition { Group = "SE", Key = "G" };
+        var groupTrigger = new TriggerDefinition { TargetGroup = "SE" };
+        var model = new ProjectModel
+        {
+            Sounds = [removed, remaining],
+            GroupShortcuts = [groupShortcut],
+            Triggers = [groupTrigger]
+        };
+
+        var result = MainForm.RemoveSoundDefinition(model, removed.Id);
+
+        Assert.True(result.Removed);
+        Assert.Equal(0, result.RelatedSettingsRemoved);
+        Assert.Equal(remaining, Assert.Single(model.Sounds));
+        Assert.Equal(groupShortcut, Assert.Single(model.GroupShortcuts));
+        Assert.Equal(groupTrigger, Assert.Single(model.Triggers));
+    }
+
+    [Fact]
     public void GroupShortcutsEqual_RequiresSameOrderAndValues()
     {
         var first = new[] { new GroupShortcutDefinition { Group = "SE", Key = "G" } };

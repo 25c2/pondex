@@ -70,6 +70,27 @@ public sealed class AudioEngineLogicTests
     }
 
     [Fact]
+    public async Task StopImmediately_BypassesFadeOutEvenWhenEnabled()
+    {
+        using var directory = new TestDirectory();
+        var path = CreateWaveFile(directory.GetPath("forced-stop.wav"));
+        using var engine = CreateEngine(out _);
+        var sound = new SoundDefinition
+        {
+            Id = Guid.NewGuid(),
+            Name = "forced stop",
+            FadeOut = new FadeSettings { Enabled = true, Value = 1.0f }
+        };
+
+        await engine.PlayAsync(sound, path);
+        engine.FadeOutOnStopEnabled = true;
+        engine.StopImmediately(sound.Id);
+
+        Assert.Equal(PondashiEX.Audio.PlaybackState.Stopped, engine.GetState(sound.Id));
+        Assert.DoesNotContain(sound.Id, engine.GetActiveSoundIds());
+    }
+
+    [Fact]
     public async Task InvalidSound_DoesNotDestroyAlreadyPlayingSound()
     {
         using var directory = new TestDirectory();
