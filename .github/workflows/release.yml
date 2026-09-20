@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.425
+
+      - name: Validate release tag
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $pattern = '^v(?<version>[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?)$'
+          if ($tag -notmatch $pattern) {
+            throw "タグは v1.2.3 または v1.2.3-beta.1 の形式にしてください: $tag"
+          }
+
+          $version = $Matches.version
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          $commit = $env:GITHUB_SHA
+          & git merge-base --is-ancestor $commit origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "リリースタグはmainに含まれるコミットへ付けてください: $commit"
+          }
+
+      - name: Restore
+        run: dotnet restore PondashiEX.sln --configfile NuGet.Config --locked-mode
+
+      - name: Audit dependencies
+        run: dotnet list PondashiEX.sln package --vulnerable --include-transitive --configfile NuGet.Config
+
+      - name: Verify formatting
+        run: dotnet format PondashiEX.sln --verify-no-changes --no-restore
+
+      - name: Build
+        run: dotnet build PondashiEX.sln --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test PondashiEX.sln --configuration Release --no-build --no-restore
+
+      - name: Publish Windows x64
+        shell: pwsh
+        run: |
+          $project = "src/PondashiEX/PondashiEX.csproj"
+          $output = "artifacts/PondashiEX-win-x64"
+          & dotnet publish $project --configuration Release --runtime win-x64 --self-contained true --no-restore -p:Version=$env:RELEASE_VERSION --output $output
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Package release
+        shell: pwsh
+        run: |
+          $artifactRoot = "artifacts"
+          $publishDirectory = Join-Path $artifactRoot "PondashiEX-win-x64"
+          $archiveName = "PondashiEX-v$env:RELEASE_VERSION-win-x64.zip"
+          $archive = Join-Path $artifactRoot $archiveName
+          $publishContents = Join-Path $publishDirectory "*"
+          Compress-Archive -Path $publishContents -DestinationPath $archive -CompressionLevel Optimal
+
+          $checksumName = "$archiveName.sha256"
+          $checksum = Join-Path $artifactRoot $checksumName
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          $checksumText = "$hash *$archiveName`n"
+          $encoding = [Text.UTF8Encoding]::new($false)
+          [IO.File]::WriteAllText($checksum, $checksumText, $encoding)
+
+          "RELEASE_ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_CHECKSUM=$checksum" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $title = "効果音ポン出しくんEX $tag"
+          $arguments = @(
+            "release", "create", $tag,
+            $env:RELEASE_ARCHIVE,
+            $env:RELEASE_CHECKSUM,
+            "--verify-tag",
+            "--generate-notes",
+            "--title", $title
+          )
+          if ($env:RELEASE_VERSION.Contains("-")) {
+            $arguments += "--prerelease"
+          }
+
+          & gh @arguments
+          exit $LASTEXITCODE

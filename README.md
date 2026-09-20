@@ -84,6 +84,18 @@ dotnet publish src/PondashiEX/PondashiEX.csproj --configuration Release --runtim
 
 `publish/win-x64/`をフォルダごと対象PCへコピーし、`PondashiEX.exe`を起動します。`publish/`はGit管理対象外です。配布するときはフォルダ全体をZIPにまとめてください。
 
+## GitHub Releaseの作成
+
+`main`上のリリース対象コミットへ`v1.2.3`形式のタグを付けてpushすると、GitHub ActionsがReleaseビルドとテストを行い、Windows x64 self-contained版のZIPとSHA-256チェックサムをGitHub Releasesへ自動公開します。
+
+```powershell
+$tag = "v1.0.0"
+git tag -a $tag -m $tag
+git push origin $tag
+```
+
+`v1.0.0-beta.1`のようにハイフンを含むバージョンはPrereleaseとして公開されます。タグの付け直しは履歴と公開済みReleaseの不一致を招くため、バージョンを上げて新しいタグを作成してください。
+
 ## プライバシー
 
 アプリケーション自身はネットワーク通信、自動更新、オンライン認証、利用状況の送信を行いません。プロジェクト、最近使ったファイルの一覧、ログはローカルにだけ保存されます。
