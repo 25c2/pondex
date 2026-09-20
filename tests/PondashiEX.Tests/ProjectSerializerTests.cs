@@ -14,6 +14,7 @@ public sealed class ProjectSerializerTests
         var model = new ProjectModel
         {
             Project = new ProjectMetadata { Name = "文化祭" },
+            Settings = new ProjectSettings { SoundListColumns = 2 },
             Sounds =
             [
                 new SoundDefinition
@@ -21,14 +22,15 @@ public sealed class ProjectSerializerTests
                     Id = soundId,
                     Name = "開演ベル",
                     File = "sounds/bell.ogg",
-                    Key = "A"
+                    Key = "A",
+                    Loop = new LoopSettings { Enabled = true, StartSeconds = 1.25 }
                 }
             ],
             Triggers =
             [
                 new TriggerDefinition
                 {
-                    TargetSoundId = soundId,
+                    TargetGroup = "SE",
                     TriggerType = TriggerType.StopwatchElapsed,
                     Parameters = new TriggerParameters { Elapsed = TimeSpan.FromSeconds(3) },
                     Action = TriggerAction.Play
@@ -43,7 +45,9 @@ public sealed class ProjectSerializerTests
         Assert.Equal(ProjectModel.CurrentFormatVersion, loaded.FormatVersion);
         Assert.Equal("文化祭", loaded.Project.Name);
         Assert.Equal(soundId, Assert.Single(loaded.Sounds).Id);
-        Assert.Equal(soundId, Assert.Single(loaded.Triggers).TargetSoundId);
+        Assert.Equal(2, loaded.Settings.SoundListColumns);
+        Assert.Equal(1.25, Assert.Single(loaded.Sounds).Loop.StartSeconds);
+        Assert.Equal("SE", Assert.Single(loaded.Triggers).TargetGroup);
         Assert.False(File.ReadAllBytes(path).AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }));
     }
 

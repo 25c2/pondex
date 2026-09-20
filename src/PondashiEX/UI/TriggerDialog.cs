@@ -70,7 +70,15 @@ public sealed class TriggerDialog : Form
         var soundItems = sounds.Select(sound => new SoundItem(sound.Id, sound.Name)).ToList();
         _sourceSoundCombo = CreateSoundCombo(soundItems, definition.Parameters.SourceSoundId);
         _actionCombo = CreateEnumCombo<TriggerAction>(definition.Action);
-        _targetSoundCombo = CreateSoundCombo(soundItems, definition.TargetSoundId);
+        var targetItems = soundItems
+            .Select(sound => new TargetItem(sound.Id, null, $"音源: {sound.DisplayName}"))
+            .Concat(sounds
+                .Select(sound => sound.Group.Trim())
+                .Where(group => group.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(group => new TargetItem(null, group, $"グループ: {group}")))
+            .ToList();
+        _targetSoundCombo = CreateTargetCombo(targetItems, definition.TargetSoundId, definition.TargetGroup);
 
         AddRow(root, 0, "状態", _enabledCheck);
         AddRow(root, 1, "メモ", _memoText);
@@ -105,13 +113,20 @@ public sealed class TriggerDialog : Form
 
     private void SaveAndClose()
     {
-        if (_targetSoundCombo.SelectedItem is not SoundItem target)
+        if (_targetSoundCombo.SelectedItem is not TargetItem target)
         {
             MessageBox.Show(this, "アクション対象の音源を選択してください。", "入力確認", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
         var type = (TriggerType)_typeCombo.SelectedItem!;
+        var action = (TriggerAction)_actionCombo.SelectedItem!;
+        if (action == TriggerAction.Play && target.Group is not null)
+        {
+            MessageBox.Show(this, "グループは複数候補があるため、再生アクションでは対象音源を1つ選んでください。グループ全体は停止・一時停止に使用できます。", "入力確認", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
         var needsSource = type is TriggerType.SoundEnded or TriggerType.SoundElapsed;
         if (needsSource && _sourceSoundCombo.SelectedItem is not SoundItem)
         {
@@ -122,8 +137,9 @@ public sealed class TriggerDialog : Form
         Definition.Enabled = _enabledCheck.Checked;
         Definition.Memo = _memoText.Text;
         Definition.TriggerType = type;
-        Definition.Action = (TriggerAction)_actionCombo.SelectedItem!;
-        Definition.TargetSoundId = target.Id;
+        Definition.Action = action;
+        Definition.TargetSoundId = target.SoundId ?? Guid.Empty;
+        Definition.TargetGroup = target.Group ?? string.Empty;
         Definition.Parameters = new TriggerParameters
         {
             ClockTime = type == TriggerType.ClockTime ? TimeOnly.FromDateTime(_clockTime.Value) : null,
@@ -140,7 +156,14 @@ public sealed class TriggerDialog : Form
 
     private void UpdateConditionControls()
     {
-        var type = (TriggerType)_typeCombo.SelectedItem!;
+        if (_typeCombo.SelectedItem is not TriggerType type)
+        {
+            _clockTime.Enabled = false;
+            _elapsedSeconds.Enabled = false;
+            _sourceSoundCombo.Enabled = false;
+            return;
+        }
+
         _clockTime.Enabled = type == TriggerType.ClockTime;
         _elapsedSeconds.Enabled = type is TriggerType.StopwatchElapsed or TriggerType.SoundElapsed;
         _sourceSoundCombo.Enabled = type is TriggerType.SoundEnded or TriggerType.SoundElapsed;
@@ -149,15 +172,34 @@ public sealed class TriggerDialog : Form
     private static ComboBox CreateEnumCombo<TEnum>(TEnum selected)
         where TEnum : struct, Enum
     {
+        var values = Enum.GetValues<TEnum>();
         var combo = new ComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
-            Dock = DockStyle.Fill,
-            DataSource = Enum.GetValues<TEnum>()
+            Dock = DockStyle.Fill
         };
+        combo.Items.AddRange(values.Cast<object>().ToArray());
         combo.SelectedItem = selected;
+        if (combo.SelectedIndex < 0 && values.Length > 0)
+        {
+            combo.SelectedIndex = 0;
+        }
+
+        combo.Format += (_, eventArgs) => eventArgs.Value = DisplayEnum(eventArgs.ListItem);
         return combo;
     }
+
+    private static string DisplayEnum(object? value) => value switch
+    {
+        TriggerType.ClockTime => "指定時刻",
+        TriggerType.StopwatchElapsed => "ストップウォッチ経過時間",
+        TriggerType.SoundEnded => "音源の再生終了",
+        TriggerType.SoundElapsed => "音源の再生経過時間",
+        TriggerAction.Play => "再生",
+        TriggerAction.Stop => "停止",
+        TriggerAction.Pause => "一時停止",
+        _ => value?.ToString() ?? string.Empty
+    };
 
     private static ComboBox CreateSoundCombo(IReadOnlyList<SoundItem> sounds, Guid? selectedId)
     {
@@ -165,13 +207,42 @@ public sealed class TriggerDialog : Form
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
             Dock = DockStyle.Fill,
-            DisplayMember = nameof(SoundItem.DisplayName),
-            DataSource = sounds.ToList()
+            DisplayMember = nameof(SoundItem.DisplayName)
         };
+        combo.Items.AddRange(sounds.Cast<object>().ToArray());
         if (selectedId is { } id)
         {
             combo.SelectedItem = sounds.FirstOrDefault(sound => sound.Id == id);
         }
+
+        if (combo.SelectedIndex < 0 && combo.Items.Count > 0)
+        {
+            combo.SelectedIndex = 0;
+        }
+
+        return combo;
+    }
+
+    private static ComboBox CreateTargetCombo(
+        IReadOnlyList<TargetItem> targets,
+        Guid selectedSoundId,
+        string selectedGroup)
+    {
+        var combo = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Dock = DockStyle.Fill,
+            DisplayMember = nameof(TargetItem.DisplayName)
+        };
+        combo.Items.AddRange(targets.Cast<object>().ToArray());
+        combo.SelectedItem = !string.IsNullOrWhiteSpace(selectedGroup)
+            ? targets.FirstOrDefault(target => string.Equals(target.Group, selectedGroup, StringComparison.OrdinalIgnoreCase))
+            : targets.FirstOrDefault(target => target.SoundId == selectedSoundId);
+        if (combo.SelectedIndex < 0 && combo.Items.Count > 0)
+        {
+            combo.SelectedIndex = 0;
+        }
+
         return combo;
     }
 
@@ -190,4 +261,6 @@ public sealed class TriggerDialog : Form
     {
         public string DisplayName => $"{Name}  [{Id.ToString()[..8]}]";
     }
+
+    private sealed record TargetItem(Guid? SoundId, string? Group, string DisplayName);
 }

@@ -7,6 +7,7 @@ public sealed class TriggerPanel : UserControl
     private readonly DataGridView _grid;
     private IReadOnlyList<SoundDefinition> _sounds = [];
     private List<TriggerDefinition> _triggers = [];
+    private bool _refreshing;
 
     public TriggerPanel()
     {
@@ -17,15 +18,30 @@ public sealed class TriggerPanel : UserControl
             AutoGenerateColumns = false,
             AllowUserToAddRows = false,
             AllowUserToDeleteRows = false,
-            ReadOnly = true,
+            ReadOnly = false,
             RowHeadersVisible = false,
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-            BackgroundColor = SystemColors.Window
+            BackgroundColor = SystemColors.Window,
+            BorderStyle = BorderStyle.FixedSingle,
+            CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
+            SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            MultiSelect = false,
+            AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None,
+            RowTemplate = { Height = 34 },
+            AlternatingRowsDefaultCellStyle = new DataGridViewCellStyle { BackColor = Color.FromArgb(245, 248, 251) },
+            ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
+            {
+                BackColor = Color.FromArgb(225, 231, 237),
+                Font = UiTheme.CreateFont(10F, FontStyle.Bold),
+                Alignment = DataGridViewContentAlignment.MiddleLeft
+            },
+            EnableHeadersVisualStyles = false
         };
-        _grid.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "有効", DataPropertyName = "Enabled", FillWeight = 12 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "メモ", DataPropertyName = "Memo", FillWeight = 35 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "条件", DataPropertyName = "TriggerType", FillWeight = 24 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "操作", DataPropertyName = "Action", FillWeight = 18 });
+        _grid.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "有効", DataPropertyName = nameof(TriggerRow.Enabled), Width = 58, AutoSizeMode = DataGridViewAutoSizeColumnMode.None });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "メモ", DataPropertyName = nameof(TriggerRow.Memo), FillWeight = 24, ReadOnly = true });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "条件", DataPropertyName = nameof(TriggerRow.Condition), FillWeight = 34, ReadOnly = true });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "操作", DataPropertyName = nameof(TriggerRow.Action), FillWeight = 14, ReadOnly = true });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "対象", DataPropertyName = nameof(TriggerRow.Target), FillWeight = 28, ReadOnly = true });
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1 };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -43,7 +59,31 @@ public sealed class TriggerPanel : UserControl
         editButton.Click += (_, _) => EditSelectedTrigger();
         deleteButton.Click += (_, _) => DeleteSelectedTrigger();
         toggleButton.Click += (_, _) => ToggleSelectedTrigger();
-        _grid.CellDoubleClick += (_, _) => EditSelectedTrigger();
+        _grid.CellDoubleClick += (_, eventArgs) =>
+        {
+            if (eventArgs.RowIndex >= 0 && eventArgs.ColumnIndex != 0)
+            {
+                EditSelectedTrigger();
+            }
+        };
+        _grid.CurrentCellDirtyStateChanged += (_, _) =>
+        {
+            if (_grid.IsCurrentCellDirty && _grid.CurrentCell is DataGridViewCheckBoxCell)
+            {
+                _grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
+            }
+        };
+        _grid.CellValueChanged += (_, eventArgs) =>
+        {
+            if (_refreshing || eventArgs.RowIndex < 0 || eventArgs.ColumnIndex != 0
+                || _grid.Rows[eventArgs.RowIndex].DataBoundItem is not TriggerRow row)
+            {
+                return;
+            }
+
+            row.Definition.Enabled = row.Enabled;
+            DefinitionsChanged?.Invoke(this, EventArgs.Empty);
+        };
     }
 
     public event EventHandler? DefinitionsChanged;
@@ -56,7 +96,7 @@ public sealed class TriggerPanel : UserControl
     }
 
     private TriggerDefinition? SelectedTrigger =>
-        _grid.CurrentRow?.DataBoundItem as TriggerDefinition;
+        (_grid.CurrentRow?.DataBoundItem as TriggerRow)?.Definition;
 
     private void AddTrigger()
     {
@@ -125,7 +165,76 @@ public sealed class TriggerPanel : UserControl
 
     private void RefreshGrid()
     {
-        _grid.DataSource = null;
-        _grid.DataSource = _triggers.ToList();
+        _refreshing = true;
+        try
+        {
+            _grid.DataSource = null;
+            _grid.DataSource = _triggers.Select(trigger => new TriggerRow(
+                trigger,
+                trigger.Memo,
+                DescribeCondition(trigger),
+                DescribeAction(trigger.Action),
+                DescribeTarget(trigger))).ToList();
+        }
+        finally
+        {
+            _refreshing = false;
+        }
+    }
+
+    private string DescribeCondition(TriggerDefinition trigger) => trigger.TriggerType switch
+    {
+        TriggerType.ClockTime => $"指定時刻 {trigger.Parameters.ClockTime:HH:mm:ss}",
+        TriggerType.StopwatchElapsed => $"SW {trigger.Parameters.Elapsed?.TotalSeconds:0.0}秒経過",
+        TriggerType.SoundEnded => $"{SoundName(trigger.Parameters.SourceSoundId)} の再生終了",
+        TriggerType.SoundElapsed => $"{SoundName(trigger.Parameters.SourceSoundId)} の再生から {trigger.Parameters.Elapsed?.TotalSeconds:0.0}秒",
+        _ => trigger.TriggerType.ToString()
+    };
+
+    private static string DescribeAction(TriggerAction action) => action switch
+    {
+        TriggerAction.Play => "再生",
+        TriggerAction.Stop => "停止",
+        TriggerAction.Pause => "一時停止",
+        _ => action.ToString()
+    };
+
+    private string DescribeTarget(TriggerDefinition trigger)
+    {
+        if (!string.IsNullOrWhiteSpace(trigger.TargetGroup))
+        {
+            return $"グループ: {trigger.TargetGroup}";
+        }
+
+        return SoundName(trigger.TargetSoundId);
+    }
+
+    private string SoundName(Guid? soundId) => soundId is { } id
+        ? _sounds.FirstOrDefault(sound => sound.Id == id)?.Name ?? $"不明 [{id.ToString()[..8]}]"
+        : "未指定";
+
+    private sealed class TriggerRow
+    {
+        public TriggerRow(TriggerDefinition definition, string memo, string condition, string action, string target)
+        {
+            Definition = definition;
+            Enabled = definition.Enabled;
+            Memo = memo;
+            Condition = condition;
+            Action = action;
+            Target = target;
+        }
+
+        public TriggerDefinition Definition { get; }
+
+        public bool Enabled { get; set; }
+
+        public string Memo { get; }
+
+        public string Condition { get; }
+
+        public string Action { get; }
+
+        public string Target { get; }
     }
 }

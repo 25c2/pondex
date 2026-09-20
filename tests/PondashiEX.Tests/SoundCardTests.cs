@@ -97,6 +97,78 @@ public sealed class SoundCardTests
         Assert.True(detailsButton.Focused);
     }
 
+    [Fact]
+    public void EnablingFadeWithZeroSeconds_SetsUsableOneSecondDefault()
+    {
+        var sound = new SoundDefinition();
+        using var card = new SoundCard(sound);
+        var fadeIn = Descendants(card)
+            .OfType<CheckBox>()
+            .Single(checkBox => checkBox.Text == "Fade In");
+
+        fadeIn.Checked = true;
+
+        Assert.True(sound.FadeIn.Enabled);
+        Assert.Equal(1.0f, sound.FadeIn.Value);
+    }
+
+    [Fact]
+    public void ExistingEnabledFadeWithZeroSeconds_IsNormalizedToOneSecond()
+    {
+        var sound = new SoundDefinition
+        {
+            FadeOut = new FadeSettings { Enabled = true, Value = 0 }
+        };
+
+        using var card = new SoundCard(sound);
+
+        Assert.Equal(1.0f, sound.FadeOut.Value);
+    }
+
+    [Fact]
+    public void VolumeChange_UpdatesVisiblePercentage()
+    {
+        using var card = new SoundCard(new SoundDefinition());
+        var volume = Descendants(card).OfType<TrackBar>().Single();
+
+        volume.Value = 42;
+
+        Assert.Contains(Descendants(card).OfType<Label>(), label => label.Text == "42%");
+    }
+
+    [Fact]
+    public void KeyEditor_RemovesWhitespaceThatCannotBeUsedAsShortcut()
+    {
+        var sound = new SoundDefinition();
+        using var card = new SoundCard(sound);
+        var keyEditor = Descendants(card)
+            .OfType<TextBox>()
+            .Single(textBox => textBox.MaxLength == 20);
+
+        keyEditor.Text = " A 2 ";
+
+        Assert.Equal("A2", keyEditor.Text);
+        Assert.Equal("A2", sound.Key);
+    }
+
+    [Fact]
+    public void LoopStartEditor_StoresSecondsAndClearsLegacySample()
+    {
+        var sound = new SoundDefinition
+        {
+            Loop = new LoopSettings { Enabled = true, StartSample = 44_100 }
+        };
+        using var card = new SoundCard(sound);
+        var loopStart = Descendants(card)
+            .OfType<NumericUpDown>()
+            .Single(numeric => numeric.DecimalPlaces == 2 && numeric.Maximum == 24 * 60 * 60);
+
+        loopStart.Value = 2.5m;
+
+        Assert.Equal(2.5, sound.Loop.StartSeconds);
+        Assert.Equal(0, sound.Loop.StartSample);
+    }
+
     private static Button DetailsButton(SoundCard card) => Descendants(card)
         .OfType<Button>()
         .Single(button => button.Text.StartsWith("詳細", StringComparison.Ordinal));

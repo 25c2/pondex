@@ -38,6 +38,8 @@ public sealed class ProjectSettings
     public bool SilentLoop { get; set; }
 
     public bool BackgroundInput { get; set; }
+
+    public int SoundListColumns { get; set; } = 1;
 }
 
 public sealed class SoundDefinition
@@ -72,6 +74,8 @@ public sealed class LoopSettings
     public bool Enabled { get; set; }
 
     public long StartSample { get; set; }
+
+    public double StartSeconds { get; set; }
 }
 
 public sealed class FadeSettings
@@ -113,6 +117,8 @@ public sealed class TriggerDefinition
     public TriggerAction Action { get; set; }
 
     public Guid TargetSoundId { get; set; }
+
+    public string TargetGroup { get; set; } = string.Empty;
 }
 
 public sealed class TriggerParameters

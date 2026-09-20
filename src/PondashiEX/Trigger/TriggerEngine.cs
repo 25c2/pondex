@@ -7,6 +7,7 @@ public sealed class TriggerEngine
     private readonly object _sync = new();
     private readonly Dictionary<Guid, long> _soundStarted = [];
     private readonly HashSet<Guid> _soundEndedSinceTick = [];
+    private readonly HashSet<Guid> _latchedTriggers = [];
     private readonly TimeProvider _timeProvider;
     private IReadOnlyList<TriggerDefinition> _triggers = [];
 
@@ -24,6 +25,7 @@ public sealed class TriggerEngine
             _triggers = triggers;
             _soundStarted.Clear();
             _soundEndedSinceTick.Clear();
+            _latchedTriggers.Clear();
         }
     }
 
@@ -33,6 +35,12 @@ public sealed class TriggerEngine
         {
             _soundStarted[soundId] = _timeProvider.GetTimestamp();
             _soundEndedSinceTick.Remove(soundId);
+            foreach (var trigger in _triggers.Where(item =>
+                         item.TriggerType == TriggerType.SoundElapsed
+                         && item.Parameters.SourceSoundId == soundId))
+            {
+                _latchedTriggers.Remove(trigger.Id);
+            }
         }
     }
 
@@ -55,15 +63,24 @@ public sealed class TriggerEngine
         List<TriggerDefinition> fired;
         lock (_sync)
         {
-            fired = _triggers
-                .Where(trigger => trigger.Enabled)
-                .Where(trigger => ShouldFire(trigger, now, stopwatchElapsed))
-                .ToList();
-
-            foreach (var trigger in fired)
+            fired = [];
+            foreach (var trigger in _triggers.Where(trigger => trigger.Enabled))
             {
-                // 再入や遅いアクションでも二重発火しないよう、実行通知より先に無効化する。
-                trigger.Enabled = false;
+                var shouldFire = ShouldFire(trigger, now, stopwatchElapsed);
+                if (!shouldFire)
+                {
+                    if (trigger.TriggerType is TriggerType.ClockTime or TriggerType.StopwatchElapsed)
+                    {
+                        _latchedTriggers.Remove(trigger.Id);
+                    }
+
+                    continue;
+                }
+
+                if (trigger.TriggerType == TriggerType.SoundEnded || _latchedTriggers.Add(trigger.Id))
+                {
+                    fired.Add(trigger);
+                }
             }
 
             _soundEndedSinceTick.Clear();

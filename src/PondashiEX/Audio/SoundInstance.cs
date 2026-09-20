@@ -55,7 +55,10 @@ internal sealed class SoundInstance : IDisposable
         var decoder = AudioDecoderFactory.Open(path);
         try
         {
-            ISampleProvider provider = new LoopProvider(decoder, definition.Loop.Enabled, definition.Loop.StartSample);
+            var loopStartSample = definition.Loop.StartSeconds > 0
+                ? (long)Math.Round(definition.Loop.StartSeconds * decoder.WaveFormat.SampleRate)
+                : definition.Loop.StartSample;
+            ISampleProvider provider = new LoopProvider(decoder, definition.Loop.Enabled, loopStartSample);
             provider = NormalizeChannels(provider);
 
             if (provider.WaveFormat.SampleRate != mixerFormat.SampleRate)

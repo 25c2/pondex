@@ -80,7 +80,7 @@ public sealed class MainForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 104));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
         root.Controls.Add(menu, 0, 0);
 
         var header = BuildHeader(
@@ -98,11 +98,12 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             AutoScroll = true,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
             BackColor = Color.FromArgb(224, 228, 232),
             Padding = new Padding(4)
         };
+        _soundList.MouseDown += (_, _) => EndTextEditing();
         soundsTab.Controls.Add(_soundList);
         var triggersTab = new TabPage("イベントトリガ") { Padding = new Padding(4) };
         _triggerPanel = new TriggerPanel { Dock = DockStyle.Fill };
@@ -116,8 +117,22 @@ public sealed class MainForm : Form
         tabs.TabPages.Add(triggersTab);
         root.Controls.Add(tabs, 0, 2);
 
-        var statusStrip = new StatusStrip { SizingGrip = false };
-        _statusLabel = new ToolStripStatusLabel("準備完了") { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
+        var statusStrip = new StatusStrip
+        {
+            SizingGrip = false,
+            Dock = DockStyle.Fill,
+            BackColor = Color.FromArgb(245, 247, 249),
+            RenderMode = ToolStripRenderMode.System,
+            Padding = new Padding(6, 2, 6, 2)
+        };
+        _statusLabel = new ToolStripStatusLabel("状態: 準備完了")
+        {
+            Spring = true,
+            TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = SystemColors.ControlText,
+            BorderSides = ToolStripStatusLabelBorderSides.Top,
+            BorderStyle = Border3DStyle.Etched
+        };
         statusStrip.Items.Add(_statusLabel);
         root.Controls.Add(statusStrip, 0, 3);
         Controls.Add(root);
@@ -173,11 +188,14 @@ public sealed class MainForm : Form
         {
             ShortcutKeyDisplayString = "Ctrl+R"
         };
-        operations.DropDownItems.Add(stopAllItem);
+        var diagnostics = new ToolStripMenuItem("動作診断(&D)…", null, async (_, _) => await RunSelfTestAsync());
+        operations.DropDownItems.AddRange([stopAllItem, new ToolStripSeparator(), diagnostics]);
 
         var settings = new ToolStripMenuItem("設定(&S)", null, (_, _) => ShowSettings());
-        var diagnostics = new ToolStripMenuItem("動作診断(&D)…", null, async (_, _) => await RunSelfTestAsync());
-        menu.Items.AddRange([file, operations, settings, diagnostics]);
+        var help = new ToolStripMenuItem("ヘルプ(&H)");
+        var usage = new ToolStripMenuItem("使い方(&H)…", null, (_, _) => ShowHelp());
+        help.DropDownItems.Add(usage);
+        menu.Items.AddRange([file, operations, settings, help]);
         return menu;
     }
 
@@ -199,7 +217,7 @@ public sealed class MainForm : Form
         };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 37));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 23));
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
@@ -207,10 +225,11 @@ public sealed class MainForm : Form
         header.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
 
         projectLabel = HeaderLabel("プロジェクト: 新しいプロジェクト", 11, FontStyle.Bold);
-        deviceLabel = HeaderLabel("出力: Windows 既定", 9, FontStyle.Regular);
-        clockModeLabel = HeaderLabel("現在時刻", 9, FontStyle.Bold);
-        clockLabel = HeaderLabel("00:00:00", 22, FontStyle.Bold);
+        deviceLabel = HeaderLabel("出力: Windows 既定", 10, FontStyle.Regular);
+        clockModeLabel = HeaderLabel("現在時刻", 10, FontStyle.Bold);
+        clockLabel = HeaderLabel("00:00:00", 20, FontStyle.Bold);
         clockLabel.TextAlign = ContentAlignment.MiddleCenter;
+        clockLabel.AutoEllipsis = false;
 
         var addButton = HeaderButton("＋ 音源追加", Color.FromArgb(225, 235, 245));
         var stopAllButton = HeaderButton("■ 全停止", Color.FromArgb(220, 65, 65));
@@ -225,24 +244,40 @@ public sealed class MainForm : Form
             Minimum = 0,
             Maximum = 100,
             TickFrequency = 10,
+            TickStyle = TickStyle.None,
             Value = 100,
             Dock = DockStyle.Fill
         };
         masterVolume = masterVolumeControl;
+        var masterVolumeLabel = new Label
+        {
+            Text = "100%",
+            ForeColor = Color.White,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleRight,
+            Font = UiTheme.CreateFont(9F, FontStyle.Bold)
+        };
         var masterMuteControl = new CheckBox
         {
-            Text = "MUTE",
+            Text = "ミュート",
             ForeColor = Color.White,
-            AutoSize = true,
+            Appearance = Appearance.Button,
+            AutoSize = false,
             Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.MiddleCenter
+            TextAlign = ContentAlignment.MiddleCenter,
+            Font = UiTheme.CreateFont(10F, FontStyle.Bold),
+            BackColor = Color.FromArgb(58, 63, 68),
+            UseVisualStyleBackColor = false,
+            Margin = new Padding(8, 4, 8, 4)
         };
         masterMute = masterMuteControl;
-        var masterPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2 };
-        masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58));
+        var masterPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3 };
+        masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64));
         masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        masterPanel.Controls.Add(HeaderLabel("MASTER", 8, FontStyle.Bold), 0, 0);
+        masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
+        masterPanel.Controls.Add(HeaderLabel("MASTER", 9, FontStyle.Bold), 0, 0);
         masterPanel.Controls.Add(masterVolumeControl, 1, 0);
+        masterPanel.Controls.Add(masterVolumeLabel, 2, 0);
 
         header.Controls.Add(projectLabel, 0, 0);
         header.Controls.Add(deviceLabel, 0, 1);
@@ -286,6 +321,7 @@ public sealed class MainForm : Form
         };
         masterVolumeControl.ValueChanged += (_, _) =>
         {
+            masterVolumeLabel.Text = $"{masterVolumeControl.Value}%";
             if (_applyingProjectSettings)
             {
                 return;
@@ -298,6 +334,7 @@ public sealed class MainForm : Form
         };
         masterMuteControl.CheckedChanged += (_, _) =>
         {
+            UpdateMuteAppearance(masterMuteControl);
             if (_applyingProjectSettings)
             {
                 return;
@@ -307,6 +344,7 @@ public sealed class MainForm : Form
             _projectManager.Current.Settings.MasterMute = masterMuteControl.Checked;
             _projectManager.MarkDirty();
         };
+        UpdateMuteAppearance(masterMuteControl);
         return header;
     }
 
@@ -317,7 +355,7 @@ public sealed class MainForm : Form
         Dock = DockStyle.Fill,
         AutoEllipsis = true,
         TextAlign = ContentAlignment.MiddleLeft,
-        Font = new Font(SystemFonts.DefaultFont.FontFamily, size, style)
+        Font = UiTheme.CreateFont(size, style)
     };
 
     private static Button HeaderButton(string text, Color color) => new()
@@ -327,7 +365,7 @@ public sealed class MainForm : Form
         BackColor = color,
         UseVisualStyleBackColor = false,
         Margin = new Padding(4),
-        Font = new Font(SystemFonts.DefaultFont.FontFamily, 9, FontStyle.Bold)
+        Font = UiTheme.CreateFont(10F, FontStyle.Bold)
     };
 
     private async Task NewProjectAsync()
@@ -440,7 +478,7 @@ public sealed class MainForm : Form
     {
         using var dialog = new OpenFileDialog
         {
-            Filter = "対応音声 (*.wav;*.mp3;*.ogg;*.opus)|*.wav;*.mp3;*.ogg;*.opus|すべてのファイル (*.*)|*.*",
+            Filter = AudioFileFormats.OpenFileFilter,
             Multiselect = true,
             CheckFileExists = true
         };
@@ -452,7 +490,7 @@ public sealed class MainForm : Form
 
     private void AddSoundFiles(IEnumerable<string> paths)
     {
-        var added = 0;
+        var added = new List<SoundDefinition>();
         foreach (var path in paths)
         {
             if (!IsSupportedAudioFile(path))
@@ -461,14 +499,28 @@ public sealed class MainForm : Form
                 continue;
             }
 
-            _projectManager.AddSound(path);
-            added++;
+            added.Add(_projectManager.AddSound(path));
         }
 
-        if (added > 0)
+        if (added.Count > 0)
         {
-            RebuildSoundCards();
-            SetStatus($"音源を{added}件追加しました。", false);
+            _soundList.SuspendLayout();
+            try
+            {
+                foreach (var sound in added)
+                {
+                    AddSoundCard(sound);
+                }
+
+                ResizeSoundCards();
+            }
+            finally
+            {
+                _soundList.ResumeLayout();
+            }
+
+            RefreshTriggerData(resetEngine: false);
+            SetStatus($"音源を{added.Count}件追加しました。", false);
         }
     }
 
@@ -477,33 +529,20 @@ public sealed class MainForm : Form
         _soundList.SuspendLayout();
         try
         {
+            foreach (var existing in _soundList.Controls.Cast<Control>().ToArray())
+            {
+                existing.Dispose();
+            }
+
             _soundList.Controls.Clear();
             _soundCards.Clear();
             foreach (var sound in _projectManager.Current.Sounds)
             {
-                var card = new SoundCard(sound);
-                card.PlayRequested += async (_, _) => await PlaySoundAsync(sound.Id);
-                card.StopRequested += (_, _) => _audioEngine.Stop(sound.Id);
-                card.PauseRequested += (_, _) => _audioEngine.Pause(sound.Id);
-                card.ResumeRequested += (_, _) => _audioEngine.Resume(sound.Id);
-                card.VolumeFadeRequested += (_, eventArgs) =>
-                {
-                    _audioEngine.FadeVolume(sound.Id, eventArgs.TargetVolume, eventArgs.Duration);
-                    _projectManager.MarkDirty();
-                };
-                card.DefinitionChanged += (_, _) =>
-                {
-                    _audioEngine.ApplyLiveSettings(sound);
-                    _projectManager.MarkDirty();
-                };
-                card.UpdateState(_audioEngine.GetState(sound.Id));
-                _soundCards[sound.Id] = card;
-                _soundList.Controls.Add(card);
+                AddSoundCard(sound);
             }
 
             ResizeSoundCards();
-            _triggerPanel.SetData(_projectManager.Current.Triggers, _projectManager.Current.Sounds);
-            _triggerEngine.SetTriggers(_projectManager.Current.Triggers);
+            RefreshTriggerData();
         }
         finally
         {
@@ -511,13 +550,79 @@ public sealed class MainForm : Form
         }
     }
 
+    private void AddSoundCard(SoundDefinition sound)
+    {
+        var card = new SoundCard(sound);
+        card.PlayRequested += async (_, _) => await PlaySoundAsync(sound.Id);
+        card.StopRequested += (_, _) => _audioEngine.Stop(sound.Id);
+        card.PauseRequested += (_, _) => _audioEngine.Pause(sound.Id);
+        card.ResumeRequested += (_, _) => _audioEngine.Resume(sound.Id);
+        card.FileBrowseRequested += (_, _) => BrowseReplacementFile(sound, card);
+        card.VolumeFadeRequested += (_, eventArgs) =>
+        {
+            _audioEngine.FadeVolume(sound.Id, eventArgs.TargetVolume, eventArgs.Duration);
+            _projectManager.MarkDirty();
+        };
+        card.DefinitionChanged += (_, _) =>
+        {
+            _audioEngine.ApplyLiveSettings(sound);
+            _projectManager.MarkDirty();
+        };
+        card.UpdateState(_audioEngine.GetState(sound.Id));
+        _soundCards[sound.Id] = card;
+        _soundList.Controls.Add(card);
+    }
+
+    private void RefreshTriggerData(bool resetEngine = true)
+    {
+        _triggerPanel.SetData(_projectManager.Current.Triggers, _projectManager.Current.Sounds);
+        if (resetEngine)
+        {
+            _triggerEngine.SetTriggers(_projectManager.Current.Triggers);
+        }
+    }
+
     private void ResizeSoundCards()
     {
-        var width = Math.Max(720, _soundList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 20);
+        var availableWidth = Math.Max(480, _soundList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 20);
+        var requestedColumns = Math.Clamp(_projectManager.Current.Settings.SoundListColumns, 1, 2);
+        var columns = requestedColumns == 2 && availableWidth >= 980 ? 2 : 1;
+        var width = Math.Max(480, (availableWidth - ((columns - 1) * 12)) / columns);
         foreach (var card in _soundCards.Values)
         {
             card.Width = width;
         }
+    }
+
+    private void BrowseReplacementFile(SoundDefinition sound, SoundCard card)
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Filter = AudioFileFormats.OpenFileFilter,
+            CheckFileExists = true,
+            Multiselect = false,
+            Title = $"{sound.Name} の音声ファイルを差し替え"
+        };
+        try
+        {
+            var currentPath = _projectManager.ResolveSoundPath(sound);
+            dialog.InitialDirectory = Path.GetDirectoryName(currentPath);
+            dialog.FileName = Path.GetFileName(currentPath);
+        }
+        catch
+        {
+            // 壊れた旧パスでも参照ダイアログ自体は利用できるようにする。
+        }
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        _audioEngine.Stop(sound.Id);
+        _projectManager.ReplaceSoundFile(sound, dialog.FileName);
+        card.UpdateFilePath(sound.File);
+        SetStatus($"音声ファイルを差し替えました: {sound.Name}", false);
     }
 
     private async Task PlaySoundAsync(Guid soundId)
@@ -592,12 +697,14 @@ public sealed class MainForm : Form
         settings.OutputDevice = selectedDevice.PersistentId;
         settings.BackgroundInput = dialog.BackgroundInput;
         settings.SilentLoop = dialog.SilentLoop;
+        settings.SoundListColumns = dialog.SoundListColumns;
         _projectManager.Current.Project.Name = string.IsNullOrWhiteSpace(dialog.ProjectName)
             ? "名称未設定"
             : dialog.ProjectName;
         _projectManager.Current.Project.ThemeColor = dialog.ThemeColor;
         _projectManager.MarkDirty();
         ApplyProjectSettings();
+        ResizeSoundCards();
     }
 
     private async Task RunSelfTestAsync()
@@ -724,12 +831,7 @@ public sealed class MainForm : Form
     {
         UpdateClockDisplay();
         CheckSelectedDeviceAvailability();
-        var fired = _triggerEngine.Tick(DateTimeOffset.Now, _stopwatch.Elapsed);
-        if (fired.Count > 0)
-        {
-            _projectManager.MarkDirty();
-            _triggerPanel.SetData(_projectManager.Current.Triggers, _projectManager.Current.Sounds);
-        }
+        _triggerEngine.Tick(DateTimeOffset.Now, _stopwatch.Elapsed);
     }
 
     private void CheckSelectedDeviceAvailability()
@@ -770,7 +872,7 @@ public sealed class MainForm : Form
         if (_stopwatchMode)
         {
             _clockModeLabel.Text = _stopwatch.IsRunning ? "ストップウォッチ（計測中）" : "ストップウォッチ（停止）";
-            _clockLabel.Text = _stopwatch.Elapsed.ToString(@"hh\:mm\:ss\.f", CultureInfo.InvariantCulture);
+            _clockLabel.Text = _stopwatch.Elapsed.ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
             _clockLabel.ForeColor = _stopwatch.IsRunning ? Color.LightGreen : Color.Khaki;
         }
         else
@@ -784,17 +886,38 @@ public sealed class MainForm : Form
     private void OnTriggerFired(object? sender, TriggerFiredEventArgs eventArgs)
     {
         var trigger = eventArgs.Trigger;
-        switch (trigger.Action)
+        if (trigger.Action == TriggerAction.Play && !string.IsNullOrWhiteSpace(trigger.TargetGroup))
         {
-            case TriggerAction.Play:
-                _ = PlaySoundAsync(trigger.TargetSoundId);
-                break;
-            case TriggerAction.Stop:
-                _audioEngine.Stop(trigger.TargetSoundId);
-                break;
-            case TriggerAction.Pause:
-                _audioEngine.Pause(trigger.TargetSoundId);
-                break;
+            SetStatus($"グループ「{trigger.TargetGroup}」は再生対象を1つに決められません。トリガ設定で音源を指定してください。", true);
+            return;
+        }
+
+        var targetIds = (string.IsNullOrWhiteSpace(trigger.TargetGroup)
+            ? [trigger.TargetSoundId]
+            : _projectManager.Current.Sounds
+                .Where(sound => string.Equals(sound.Group, trigger.TargetGroup, StringComparison.OrdinalIgnoreCase))
+                .Select(sound => sound.Id)
+                .ToArray()).Where(id => id != Guid.Empty).ToArray();
+        if (targetIds.Length == 0)
+        {
+            SetStatus($"イベントの対象が見つかりません: {trigger.Memo}", true);
+            return;
+        }
+
+        foreach (var targetId in targetIds)
+        {
+            switch (trigger.Action)
+            {
+                case TriggerAction.Play:
+                    _ = PlaySoundAsync(targetId);
+                    break;
+                case TriggerAction.Stop:
+                    _audioEngine.Stop(targetId);
+                    break;
+                case TriggerAction.Pause:
+                    _audioEngine.Pause(targetId);
+                    break;
+            }
         }
 
         SetStatus($"イベントを実行しました: {trigger.Memo}", false);
@@ -1017,6 +1140,37 @@ public sealed class MainForm : Form
         };
     }
 
+    private void EndTextEditing()
+    {
+        if (!IsEditingText())
+        {
+            return;
+        }
+
+        var focusedCard = _soundCards.Values.FirstOrDefault(card => card.ContainsFocus);
+        if (focusedCard is not null)
+        {
+            focusedCard.EndEditing();
+        }
+        else
+        {
+            ActiveControl = null;
+        }
+    }
+
+    private void ShowHelp()
+    {
+        using var dialog = new HelpDialog();
+        dialog.ShowDialog(this);
+    }
+
+    private static void UpdateMuteAppearance(CheckBox mute)
+    {
+        mute.Text = mute.Checked ? "ミュート中" : "ミュート";
+        mute.BackColor = mute.Checked ? Color.FromArgb(210, 62, 62) : Color.FromArgb(58, 63, 68);
+        mute.ForeColor = Color.White;
+    }
+
     private static Control? FindFocusedControl(ContainerControl container)
     {
         var active = container.ActiveControl;
@@ -1030,7 +1184,7 @@ public sealed class MainForm : Form
 
     private void SetStatus(string message, bool error)
     {
-        _statusLabel.Text = message;
+        _statusLabel.Text = $"状態: {message}";
         _statusLabel.ForeColor = error ? Color.DarkRed : SystemColors.ControlText;
     }
 
@@ -1057,11 +1211,7 @@ public sealed class MainForm : Form
 
     private static bool IsSupportedAudioFile(string path)
     {
-        var extension = Path.GetExtension(path);
-        return extension.Equals(".wav", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".ogg", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".opus", StringComparison.OrdinalIgnoreCase);
+        return AudioFileFormats.IsSupported(path);
     }
 
     private static string SanitizeFileName(string name)

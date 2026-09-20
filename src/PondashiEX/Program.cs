@@ -13,6 +13,7 @@ internal static class Program
     private static int Main(string[] args)
     {
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        Application.SetDefaultFont(UiTheme.CreateFont(10F));
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 

@@ -12,12 +12,14 @@ public sealed class SoundCard : UserControl
     private readonly Button _pauseButton;
     private readonly Button _detailsButton;
     private readonly TrackBar _volumeTrack;
+    private readonly Label _volumeLabel;
     private readonly Panel _detailsPanel;
     private readonly FlowLayoutPanel _detailsContent;
     private readonly TextBox _keyText;
     private readonly TextBox _groupText;
     private readonly TextBox _nameText;
     private readonly TextBox _memoText;
+    private readonly TextBox _fileText;
     private readonly NumericUpDown _panValue;
     private readonly NumericUpDown _pitchValue;
     private readonly CheckBox _loopCheck;
@@ -27,8 +29,11 @@ public sealed class SoundCard : UserControl
     private readonly CheckBox _fadeOutCheck;
     private readonly NumericUpDown _fadeOutValue;
     private readonly Dictionary<Control, object> _editSnapshots = [];
+    private readonly ToolTip _toolTip = new();
     private PlaybackState _state;
     private bool _suppressVolumeChanged;
+    private bool _normalizingKey;
+    private bool _loopSecondsEdited;
 
     public SoundCard(SoundDefinition sound)
     {
@@ -37,7 +42,7 @@ public sealed class SoundCard : UserControl
         BorderStyle = BorderStyle.FixedSingle;
         BackColor = Color.FromArgb(245, 245, 245);
         Margin = new Padding(6);
-        MinimumSize = new Size(620, CollapsedHeight);
+        MinimumSize = new Size(480, CollapsedHeight);
         Height = CollapsedHeight;
 
         var root = new TableLayoutPanel
@@ -48,10 +53,10 @@ public sealed class SoundCard : UserControl
             Padding = new Padding(8)
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 94));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 94));
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 94));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 84));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 84));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 84));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
@@ -89,24 +94,34 @@ public sealed class SoundCard : UserControl
             Minimum = 0,
             Maximum = 100,
             TickFrequency = 10,
+            TickStyle = TickStyle.None,
             Value = (int)(Math.Clamp(sound.Volume, 0, 1) * 100),
             Dock = DockStyle.Fill
         };
-        var volumePanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2 };
+        _volumeLabel = new Label
+        {
+            Text = $"{_volumeTrack.Value}%",
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleRight,
+            Font = UiTheme.CreateFont(9F, FontStyle.Bold)
+        };
+        var volumePanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3 };
         volumePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
         volumePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        volumePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
         volumePanel.Controls.Add(new Label { Text = "音量", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter }, 0, 0);
         volumePanel.Controls.Add(_volumeTrack, 1, 0);
+        volumePanel.Controls.Add(_volumeLabel, 2, 0);
 
         root.Controls.Add(_nameLabel, 0, 0);
-        root.SetColumnSpan(_nameLabel, 2);
-        root.Controls.Add(_summaryLabel, 2, 0);
-        root.SetColumnSpan(_summaryLabel, 3);
+        root.Controls.Add(_summaryLabel, 1, 0);
+        root.SetColumnSpan(_summaryLabel, 4);
         root.Controls.Add(_stateLabel, 5, 0);
-        root.Controls.Add(playButton, 1, 1);
-        root.Controls.Add(stopButton, 2, 1);
-        root.Controls.Add(_pauseButton, 3, 1);
-        root.Controls.Add(volumePanel, 4, 1);
+        root.Controls.Add(volumePanel, 0, 1);
+        root.SetColumnSpan(volumePanel, 2);
+        root.Controls.Add(playButton, 2, 1);
+        root.Controls.Add(stopButton, 3, 1);
+        root.Controls.Add(_pauseButton, 4, 1);
         root.Controls.Add(_detailsButton, 5, 1);
 
         _detailsPanel = new Panel
@@ -140,9 +155,14 @@ public sealed class SoundCard : UserControl
         _loopStart = new NumericUpDown
         {
             Minimum = 0,
-            Maximum = long.MaxValue,
-            Value = Math.Max(0, sound.Loop.StartSample),
-            Width = 120
+            Maximum = 24 * 60 * 60,
+            DecimalPlaces = 2,
+            Increment = 0.10m,
+            Value = (decimal)Math.Clamp(
+                sound.Loop.StartSeconds > 0 ? sound.Loop.StartSeconds : sound.Loop.StartSample / 44_100.0,
+                0,
+                24 * 60 * 60),
+            Width = 92
         };
         _pitchValue = new NumericUpDown
         {
@@ -154,8 +174,10 @@ public sealed class SoundCard : UserControl
             Width = 68
         };
         _fadeInCheck = new CheckBox { Text = "Fade In", Checked = sound.FadeIn.Enabled, AutoSize = true };
+        sound.FadeIn.Value = NormalizeFadeValue(sound.FadeIn);
         _fadeInValue = CreateFadeValue(sound.FadeIn.Value);
         _fadeOutCheck = new CheckBox { Text = "Fade Out", Checked = sound.FadeOut.Enabled, AutoSize = true };
+        sound.FadeOut.Value = NormalizeFadeValue(sound.FadeOut);
         _fadeOutValue = CreateFadeValue(sound.FadeOut.Value);
         _memoText = new TextBox { Text = sound.Memo, Width = 230 };
         AddLabeled(_detailsContent, "名前", _nameText);
@@ -163,21 +185,34 @@ public sealed class SoundCard : UserControl
         AddLabeled(_detailsContent, "グループ", _groupText);
         AddLabeled(_detailsContent, "Pan", _panValue);
         AddLabeled(_detailsContent, "Pitch", _pitchValue);
-        _detailsContent.Controls.Add(_loopCheck);
-        AddLabeled(_detailsContent, "開始sample", _loopStart);
-        _detailsContent.Controls.Add(_fadeInCheck);
-        AddLabeled(_detailsContent, "秒", _fadeInValue);
-        _detailsContent.Controls.Add(_fadeOutCheck);
-        AddLabeled(_detailsContent, "秒", _fadeOutValue);
+        AddToggleValue(_detailsContent, _loopCheck, "開始（秒）", _loopStart);
+        AddToggleValue(_detailsContent, _fadeInCheck, "秒", _fadeInValue);
+        AddToggleValue(_detailsContent, _fadeOutCheck, "秒", _fadeOutValue);
         AddLabeled(_detailsContent, "メモ", _memoText);
-        var fileText = new TextBox
+        _fileText = new TextBox
         {
             Text = sound.File,
             ReadOnly = true,
-            Width = 330,
+            Width = 280,
             TabStop = false
         };
-        AddLabeled(_detailsContent, "ファイル", fileText);
+        var filePanel = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            Margin = Padding.Empty
+        };
+        var browseButton = new Button { Text = "参照…", Width = 76, Height = 28, Margin = new Padding(4, 0, 0, 0) };
+        filePanel.Controls.Add(_fileText);
+        filePanel.Controls.Add(browseButton);
+        AddLabeled(_detailsContent, "ファイル", filePanel);
+        _toolTip.SetToolTip(_volumeTrack, "0～100%。ホイール、矢印キー、ドラッグで調整できます。");
+        _toolTip.SetToolTip(_keyText, "空白は使用できません。A、2、F1などのキー名を入力します。");
+        _toolTip.SetToolTip(_panValue, "-100で左、0で中央、+100で右。右クリックで中央へ戻せます。");
+        _toolTip.SetToolTip(_loopStart, "音源末尾からループで戻る位置を秒で指定します。0なら先頭へ戻ります。");
+        _toolTip.SetToolTip(_fadeInCheck, "再生開始時に、無音から設定音量まで指定秒数で上げます。");
+        _toolTip.SetToolTip(_fadeOutCheck, "停止時や同じグループの切替時に、指定秒数で下げてから停止します。");
         _detailsPanel.Controls.Add(_detailsContent);
         root.Controls.Add(_detailsPanel, 0, 2);
         root.SetColumnSpan(_detailsPanel, 6);
@@ -185,6 +220,7 @@ public sealed class SoundCard : UserControl
         Controls.Add(root);
 
         playButton.Click += (_, _) => PlayRequested?.Invoke(this, EventArgs.Empty);
+        browseButton.Click += (_, _) => FileBrowseRequested?.Invoke(this, EventArgs.Empty);
         stopButton.Click += (_, _) => StopRequested?.Invoke(this, EventArgs.Empty);
         _pauseButton.Click += (_, _) =>
         {
@@ -212,6 +248,7 @@ public sealed class SoundCard : UserControl
         };
         _volumeTrack.ValueChanged += (_, _) =>
         {
+            _volumeLabel.Text = $"{_volumeTrack.Value}%";
             if (_suppressVolumeChanged)
             {
                 return;
@@ -256,15 +293,34 @@ public sealed class SoundCard : UserControl
             }
         };
         _nameText.TextChanged += (_, _) => UpdateDefinition();
-        _keyText.TextChanged += (_, _) => UpdateDefinition();
+        _keyText.TextChanged += (_, _) => NormalizeKeyAndUpdate();
         _groupText.TextChanged += (_, _) => UpdateDefinition();
         _panValue.ValueChanged += (_, _) => UpdateDefinition();
+        _panValue.MouseDown += (_, eventArgs) =>
+        {
+            if (eventArgs.Button == MouseButtons.Right)
+            {
+                _panValue.Value = 0;
+            }
+        };
         _pitchValue.ValueChanged += (_, _) => UpdateDefinition();
         _loopCheck.CheckedChanged += (_, _) => UpdateDefinition();
-        _loopStart.ValueChanged += (_, _) => UpdateDefinition();
-        _fadeInCheck.CheckedChanged += (_, _) => UpdateDefinition();
+        _loopStart.ValueChanged += (_, _) =>
+        {
+            _loopSecondsEdited = true;
+            UpdateDefinition();
+        };
+        _fadeInCheck.CheckedChanged += (_, _) =>
+        {
+            SetDefaultFadeSecondsWhenEnabled(_fadeInCheck, _fadeInValue);
+            UpdateDefinition();
+        };
         _fadeInValue.ValueChanged += (_, _) => UpdateDefinition();
-        _fadeOutCheck.CheckedChanged += (_, _) => UpdateDefinition();
+        _fadeOutCheck.CheckedChanged += (_, _) =>
+        {
+            SetDefaultFadeSecondsWhenEnabled(_fadeOutCheck, _fadeOutValue);
+            UpdateDefinition();
+        };
         _fadeOutValue.ValueChanged += (_, _) => UpdateDefinition();
         _memoText.TextChanged += (_, _) => UpdateDefinition();
 
@@ -294,6 +350,8 @@ public sealed class SoundCard : UserControl
 
     public event EventHandler? DefinitionChanged;
 
+    public event EventHandler? FileBrowseRequested;
+
     public event EventHandler<VolumeFadeRequestedEventArgs>? VolumeFadeRequested;
 
     public void UpdateState(PlaybackState state)
@@ -309,6 +367,23 @@ public sealed class SoundCard : UserControl
         _pauseButton.Text = state == PlaybackState.Paused ? "▶ 再開" : "Ⅱ 一時停止";
     }
 
+    internal void EndEditing() => _detailsButton.Focus();
+
+    internal void UpdateFilePath(string path)
+    {
+        _fileText.Text = path;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _toolTip.Dispose();
+        }
+
+        base.Dispose(disposing);
+    }
+
     private static Button CreateButton(string text, Color color) => new()
     {
         Text = text,
@@ -316,18 +391,51 @@ public sealed class SoundCard : UserControl
         BackColor = color,
         UseVisualStyleBackColor = false,
         Margin = new Padding(4),
-        Font = new Font(SystemFonts.DefaultFont.FontFamily, 10, FontStyle.Bold)
+        Font = UiTheme.CreateFont(10F, FontStyle.Bold)
     };
 
     private static void AddLabeled(FlowLayoutPanel panel, string text, Control control)
     {
-        panel.Controls.Add(new Label
+        var field = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            Margin = new Padding(4, 2, 4, 2)
+        };
+        field.Controls.Add(new Label
         {
             Text = text,
             AutoSize = true,
-            Margin = new Padding(8, 7, 2, 0)
+            Margin = new Padding(4, 7, 2, 0)
         });
-        panel.Controls.Add(control);
+        field.Controls.Add(control);
+        panel.Controls.Add(field);
+    }
+
+    private static void AddToggleValue(
+        FlowLayoutPanel panel,
+        CheckBox toggle,
+        string valueLabel,
+        Control valueControl)
+    {
+        var field = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            Margin = new Padding(4, 2, 4, 2)
+        };
+        toggle.Margin = new Padding(4, 5, 4, 0);
+        field.Controls.Add(toggle);
+        field.Controls.Add(new Label
+        {
+            Text = valueLabel,
+            AutoSize = true,
+            Margin = new Padding(2, 7, 2, 0)
+        });
+        field.Controls.Add(valueControl);
+        panel.Controls.Add(field);
     }
 
     private static NumericUpDown CreateFadeValue(float value) => new()
@@ -339,6 +447,17 @@ public sealed class SoundCard : UserControl
         Value = (decimal)Math.Clamp(value, 0, 60),
         Width = 70
     };
+
+    private static float NormalizeFadeValue(FadeSettings settings) =>
+        settings.Enabled && settings.Value <= 0 ? 1.0f : Math.Clamp(settings.Value, 0, 60);
+
+    private static void SetDefaultFadeSecondsWhenEnabled(CheckBox toggle, NumericUpDown value)
+    {
+        if (toggle.Checked && value.Value <= 0)
+        {
+            value.Value = 1.00m;
+        }
+    }
 
     private void RegisterEditor(Control editor)
     {
@@ -431,7 +550,11 @@ public sealed class SoundCard : UserControl
         Sound.Pan = (float)_panValue.Value / 100.0f;
         Sound.Pitch = (float)_pitchValue.Value;
         Sound.Loop.Enabled = _loopCheck.Checked;
-        Sound.Loop.StartSample = (long)_loopStart.Value;
+        if (_loopSecondsEdited)
+        {
+            Sound.Loop.StartSeconds = (double)_loopStart.Value;
+            Sound.Loop.StartSample = 0;
+        }
         Sound.FadeIn.Enabled = _fadeInCheck.Checked;
         Sound.FadeIn.Value = (float)_fadeInValue.Value;
         Sound.FadeOut.Enabled = _fadeOutCheck.Checked;
@@ -440,6 +563,32 @@ public sealed class SoundCard : UserControl
         _nameLabel.Text = Sound.Name;
         _summaryLabel.Text = SummaryText();
         DefinitionChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void NormalizeKeyAndUpdate()
+    {
+        if (_normalizingKey)
+        {
+            return;
+        }
+
+        var normalized = new string(_keyText.Text.Where(character => !char.IsWhiteSpace(character)).ToArray());
+        if (!string.Equals(normalized, _keyText.Text, StringComparison.Ordinal))
+        {
+            _normalizingKey = true;
+            try
+            {
+                var selectionStart = Math.Min(normalized.Length, _keyText.SelectionStart);
+                _keyText.Text = normalized;
+                _keyText.SelectionStart = selectionStart;
+            }
+            finally
+            {
+                _normalizingKey = false;
+            }
+        }
+
+        UpdateDefinition();
     }
 
     private string SummaryText() => $"キー: {DisplayOrDash(Sound.Key)}   グループ: {DisplayOrDash(Sound.Group)}";

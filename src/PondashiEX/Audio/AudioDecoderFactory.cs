@@ -19,6 +19,8 @@ internal static class AudioDecoderFactory
             ".mp3" => OpenOwned(path, static stream => new ManagedMpegStream(stream, closeOnDispose: false)),
             ".ogg" => OpenOgg(path),
             ".opus" => new OpusWaveReader(path),
+            ".aif" or ".aiff" => OpenOwned(path, static stream => new AiffFileReader(stream)),
+            ".flac" or ".m4a" or ".aac" or ".wma" => new MediaFoundationReader(path),
             _ => throw new NotSupportedException($"未対応の音声形式です: {Path.GetExtension(path)}")
         };
     }

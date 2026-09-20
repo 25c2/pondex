@@ -43,6 +43,7 @@ internal static class AudioSelfTest
             }
 
             results.Add(await TestPitchAndLoopAsync(wavPath, logger, cancellationToken));
+            results.Add(await TestFadeAsync(wavPath, logger, cancellationToken));
             results.Add(await TestSilentLoopAsync(logger, cancellationToken));
 
             results.Add(TestKeyboardHook());
@@ -146,6 +147,55 @@ internal static class AudioSelfTest
         finally
         {
             engine.SilentLoopEnabled = false;
+        }
+    }
+
+    private static async Task<AudioSelfTestItem> TestFadeAsync(
+        string path,
+        IAppLogger logger,
+        CancellationToken cancellationToken)
+    {
+        const string name = "Fade In + Fade Out actual output";
+        using var engine = new AudioEngine(logger);
+        var sound = new SoundDefinition
+        {
+            Id = Guid.NewGuid(),
+            Name = name,
+            File = path,
+            Loop = new LoopSettings { Enabled = true },
+            FadeIn = new FadeSettings { Enabled = true, Value = 0.25f },
+            FadeOut = new FadeSettings { Enabled = true, Value = 0.25f }
+        };
+        var failure = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.PlaybackFailed += (_, eventArgs) => failure.TrySetResult(eventArgs.Exception.Message);
+
+        try
+        {
+            engine.SelectOutputDevice(-1);
+            await engine.PlayAsync(sound, path, cancellationToken);
+            await Task.Delay(TimeSpan.FromMilliseconds(350), cancellationToken);
+            engine.Stop(sound.Id);
+            var fadingState = engine.GetState(sound.Id);
+            await Task.Delay(TimeSpan.FromMilliseconds(350), cancellationToken);
+            if (failure.Task.IsCompleted)
+            {
+                return new AudioSelfTestItem(name, false, await failure.Task);
+            }
+
+            var finalState = engine.GetState(sound.Id);
+            return new AudioSelfTestItem(
+                name,
+                fadingState == PondashiEX.Audio.PlaybackState.Fading
+                    && finalState == PondashiEX.Audio.PlaybackState.Stopped,
+                $"afterStop={fadingState}, afterFade={finalState}");
+        }
+        catch (Exception exception)
+        {
+            return new AudioSelfTestItem(name, false, exception.Message);
+        }
+        finally
+        {
+            engine.StopAll();
         }
     }
 

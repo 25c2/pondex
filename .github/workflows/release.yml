@@ -36,9 +36,9 @@ jobs:
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
-          $pattern = '^v(?<version>[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?)$'
+          $pattern = '^v(?<version>[0-9]+\.[0-9]+(?:\.[0-9]+(?:\.[0-9]+)?)?(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?)$'
           if ($tag -notmatch $pattern) {
-            throw "タグは v26.09.20、v26.09.20.1 または v26.09.20-beta.1 の形式にしてください: $tag"
+            throw "タグは v0.2、v0.2.1、v26.09.20.1 または v26.09.20-beta.1 の形式にしてください: $tag"
           }
 
           $version = $Matches.version

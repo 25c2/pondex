@@ -42,6 +42,7 @@ public sealed class ProjectManager
 
         await _serializer.SaveAsync(CurrentPath, Current, cancellationToken);
         IsDirty = false;
+        ProjectChanged?.Invoke(this, EventArgs.Empty);
     }
 
     public async Task SaveAsAsync(string path, CancellationToken cancellationToken = default)
@@ -89,6 +90,16 @@ public sealed class ProjectManager
         Current.Sounds.Add(sound);
         MarkDirty();
         return sound;
+    }
+
+    public void ReplaceSoundFile(SoundDefinition sound, string audioFilePath)
+    {
+        ArgumentNullException.ThrowIfNull(sound);
+        ArgumentException.ThrowIfNullOrWhiteSpace(audioFilePath);
+        sound.File = CurrentPath is null
+            ? Path.GetFullPath(audioFilePath)
+            : ProjectPath.ToStoredPath(CurrentPath, audioFilePath);
+        MarkDirty();
     }
 
     public string ResolveSoundPath(SoundDefinition sound)

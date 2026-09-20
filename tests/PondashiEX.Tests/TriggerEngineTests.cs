@@ -6,7 +6,7 @@ namespace PondashiEX.Tests;
 public sealed class TriggerEngineTests
 {
     [Fact]
-    public void Tick_FiresFourTriggerKindsAndAutomaticallyDisablesThem()
+    public void Tick_FiresFourTriggerKindsWithoutChangingSavedEnabledState()
     {
         var now = new DateTimeOffset(2026, 9, 19, 19, 30, 0, TimeSpan.FromHours(9));
         var sourceEnded = Guid.NewGuid();
@@ -32,7 +32,7 @@ public sealed class TriggerEngineTests
         var fired = engine.Tick(now, TimeSpan.FromSeconds(6));
 
         Assert.Equal(4, fired.Count);
-        Assert.All(triggers, trigger => Assert.False(trigger.Enabled));
+        Assert.All(triggers, trigger => Assert.True(trigger.Enabled));
         Assert.Empty(engine.Tick(now + TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(7)));
     }
 
@@ -65,7 +65,44 @@ public sealed class TriggerEngineTests
         var fired = engine.Tick(nowInTokyo, TimeSpan.Zero);
 
         Assert.Single(fired);
-        Assert.False(trigger.Enabled);
+        Assert.True(trigger.Enabled);
+    }
+
+    [Fact]
+    public void StopwatchElapsed_RearmsAfterReset()
+    {
+        var trigger = CreateTrigger(
+            TriggerType.StopwatchElapsed,
+            new TriggerParameters { Elapsed = TimeSpan.FromSeconds(5) });
+        var engine = new TriggerEngine(new ManualTimeProvider());
+        engine.SetTriggers([trigger]);
+        var now = DateTimeOffset.Now;
+
+        Assert.Single(engine.Tick(now, TimeSpan.FromSeconds(5)));
+        Assert.Empty(engine.Tick(now, TimeSpan.FromSeconds(6)));
+        Assert.Empty(engine.Tick(now, TimeSpan.Zero));
+        Assert.Single(engine.Tick(now, TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public void SoundElapsed_RearmsWhenSourceStartsAgain()
+    {
+        var sourceId = Guid.NewGuid();
+        var trigger = CreateTrigger(
+            TriggerType.SoundElapsed,
+            new TriggerParameters { SourceSoundId = sourceId, Elapsed = TimeSpan.FromSeconds(2) });
+        var timeProvider = new ManualTimeProvider();
+        var engine = new TriggerEngine(timeProvider);
+        engine.SetTriggers([trigger]);
+
+        engine.OnSoundStarted(sourceId);
+        timeProvider.Advance(TimeSpan.FromSeconds(2));
+        Assert.Single(engine.Tick(DateTimeOffset.Now, TimeSpan.Zero));
+        Assert.Empty(engine.Tick(DateTimeOffset.Now, TimeSpan.Zero));
+
+        engine.OnSoundStarted(sourceId);
+        timeProvider.Advance(TimeSpan.FromSeconds(2));
+        Assert.Single(engine.Tick(DateTimeOffset.Now, TimeSpan.Zero));
     }
 
     private static TriggerDefinition CreateTrigger(TriggerType type, TriggerParameters parameters) => new()

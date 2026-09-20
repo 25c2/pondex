@@ -251,6 +251,7 @@ public sealed class ProjectSerializer
         model.Project.ThemeColor ??= "#202020";
         model.Settings.OutputDevice ??= "default";
         model.Settings.MasterVolume = Math.Clamp(model.Settings.MasterVolume, 0.0f, 1.0f);
+        model.Settings.SoundListColumns = Math.Clamp(model.Settings.SoundListColumns, 1, 2);
 
         model.Sounds = (model.Sounds ?? []).OfType<SoundDefinition>().ToList();
         var soundIds = new HashSet<Guid>();
@@ -272,6 +273,7 @@ public sealed class ProjectSerializer
             sound.Pitch = Math.Clamp(sound.Pitch, 0.5f, 2.0f);
             sound.Loop ??= new LoopSettings();
             sound.Loop.StartSample = Math.Max(0, sound.Loop.StartSample);
+            sound.Loop.StartSeconds = Math.Clamp(sound.Loop.StartSeconds, 0.0, 24 * 60 * 60);
             sound.FadeIn ??= new FadeSettings();
             sound.FadeOut ??= new FadeSettings();
             sound.FadeIn.Value = Math.Clamp(sound.FadeIn.Value, 0.0f, 60.0f);
@@ -289,6 +291,7 @@ public sealed class ProjectSerializer
             }
 
             trigger.Memo ??= string.Empty;
+            trigger.TargetGroup ??= string.Empty;
             trigger.Parameters ??= new TriggerParameters();
         }
     }
