@@ -18,6 +18,32 @@ public sealed class AudioDecoderFactoryTests
         DecodeEmbeddedAudio("tone.ogg", AudioSelfTestFixtures.OggBase64);
     }
 
+    [Theory]
+    [InlineData("tone.ogg")]
+    [InlineData("tone.opus")]
+    public void Open_DecodesManagedOggOpusWithoutExternalCodec(string fileName)
+    {
+        DecodeEmbeddedAudio(fileName, AudioSelfTestFixtures.OpusBase64);
+    }
+
+    [Fact]
+    public void Open_OggOpusCanRewindForLooping()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("tone.ogg");
+        File.WriteAllBytes(path, Convert.FromBase64String(AudioSelfTestFixtures.OpusBase64));
+
+        using var decoder = AudioDecoderFactory.Open(path);
+        var first = new byte[4_096];
+        var firstRead = decoder.Read(first, 0, first.Length);
+        decoder.Position = 0;
+        var repeated = new byte[4_096];
+        var repeatedRead = decoder.Read(repeated, 0, repeated.Length);
+
+        Assert.Equal(firstRead, repeatedRead);
+        Assert.Equal(first.AsSpan(0, firstRead), repeated.AsSpan(0, repeatedRead));
+    }
+
     private static void DecodeEmbeddedAudio(string fileName, string base64)
     {
         using var directory = new TestDirectory();
@@ -35,4 +61,3 @@ public sealed class AudioDecoderFactoryTests
         }
     }
 }
-

@@ -47,8 +47,13 @@ public sealed class ShortcutManager
 
         try
         {
-            var converted = _converter.ConvertFromInvariantString(assignedKey);
+            var normalized = assignedKey.Trim().ToUpperInvariant();
+            var converted = _converter.ConvertFromInvariantString(normalized);
             return converted is Keys key && (key & Keys.KeyCode) == pressedKey;
+        }
+        catch (ArgumentException)
+        {
+            return false;
         }
         catch (NotSupportedException)
         {
@@ -60,4 +65,3 @@ public sealed class ShortcutManager
         }
     }
 }
-

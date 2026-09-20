@@ -88,6 +88,7 @@
 - JSON: `System.Text.Json`
 - 音声処理: NAudioを中心に構成
 - Ogg Vorbis: NVorbis / NAudio.Vorbis等のmanaged decoderを同梱
+- Ogg Opus: Concentus系のmanaged decoderを同梱
 - MP3: OS側コーデックへの依存を避け、managed decoderを同梱することを推奨（例: NLayer系）
 - ログ: UTF-8プレーンテキスト
 - DB: 使用しない
@@ -174,7 +175,7 @@ GUIの再生ボタン ─┐
 概念構成:
 
 ```text
-WAV / MP3 / Ogg
+WAV / MP3 / Ogg Vorbis / Ogg Opus
       ↓
    Decoder
       ↓
@@ -199,6 +200,7 @@ WAV / MP3 / Ogg
 - WAV
 - MP3
 - Ogg Vorbis
+- Ogg Opus
 
 可能であればOSにインストールされた外部コーデックに依存しない。
 
@@ -705,7 +707,7 @@ show.pondex.bak
 最低限、以下を満たした場合にEX v1.0の基本完成とする。
 
 1. 対象の古いWindows 10音響PCで、追加インストールなしに起動できる。
-2. WAV / MP3 / Oggを登録・再生できる。
+2. WAV / MP3 / Ogg Vorbis / Ogg Opusを登録・再生できる。
 3. 複数音源を同時に再生できる。
 4. 再生・停止・一時停止がGUIから行える。
 5. 音量、パン、ピッチ、ループ、ループ開始点、フェード、グループが動作する。

@@ -46,8 +46,10 @@ internal static class SoakSelfTest
         Directory.CreateDirectory(tempDirectory);
         var mp3Path = Path.Combine(tempDirectory, "soak.mp3");
         var oggPath = Path.Combine(tempDirectory, "soak.ogg");
+        var opusPath = Path.Combine(tempDirectory, "soak-opus.ogg");
         File.WriteAllBytes(mp3Path, Convert.FromBase64String(AudioSelfTestFixtures.Mp3Base64));
         File.WriteAllBytes(oggPath, Convert.FromBase64String(AudioSelfTestFixtures.OggBase64));
+        File.WriteAllBytes(opusPath, Convert.FromBase64String(AudioSelfTestFixtures.OpusBase64));
 
         var process = Process.GetCurrentProcess();
         var startHandles = 0;
@@ -67,6 +69,7 @@ internal static class SoakSelfTest
                 engine.SilentLoopEnabled = true;
                 DecodeEntireFile(mp3Path);
                 DecodeEntireFile(oggPath);
+                DecodeEntireFile(opusPath);
                 await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
                 process.Refresh();
                 startHandles = process.HandleCount;
@@ -81,6 +84,7 @@ internal static class SoakSelfTest
                     cancellationToken.ThrowIfCancellationRequested();
                     DecodeEntireFile(mp3Path);
                     DecodeEntireFile(oggPath);
+                    DecodeEntireFile(opusPath);
                     iterations++;
 
                     await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);

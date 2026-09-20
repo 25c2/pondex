@@ -29,12 +29,14 @@ internal static class AudioSelfTest
             WriteSineWave(wavPath);
             var mp3Path = WriteFixture(tempDirectory, "self-test.mp3", AudioSelfTestFixtures.Mp3Base64);
             var oggPath = WriteFixture(tempDirectory, "self-test.ogg", AudioSelfTestFixtures.OggBase64);
+            var opusPath = WriteFixture(tempDirectory, "self-test-opus.ogg", AudioSelfTestFixtures.OpusBase64);
 
             foreach (var (name, path) in new[]
             {
                 ("WAV actual output", wavPath),
                 ("MP3 managed decode + actual output", mp3Path),
-                ("Ogg Vorbis managed decode + actual output", oggPath)
+                ("Ogg Vorbis managed decode + actual output", oggPath),
+                ("Ogg Opus managed decode + actual output", opusPath)
             })
             {
                 results.Add(await TestPlaybackAsync(name, path, logger, cancellationToken));

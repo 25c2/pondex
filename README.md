@@ -9,7 +9,7 @@ BGM／効果音再生用、オフライン動作のWindows向けポン出しア�
 
 ## 主な機能
 
-- WAV／MP3／Ogg Vorbisの再生と複数音源の同時ミックス
+- WAV／MP3／Ogg Vorbis／Ogg Opusの再生と複数音源の同時ミックス
 - 音量、左右バランス、Pitch、Loop、Fade In／Fade Out
 - Group単位の排他再生とクロスフェード
 - キーアサイン、バックグラウンド入力、常設の「全停止」ボタン
@@ -39,6 +39,8 @@ BGM／効果音再生用、オフライン動作のWindows向けポン出しア�
 
 音量バーは通常操作で即時変更されます。`Fade Out`を有効にして音量バー上を右クリックすると、指定位置の音量まで設定秒数でフェードします。同じGroupの別音源を再生した場合、旧音源にFade Out設定があればクロスフェードになります。
 
+名前、キー、Group、メモなどの入力中は、`Enter`で確定、`Esc`で入力開始時の値へ戻して編集を終了できます。カード内の余白をクリックして確定することもできます。
+
 ## プロジェクトと音声ファイル
 
 プロジェクトを保存すると、同じフォルダまたは配下にある音声は原則として相対パスで記録されます。別PCへ移すときは、`.pondex`と音声ファイルの位置関係を保ったままフォルダごとコピーしてください。
@@ -47,7 +49,7 @@ BGM／効果音再生用、オフライン動作のWindows向けポン出しア�
 
 ## 動作診断
 
-GUIの「動作診断…」では、WAV／MP3／Ogg、Pitch＋Loop開始sample、無音ループ、バックグラウンド入力フック、DPIモードを実機確認します。短いテスト音が鳴ります。
+GUIの「動作診断…」では、WAV／MP3／Ogg Vorbis／Ogg Opus、Pitch＋Loop開始sample、無音ループ、バックグラウンド入力フック、DPIモードを実機確認します。短いテスト音が鳴ります。
 
 GUIを開かずに実行する場合は次のコマンドを使用します。
 
@@ -55,7 +57,7 @@ GUIを開かずに実行する場合は次のコマンドを使用します。
 PondashiEX.exe --audio-self-test
 ```
 
-長時間運転診断では、無音出力を維持しながらmanaged MP3／Oggの生成・破棄を繰り返し、出力sample数、反復回数、メモリ、ハンドル数を記録します。次は120分実行する例です。
+長時間運転診断では、無音出力を維持しながらmanaged MP3／Ogg Vorbis／Ogg Opusの生成・破棄を繰り返し、出力sample数、反復回数、メモリ、ハンドル数を記録します。次は120分実行する例です。
 
 ```powershell
 PondashiEX.exe --soak-test-minutes=120
@@ -86,15 +88,15 @@ dotnet publish src/PondashiEX/PondashiEX.csproj --configuration Release --runtim
 
 ## GitHub Releaseの作成
 
-`main`上のリリース対象コミットへ`v1.2.3`形式のタグを付けてpushすると、GitHub ActionsがReleaseビルドとテストを行い、Windows x64 self-contained版のZIPとSHA-256チェックサムをGitHub Releasesへ自動公開します。
+`main`上のリリース対象コミットへ`vYY.MM.DD`形式のタグを付けてpushすると、GitHub ActionsがReleaseビルドとテストを行い、Windows x64 self-contained版のZIPとSHA-256チェックサムをGitHub Releasesへ自動公開します。同日に修正版を出す場合は末尾にリビジョン番号を加えた`vYY.MM.DD.1`形式を使用できます。
 
 ```powershell
-$tag = "v1.0.0"
+$tag = "v26.09.20.1"
 git tag -a $tag -m $tag
 git push origin $tag
 ```
 
-`v1.0.0-beta.1`のようにハイフンを含むバージョンはPrereleaseとして公開されます。タグの付け直しは履歴と公開済みReleaseの不一致を招くため、バージョンを上げて新しいタグを作成してください。
+`v26.09.20-beta.1`のようにハイフンを含むバージョンはPrereleaseとして公開されます。タグの付け直しは履歴と公開済みReleaseの不一致を招くため、同日ならリビジョン番号を上げて新しいタグを作成してください。
 
 ## プライバシー
 

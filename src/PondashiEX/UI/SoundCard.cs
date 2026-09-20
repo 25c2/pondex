@@ -5,12 +5,15 @@ namespace PondashiEX.UI;
 
 public sealed class SoundCard : UserControl
 {
+    private const int CollapsedHeight = 108;
     private readonly Label _stateLabel;
     private readonly Label _nameLabel;
     private readonly Label _summaryLabel;
     private readonly Button _pauseButton;
+    private readonly Button _detailsButton;
     private readonly TrackBar _volumeTrack;
     private readonly Panel _detailsPanel;
+    private readonly FlowLayoutPanel _detailsContent;
     private readonly TextBox _keyText;
     private readonly TextBox _groupText;
     private readonly TextBox _nameText;
@@ -23,6 +26,7 @@ public sealed class SoundCard : UserControl
     private readonly NumericUpDown _fadeInValue;
     private readonly CheckBox _fadeOutCheck;
     private readonly NumericUpDown _fadeOutValue;
+    private readonly Dictionary<Control, object> _editSnapshots = [];
     private PlaybackState _state;
     private bool _suppressVolumeChanged;
 
@@ -33,8 +37,8 @@ public sealed class SoundCard : UserControl
         BorderStyle = BorderStyle.FixedSingle;
         BackColor = Color.FromArgb(245, 245, 245);
         Margin = new Padding(6);
-        MinimumSize = new Size(620, 126);
-        Height = 126;
+        MinimumSize = new Size(620, CollapsedHeight);
+        Height = CollapsedHeight;
 
         var root = new TableLayoutPanel
         {
@@ -78,7 +82,7 @@ public sealed class SoundCard : UserControl
         var playButton = CreateButton("▶ 再生", Color.FromArgb(215, 245, 215));
         var stopButton = CreateButton("■ 停止", Color.FromArgb(255, 225, 225));
         _pauseButton = CreateButton("Ⅱ 一時停止", Color.FromArgb(255, 245, 205));
-        var detailsButton = CreateButton("詳細 ▼", SystemColors.Control);
+        _detailsButton = CreateButton("詳細 ▼", SystemColors.Control);
 
         _volumeTrack = new TrackBar
         {
@@ -103,13 +107,21 @@ public sealed class SoundCard : UserControl
         root.Controls.Add(stopButton, 2, 1);
         root.Controls.Add(_pauseButton, 3, 1);
         root.Controls.Add(volumePanel, 4, 1);
-        root.Controls.Add(detailsButton, 5, 1);
+        root.Controls.Add(_detailsButton, 5, 1);
 
-        _detailsPanel = new Panel { Dock = DockStyle.Fill, Height = 142, Visible = false };
-        var details = new FlowLayoutPanel
+        _detailsPanel = new Panel
         {
             Dock = DockStyle.Fill,
             AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = Padding.Empty,
+            Visible = false
+        };
+        _detailsContent = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             WrapContents = true,
             Padding = new Padding(4)
         };
@@ -146,18 +158,18 @@ public sealed class SoundCard : UserControl
         _fadeOutCheck = new CheckBox { Text = "Fade Out", Checked = sound.FadeOut.Enabled, AutoSize = true };
         _fadeOutValue = CreateFadeValue(sound.FadeOut.Value);
         _memoText = new TextBox { Text = sound.Memo, Width = 230 };
-        AddLabeled(details, "名前", _nameText);
-        AddLabeled(details, "キー", _keyText);
-        AddLabeled(details, "グループ", _groupText);
-        AddLabeled(details, "Pan", _panValue);
-        AddLabeled(details, "Pitch", _pitchValue);
-        details.Controls.Add(_loopCheck);
-        AddLabeled(details, "開始sample", _loopStart);
-        details.Controls.Add(_fadeInCheck);
-        AddLabeled(details, "秒", _fadeInValue);
-        details.Controls.Add(_fadeOutCheck);
-        AddLabeled(details, "秒", _fadeOutValue);
-        AddLabeled(details, "メモ", _memoText);
+        AddLabeled(_detailsContent, "名前", _nameText);
+        AddLabeled(_detailsContent, "キー", _keyText);
+        AddLabeled(_detailsContent, "グループ", _groupText);
+        AddLabeled(_detailsContent, "Pan", _panValue);
+        AddLabeled(_detailsContent, "Pitch", _pitchValue);
+        _detailsContent.Controls.Add(_loopCheck);
+        AddLabeled(_detailsContent, "開始sample", _loopStart);
+        _detailsContent.Controls.Add(_fadeInCheck);
+        AddLabeled(_detailsContent, "秒", _fadeInValue);
+        _detailsContent.Controls.Add(_fadeOutCheck);
+        AddLabeled(_detailsContent, "秒", _fadeOutValue);
+        AddLabeled(_detailsContent, "メモ", _memoText);
         var fileText = new TextBox
         {
             Text = sound.File,
@@ -165,8 +177,8 @@ public sealed class SoundCard : UserControl
             Width = 330,
             TabStop = false
         };
-        AddLabeled(details, "ファイル", fileText);
-        _detailsPanel.Controls.Add(details);
+        AddLabeled(_detailsContent, "ファイル", fileText);
+        _detailsPanel.Controls.Add(_detailsContent);
         root.Controls.Add(_detailsPanel, 0, 2);
         root.SetColumnSpan(_detailsPanel, 6);
 
@@ -185,11 +197,18 @@ public sealed class SoundCard : UserControl
                 PauseRequested?.Invoke(this, EventArgs.Empty);
             }
         };
-        detailsButton.Click += (_, _) =>
+        _detailsButton.Click += (_, _) =>
         {
             _detailsPanel.Visible = !_detailsPanel.Visible;
-            Height = _detailsPanel.Visible ? 276 : 126;
-            detailsButton.Text = _detailsPanel.Visible ? "詳細 ▲" : "詳細 ▼";
+            _detailsButton.Text = _detailsPanel.Visible ? "詳細 ▲" : "詳細 ▼";
+            UpdatePreferredHeight();
+        };
+        SizeChanged += (_, _) =>
+        {
+            if (_detailsPanel.Visible)
+            {
+                UpdatePreferredHeight();
+            }
         };
         _volumeTrack.ValueChanged += (_, _) =>
         {
@@ -248,6 +267,17 @@ public sealed class SoundCard : UserControl
         _fadeOutCheck.CheckedChanged += (_, _) => UpdateDefinition();
         _fadeOutValue.ValueChanged += (_, _) => UpdateDefinition();
         _memoText.TextChanged += (_, _) => UpdateDefinition();
+
+        RegisterEditor(_nameText);
+        RegisterEditor(_keyText);
+        RegisterEditor(_groupText);
+        RegisterEditor(_panValue);
+        RegisterEditor(_pitchValue);
+        RegisterEditor(_loopStart);
+        RegisterEditor(_fadeInValue);
+        RegisterEditor(_fadeOutValue);
+        RegisterEditor(_memoText);
+        RegisterBackgroundFocusTargets(this);
 
         UpdateState(PlaybackState.Stopped);
     }
@@ -309,6 +339,89 @@ public sealed class SoundCard : UserControl
         Value = (decimal)Math.Clamp(value, 0, 60),
         Width = 70
     };
+
+    private void RegisterEditor(Control editor)
+    {
+        editor.Enter += (_, _) => _editSnapshots[editor] = GetEditorValue(editor);
+        editor.KeyDown += OnEditorKeyDown;
+    }
+
+    private void OnEditorKeyDown(object? sender, KeyEventArgs eventArgs)
+    {
+        if (sender is not Control editor || eventArgs.KeyCode is not (Keys.Enter or Keys.Escape))
+        {
+            return;
+        }
+
+        if (eventArgs.KeyCode == Keys.Escape && _editSnapshots.TryGetValue(editor, out var value))
+        {
+            SetEditorValue(editor, value);
+            UpdateDefinition();
+        }
+
+        eventArgs.Handled = true;
+        eventArgs.SuppressKeyPress = true;
+        _detailsButton.Focus();
+    }
+
+    private void RegisterBackgroundFocusTargets(Control parent)
+    {
+        foreach (Control child in parent.Controls)
+        {
+            if (child is not TextBoxBase and not NumericUpDown and not ComboBox
+                and not Button and not CheckBox and not TrackBar)
+            {
+                child.MouseDown += (_, _) => _detailsButton.Focus();
+            }
+
+            RegisterBackgroundFocusTargets(child);
+        }
+    }
+
+    private static object GetEditorValue(Control editor) => editor switch
+    {
+        TextBoxBase textBox => textBox.Text,
+        NumericUpDown numeric => numeric.Value,
+        _ => throw new InvalidOperationException($"未対応の編集コントロールです: {editor.GetType().Name}")
+    };
+
+    private static void SetEditorValue(Control editor, object value)
+    {
+        switch (editor)
+        {
+            case TextBoxBase textBox:
+                textBox.Text = (string)value;
+                break;
+            case NumericUpDown numeric:
+                numeric.Value = (decimal)value;
+                break;
+            default:
+                throw new InvalidOperationException($"未対応の編集コントロールです: {editor.GetType().Name}");
+        }
+    }
+
+    private void UpdatePreferredHeight()
+    {
+        if (!_detailsPanel.Visible)
+        {
+            if (Height != CollapsedHeight)
+            {
+                Height = CollapsedHeight;
+            }
+
+            return;
+        }
+
+        var availableWidth = Math.Max(MinimumSize.Width - 18, ClientSize.Width - 18);
+        _detailsContent.MaximumSize = new Size(availableWidth, 0);
+        _detailsContent.PerformLayout();
+        var detailsHeight = _detailsContent.GetPreferredSize(new Size(availableWidth, 0)).Height;
+        var targetHeight = CollapsedHeight + Math.Max(36, detailsHeight) + 6;
+        if (Height != targetHeight)
+        {
+            Height = targetHeight;
+        }
+    }
 
     private void UpdateDefinition()
     {

@@ -36,5 +36,24 @@ public sealed class ShortcutManagerTests
         var command = Assert.Single(_manager.Resolve(Keys.Control | Keys.R, [_first], textEditing: true));
         Assert.Equal(ShortcutCommandType.StopAll, command.Type);
     }
-}
 
+    [Fact]
+    public void LowercaseAssignedKey_MatchesWithoutCrashing()
+    {
+        _first.Key = "a";
+
+        var command = Assert.Single(_manager.Resolve(Keys.A, [_first], textEditing: false));
+
+        Assert.Equal(ShortcutCommandType.Play, command.Type);
+    }
+
+    [Fact]
+    public void InvalidAssignedKey_IsIgnoredWithoutCrashing()
+    {
+        _first.Key = "い";
+
+        var commands = _manager.Resolve(Keys.A, [_first], textEditing: false);
+
+        Assert.Empty(commands);
+    }
+}

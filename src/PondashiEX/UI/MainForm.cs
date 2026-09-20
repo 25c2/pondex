@@ -440,7 +440,7 @@ public sealed class MainForm : Form
     {
         using var dialog = new OpenFileDialog
         {
-            Filter = "対応音声 (*.wav;*.mp3;*.ogg)|*.wav;*.mp3;*.ogg|すべてのファイル (*.*)|*.*",
+            Filter = "対応音声 (*.wav;*.mp3;*.ogg;*.opus)|*.wav;*.mp3;*.ogg;*.opus|すべてのファイル (*.*)|*.*",
             Multiselect = true,
             CheckFileExists = true
         };
@@ -604,7 +604,7 @@ public sealed class MainForm : Form
     {
         var confirmation = MessageBox.Show(
             this,
-            "WAV / MP3 / Oggの短いテスト音を順番に再生し、出力・バックグラウンド入力・DPI設定を診断します。\n\n再生中の音源は停止します。実行しますか？",
+            "WAV / MP3 / Ogg Vorbis / Ogg Opusの短いテスト音を順番に再生し、出力・バックグラウンド入力・DPI設定を診断します。\n\n再生中の音源は停止します。実行しますか？",
             "動作診断",
             MessageBoxButtons.OKCancel,
             MessageBoxIcon.Information);
@@ -1009,7 +1009,12 @@ public sealed class MainForm : Form
         }
 
         var control = FindFocusedControl(this);
-        return control is TextBoxBase or NumericUpDown or ComboBox;
+        return control switch
+        {
+            TextBoxBase textBox => !textBox.ReadOnly,
+            NumericUpDown or ComboBox => true,
+            _ => false
+        };
     }
 
     private static Control? FindFocusedControl(ContainerControl container)
@@ -1055,7 +1060,8 @@ public sealed class MainForm : Form
         var extension = Path.GetExtension(path);
         return extension.Equals(".wav", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".ogg", StringComparison.OrdinalIgnoreCase);
+            || extension.Equals(".ogg", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".opus", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string SanitizeFileName(string name)
