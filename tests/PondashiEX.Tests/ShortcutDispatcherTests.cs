@@ -64,4 +64,22 @@ public sealed class ShortcutDispatcherTests
         Assert.NotNull(executed);
         Assert.Equal([first.Id, second.Id], executed.Select(command => command.SoundId));
     }
+
+    [Fact]
+    public void RefreshBindings_AppliesChangedAssignments()
+    {
+        var sound = new SoundDefinition { Id = Guid.NewGuid(), Key = "A" };
+        IReadOnlyList<ShortcutCommand>? executed = null;
+        var dispatcher = new ShortcutDispatcher(
+            new ShortcutManager(),
+            () => [sound],
+            () => false,
+            commands => executed = commands);
+        sound.Key = "B";
+
+        dispatcher.RefreshBindings();
+        dispatcher.OnKeyChanged(Keys.B, isDown: true);
+
+        Assert.Equal(sound.Id, Assert.Single(executed!).SoundId);
+    }
 }

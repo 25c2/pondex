@@ -193,4 +193,72 @@ public sealed class ProjectSerializerTests
         Assert.Single(loaded.LoadWarnings);
         Assert.Contains("音源[1]", loaded.LoadWarnings[0]);
     }
+
+    [Fact]
+    public async Task Load_RejectsFileLargerThanLimitBeforeParsing()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("huge.pondex");
+        await using (var stream = File.Create(path))
+        {
+            stream.SetLength(ProjectLimits.MaxFileBytes + 1);
+        }
+
+        var exception = await Assert.ThrowsAsync<ProjectFormatException>(
+            () => new ProjectSerializer().LoadAsync(path));
+
+        Assert.Contains("大きすぎ", exception.Message);
+    }
+
+    [Fact]
+    public async Task Load_RejectsTooManySounds()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("too-many.pondex");
+        var sounds = string.Join(',', Enumerable.Repeat("{}", ProjectLimits.MaxSounds + 1));
+        var json = $"{{\"formatVersion\":1,\"project\":{{}},\"settings\":{{}},\"sounds\":[{sounds}],\"triggers\":[]}}";
+        await File.WriteAllTextAsync(path, json, new UTF8Encoding(false));
+
+        var exception = await Assert.ThrowsAsync<ProjectFormatException>(
+            () => new ProjectSerializer().LoadAsync(path));
+
+        Assert.Contains("件数", exception.Message);
+    }
+
+    [Fact]
+    public async Task Load_RejectsRemoteAudioPath()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("remote.pondex");
+        var json = """
+            {
+              "formatVersion": 1,
+              "project": {},
+              "settings": {},
+              "sounds": [{ "name": "危険", "file": "\\\\attacker\\share\\sound.wav" }],
+              "triggers": []
+            }
+            """;
+        await File.WriteAllTextAsync(path, json, new UTF8Encoding(false));
+
+        var exception = await Assert.ThrowsAsync<ProjectFormatException>(
+            () => new ProjectSerializer().LoadAsync(path));
+
+        Assert.Contains("UNC", exception.Message);
+    }
+
+    [Fact]
+    public async Task Load_RejectsOverlongProjectStrings()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("long-name.pondex");
+        var name = new string('x', ProjectLimits.MaxNameLength + 1);
+        var json = $"{{\"formatVersion\":1,\"project\":{{\"name\":\"{name}\"}},\"settings\":{{}},\"sounds\":[],\"triggers\":[]}}";
+        await File.WriteAllTextAsync(path, json, new UTF8Encoding(false));
+
+        var exception = await Assert.ThrowsAsync<ProjectFormatException>(
+            () => new ProjectSerializer().LoadAsync(path));
+
+        Assert.Contains("長すぎ", exception.Message);
+    }
 }

@@ -42,6 +42,7 @@ public sealed class MainForm : Form
     private bool _cleanupCompleted;
     private bool _darkMode;
     private bool _statusIsError;
+    private bool _projectOperationInProgress;
     private DateTimeOffset _nextDeviceAvailabilityCheck = DateTimeOffset.MinValue;
 
     public MainForm(
@@ -447,6 +448,12 @@ public sealed class MainForm : Form
 
     private async Task OpenProjectAsync(string path)
     {
+        if (_projectOperationInProgress)
+        {
+            SetStatus("別のプロジェクト操作が完了するまで待ってください。", true);
+            return;
+        }
+
         if (!await EnsureCanReplaceProjectAsync())
         {
             return;
@@ -454,12 +461,19 @@ public sealed class MainForm : Form
 
         try
         {
+            SetProjectOperationBusy(true);
+            var opened = await _projectManager.OpenAsync(path, AuthorizeUntrustedProject);
+            if (!opened)
+            {
+                SetStatus("プロジェクトの読み込みをキャンセルしました。", false);
+                return;
+            }
+
             _audioEngine.StopAll();
-            await _projectManager.OpenAsync(path);
             _recentProjects.Add(path);
             _logger.Info($"プロジェクトを開きました: {path}");
             ApplyProjectSettings();
-            RebuildSoundCards();
+            await RebuildSoundCardsAsync();
             RefreshRecentMenu();
             if (_projectManager.Current.LoadWarnings.Count > 0)
             {
@@ -483,12 +497,23 @@ public sealed class MainForm : Form
             _logger.Error($"プロジェクトを開けません: {path}", exception);
             MessageBox.Show(this, exception.Message, "プロジェクト読込エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+        finally
+        {
+            SetProjectOperationBusy(false);
+        }
     }
 
     private async Task<bool> SaveProjectAsync(bool forceSaveAs)
     {
+        if (_projectOperationInProgress)
+        {
+            SetStatus("別のプロジェクト操作が完了するまで待ってください。", true);
+            return false;
+        }
+
         try
         {
+            SetProjectOperationBusy(true);
             if (forceSaveAs || _projectManager.CurrentPath is null)
             {
                 using var dialog = new SaveFileDialog
@@ -510,7 +535,10 @@ public sealed class MainForm : Form
                 await _projectManager.SaveAsync();
             }
 
-            _recentProjects.Add(_projectManager.CurrentPath!);
+            if (_projectManager.CurrentPath is { } savedPath)
+            {
+                _recentProjects.Add(savedPath);
+            }
             _logger.Info($"プロジェクトを保存しました: {_projectManager.CurrentPath}");
             RefreshRecentMenu();
             SetStatus("保存しました。", false);
@@ -521,6 +549,10 @@ public sealed class MainForm : Form
             _logger.Error("プロジェクトを保存できません。", exception);
             MessageBox.Show(this, exception.Message, "保存エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return false;
+        }
+        finally
+        {
+            SetProjectOperationBusy(false);
         }
     }
 
@@ -549,7 +581,15 @@ public sealed class MainForm : Form
                 continue;
             }
 
-            added.Add(_projectManager.AddSound(path));
+            try
+            {
+                added.Add(_projectManager.AddSound(path));
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or ArgumentException)
+            {
+                _logger.Warning($"音源を追加できません: {path} ({exception.Message})");
+                SetStatus($"音源を追加できません: {exception.Message}", true);
+            }
         }
 
         if (added.Count > 0)
@@ -598,6 +638,48 @@ public sealed class MainForm : Form
         {
             _soundList.ResumeLayout();
         }
+    }
+
+    private async Task RebuildSoundCardsAsync()
+    {
+        _soundList.SuspendLayout();
+        try
+        {
+            foreach (var existing in _soundList.Controls.Cast<Control>().ToArray())
+            {
+                existing.Dispose();
+            }
+
+            _soundList.Controls.Clear();
+            _soundCards.Clear();
+        }
+        finally
+        {
+            _soundList.ResumeLayout();
+        }
+
+        var sounds = _projectManager.Current.Sounds.ToArray();
+        const int batchSize = 25;
+        for (var offset = 0; offset < sounds.Length; offset += batchSize)
+        {
+            _soundList.SuspendLayout();
+            try
+            {
+                foreach (var sound in sounds.Skip(offset).Take(batchSize))
+                {
+                    AddSoundCard(sound);
+                }
+            }
+            finally
+            {
+                _soundList.ResumeLayout();
+            }
+
+            await Task.Yield();
+        }
+
+        ResizeSoundCards();
+        RefreshTriggerData();
     }
 
     private void AddSoundCard(SoundDefinition sound)
@@ -817,10 +899,18 @@ public sealed class MainForm : Form
             return;
         }
 
-        _audioEngine.Stop(sound.Id);
-        _projectManager.ReplaceSoundFile(sound, dialog.FileName);
-        card.UpdateFilePath(sound.File);
-        SetStatus($"音声ファイルを差し替えました: {sound.Name}", false);
+        try
+        {
+            _audioEngine.Stop(sound.Id);
+            _projectManager.ReplaceSoundFile(sound, dialog.FileName);
+            card.UpdateFilePath(sound.File);
+            SetStatus($"音声ファイルを差し替えました: {sound.Name}", false);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or ArgumentException)
+        {
+            _logger.Warning($"音源を差し替えられません: {dialog.FileName} ({exception.Message})");
+            MessageBox.Show(this, exception.Message, "音源差し替えエラー", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private async Task PlaySoundAsync(Guid soundId)
@@ -1184,7 +1274,15 @@ public sealed class MainForm : Form
         catch (Exception exception)
         {
             settings.BackgroundInput = false;
-            _globalHook.Disable();
+            try
+            {
+                _globalHook.Disable();
+            }
+            catch (Exception cleanupException)
+            {
+                _logger.Error("バックグラウンド入力の後始末に失敗しました。", cleanupException);
+            }
+
             _logger.Error("バックグラウンド入力を有効にできません。", exception);
             SetStatus("バックグラウンド入力を開始できません。", true);
         }
@@ -1403,6 +1501,58 @@ public sealed class MainForm : Form
         };
     }
 
+    private bool AuthorizeUntrustedProject(ProjectModel model, string projectPath)
+    {
+        var externalPathCount = model.Sounds.Count(sound =>
+            !string.IsNullOrWhiteSpace(sound.File)
+            && ProjectPath.Classify(projectPath, sound.File) == ProjectPathKind.ExternalLocal);
+        var enabledTriggerCount = model.Triggers.Count(trigger => trigger.Enabled);
+        if (externalPathCount == 0 && !model.Settings.BackgroundInput && enabledTriggerCount == 0)
+        {
+            return true;
+        }
+
+        var risks = new List<string>();
+        if (externalPathCount > 0)
+        {
+            risks.Add($"・プロジェクトフォルダ外のローカル音源: {externalPathCount}件");
+        }
+
+        if (model.Settings.BackgroundInput)
+        {
+            risks.Add("・バックグラウンド入力: 有効");
+        }
+
+        if (enabledTriggerCount > 0)
+        {
+            risks.Add($"・有効なイベントトリガ: {enabledTriggerCount}件");
+        }
+
+        var message = "このプロジェクトは、外部ファイルまたは自動操作を使用します。\n"
+            + "信頼できる作成元の場合だけ開いてください。\n\n"
+            + string.Join("\n", risks)
+            + "\n\n開きますか？";
+        return MessageBox.Show(
+            this,
+            message,
+            "プロジェクトの安全確認",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+    }
+
+    private void SetProjectOperationBusy(bool busy)
+    {
+        _projectOperationInProgress = busy;
+        if (MainMenuStrip is not null)
+        {
+            MainMenuStrip.Enabled = !busy;
+        }
+
+        _tabs.Enabled = !busy;
+        UseWaitCursor = busy;
+    }
+
     private async void OnFormClosing(object? sender, FormClosingEventArgs eventArgs)
     {
         if (_closingAfterSave || !_projectManager.IsDirty)
@@ -1443,7 +1593,11 @@ public sealed class MainForm : Form
 
     private void OnFormClosed(object? sender, FormClosedEventArgs eventArgs) => CleanupInput();
 
-    private void OnProjectChanged(object? sender, EventArgs eventArgs) => UpdateProjectHeader();
+    private void OnProjectChanged(object? sender, EventArgs eventArgs)
+    {
+        _shortcutDispatcher.RefreshBindings();
+        UpdateProjectHeader();
+    }
 
     private void OnPlaybackStarted(object? sender, SoundPlaybackEventArgs eventArgs) =>
         _triggerEngine.OnSoundStarted(eventArgs.SoundId);
@@ -1455,10 +1609,13 @@ public sealed class MainForm : Form
 
     private void OnGlobalKeyChanged(object? sender, GlobalKeyEventArgs eventArgs)
     {
-        if (_projectManager.Current.Settings.BackgroundInput)
+        TryBeginInvoke(() =>
         {
-            _shortcutDispatcher.OnKeyChanged(eventArgs.KeyData, eventArgs.IsDown);
-        }
+            if (_projectManager.Current.Settings.BackgroundInput)
+            {
+                _shortcutDispatcher.OnKeyChanged(eventArgs.KeyData, eventArgs.IsDown);
+            }
+        });
     }
 
     private bool TryBeginInvoke(Action action)

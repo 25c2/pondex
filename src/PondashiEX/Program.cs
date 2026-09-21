@@ -59,7 +59,7 @@ internal static class Program
             using var audioEngine = smokeTest
                 ? new AudioEngine(logger, static (_, _) => new SmokeTestAudioOutput())
                 : new AudioEngine(logger);
-            var projectManager = new ProjectManager(new ProjectSerializer());
+            using var projectManager = new ProjectManager(new ProjectSerializer());
             var triggerEngine = new TriggerEngine();
             var mainForm = new MainForm(
                 projectManager,

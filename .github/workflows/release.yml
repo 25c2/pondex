@@ -7,12 +7,15 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 env:
+  CI: true
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
 
@@ -20,15 +23,16 @@ jobs:
   release:
     runs-on: windows-latest
     timeout-minutes: 30
+    environment: release
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           fetch-depth: 0
 
       - name: Setup .NET 8
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5d # v5.0.0
         with:
           dotnet-version: 8.0.425
 
@@ -109,6 +113,13 @@ jobs:
 
           "RELEASE_ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "RELEASE_CHECKSUM=$checksum" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@00014ed6ed5efc5b1ab7f7f34a39eb55d41aa4f8 # v3.1.0
+        with:
+          subject-path: |
+            ${{ env.RELEASE_ARCHIVE }}
+            ${{ env.RELEASE_CHECKSUM }}
 
       - name: Create GitHub Release
         shell: pwsh

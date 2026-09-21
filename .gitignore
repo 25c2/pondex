@@ -47,6 +47,5 @@ recent-projects.json
 Thumbs.db
 Desktop.ini
 
-# Local reference copy of the original application. It is not part of EX and
-# may contain third-party binaries that must not be redistributed.
+docs/local/
 PonDashiKun/

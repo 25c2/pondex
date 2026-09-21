@@ -29,8 +29,16 @@ public sealed class ProjectSerializer
 
         try
         {
+            var fullPath = ProjectPath.GetSafeFullPath(path, "プロジェクトパス");
+            var fileLength = new FileInfo(fullPath).Length;
+            if (fileLength > ProjectLimits.MaxFileBytes)
+            {
+                throw new ProjectFormatException(
+                    $"プロジェクトファイルが大きすぎます（上限 {ProjectLimits.MaxFileBytes / 1024 / 1024} MiB）。");
+            }
+
             await using var stream = new FileStream(
-                path,
+                fullPath,
                 FileMode.Open,
                 FileAccess.Read,
                 FileShare.Read,
@@ -41,7 +49,8 @@ public sealed class ProjectSerializer
                 new JsonDocumentOptions
                 {
                     AllowTrailingCommas = true,
-                    CommentHandling = JsonCommentHandling.Skip
+                    CommentHandling = JsonCommentHandling.Skip,
+                    MaxDepth = ProjectLimits.MaxJsonDepth
                 },
                 cancellationToken);
             var model = DeserializeDocument(document.RootElement);
@@ -62,7 +71,7 @@ public sealed class ProjectSerializer
         ArgumentNullException.ThrowIfNull(model);
         ValidateAndNormalize(model);
 
-        var fullPath = Path.GetFullPath(path);
+        var fullPath = ProjectPath.GetSafeFullPath(path, "保存先パス");
         var directory = Path.GetDirectoryName(fullPath)
             ?? throw new ArgumentException("保存先フォルダを特定できません。", nameof(path));
         Directory.CreateDirectory(directory);
@@ -71,6 +80,11 @@ public sealed class ProjectSerializer
         var backupPath = fullPath + ".bak";
         var json = JsonSerializer.Serialize(model, _options);
         var bytes = Utf8NoBom.GetBytes(json + Environment.NewLine);
+        if (bytes.LongLength > ProjectLimits.MaxFileBytes)
+        {
+            throw new ProjectFormatException(
+                $"プロジェクトデータが大きすぎるため保存できません（上限 {ProjectLimits.MaxFileBytes / 1024 / 1024} MiB）。");
+        }
 
         try
         {
@@ -104,6 +118,16 @@ public sealed class ProjectSerializer
                 File.Delete(tempPath);
             }
         }
+    }
+
+    public ProjectModel CreateSnapshot(ProjectModel model)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        var json = JsonSerializer.Serialize(model, _options);
+        var snapshot = JsonSerializer.Deserialize<ProjectModel>(json, _options)
+            ?? throw new ProjectFormatException("プロジェクトのスナップショットを作成できませんでした。");
+        ValidateAndNormalize(snapshot);
+        return snapshot;
     }
 
     private async Task ValidateTemporaryFileAsync(string path, CancellationToken cancellationToken)
@@ -150,17 +174,20 @@ public sealed class ProjectSerializer
             root,
             "sounds",
             "音源",
-            model.LoadWarnings);
+            model.LoadWarnings,
+            ProjectLimits.MaxSounds);
         model.GroupShortcuts = DeserializeArray<GroupShortcutDefinition>(
             root,
             "groupShortcuts",
             "グループショートカット",
-            model.LoadWarnings);
+            model.LoadWarnings,
+            ProjectLimits.MaxGroupShortcuts);
         model.Triggers = DeserializeArray<TriggerDefinition>(
             root,
             "triggers",
             "イベント",
-            model.LoadWarnings);
+            model.LoadWarnings,
+            ProjectLimits.MaxTriggers);
         return model;
     }
 
@@ -168,7 +195,8 @@ public sealed class ProjectSerializer
         JsonElement root,
         string propertyName,
         string displayName,
-        List<string> warnings)
+        List<string> warnings,
+        int maximumCount)
         where T : class
     {
         var results = new List<T>();
@@ -181,6 +209,11 @@ public sealed class ProjectSerializer
         {
             warnings.Add($"{propertyName}が配列ではないため、空として読み込みました。");
             return results;
+        }
+
+        if (arrayElement.GetArrayLength() > maximumCount)
+        {
+            throw new ProjectFormatException($"{displayName}の件数が上限（{maximumCount}件）を超えています。");
         }
 
         var index = 0;
@@ -255,10 +288,14 @@ public sealed class ProjectSerializer
         model.Project.Name ??= "名称未設定";
         model.Project.ThemeColor ??= "#202020";
         model.Settings.OutputDevice ??= "default";
+        ValidateString(model.Project.Name, ProjectLimits.MaxNameLength, "プロジェクト名");
+        ValidateString(model.Project.ThemeColor, ProjectLimits.MaxThemeColorLength, "テーマ色");
+        ValidateString(model.Settings.OutputDevice, ProjectLimits.MaxOutputDeviceLength, "出力デバイス名");
         model.Settings.MasterVolume = Math.Clamp(model.Settings.MasterVolume, 0.0f, 1.0f);
         model.Settings.SoundListColumns = Math.Clamp(model.Settings.SoundListColumns, 1, 8);
 
         model.Sounds = (model.Sounds ?? []).OfType<SoundDefinition>().ToList();
+        ValidateCount(model.Sounds.Count, ProjectLimits.MaxSounds, "音源");
         var soundIds = new HashSet<Guid>();
         foreach (var sound in model.Sounds)
         {
@@ -273,6 +310,16 @@ public sealed class ProjectSerializer
             sound.Key ??= string.Empty;
             sound.Group ??= string.Empty;
             sound.Memo ??= string.Empty;
+            ValidateString(sound.Name, ProjectLimits.MaxNameLength, "音源名");
+            ValidateString(sound.File, ProjectLimits.MaxPathLength, "音源パス");
+            ValidateString(sound.Key, ProjectLimits.MaxKeyLength, "音源キー");
+            ValidateString(sound.Group, ProjectLimits.MaxGroupLength, "音源グループ");
+            ValidateString(sound.Memo, ProjectLimits.MaxMemoLength, "音源メモ");
+            if (ProjectPath.IsRemoteOrDevice(sound.File))
+            {
+                throw new ProjectFormatException("音源パスにUNCパスまたはデバイスパスは使用できません。");
+            }
+
             sound.Volume = Math.Clamp(sound.Volume, 0.0f, 1.0f);
             sound.Pan = Math.Clamp(sound.Pan, -1.0f, 1.0f);
             sound.Pitch = Math.Clamp(sound.Pitch, 0.5f, 2.0f);
@@ -288,13 +335,17 @@ public sealed class ProjectSerializer
         model.GroupShortcuts = (model.GroupShortcuts ?? [])
             .OfType<GroupShortcutDefinition>()
             .ToList();
+        ValidateCount(model.GroupShortcuts.Count, ProjectLimits.MaxGroupShortcuts, "グループショートカット");
         foreach (var shortcut in model.GroupShortcuts)
         {
             shortcut.Group = shortcut.Group?.Trim() ?? string.Empty;
             shortcut.Key = shortcut.Key?.Trim() ?? string.Empty;
+            ValidateString(shortcut.Group, ProjectLimits.MaxGroupLength, "ショートカットのグループ");
+            ValidateString(shortcut.Key, ProjectLimits.MaxKeyLength, "ショートカットキー");
         }
 
         model.Triggers = (model.Triggers ?? []).OfType<TriggerDefinition>().ToList();
+        ValidateCount(model.Triggers.Count, ProjectLimits.MaxTriggers, "イベントトリガ");
         var triggerIds = new HashSet<Guid>();
         foreach (var trigger in model.Triggers)
         {
@@ -307,6 +358,24 @@ public sealed class ProjectSerializer
             trigger.Memo ??= string.Empty;
             trigger.TargetGroup ??= string.Empty;
             trigger.Parameters ??= new TriggerParameters();
+            ValidateString(trigger.Memo, ProjectLimits.MaxMemoLength, "イベントメモ");
+            ValidateString(trigger.TargetGroup, ProjectLimits.MaxGroupLength, "イベント対象グループ");
+        }
+    }
+
+    private static void ValidateCount(int count, int maximumCount, string displayName)
+    {
+        if (count > maximumCount)
+        {
+            throw new ProjectFormatException($"{displayName}の件数が上限（{maximumCount}件）を超えています。");
+        }
+    }
+
+    private static void ValidateString(string value, int maximumLength, string displayName)
+    {
+        if (value.Length > maximumLength)
+        {
+            throw new ProjectFormatException($"{displayName}が長すぎます（上限 {maximumLength}文字）。");
         }
     }
 }

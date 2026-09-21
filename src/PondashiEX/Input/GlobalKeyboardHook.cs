@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading.Channels;
 
 namespace PondashiEX.Input;
 
@@ -10,12 +11,23 @@ public sealed class GlobalKeyboardHook : IDisposable
     private const int WmKeyUp = 0x0101;
     private const int WmSysKeyDown = 0x0104;
     private const int WmSysKeyUp = 0x0105;
+    private const int EventQueueCapacity = 4_096;
     private readonly HookProcedure _procedure;
+    private readonly Channel<GlobalKeyEventArgs> _events;
+    private readonly Task _dispatchTask;
     private IntPtr _hook;
+    private int _disposeStarted;
 
     public GlobalKeyboardHook()
     {
         _procedure = HookCallback;
+        _events = Channel.CreateBounded<GlobalKeyEventArgs>(new BoundedChannelOptions(EventQueueCapacity)
+        {
+            SingleReader = true,
+            SingleWriter = true,
+            FullMode = BoundedChannelFullMode.DropOldest
+        });
+        _dispatchTask = Task.Run(DispatchEventsAsync);
     }
 
     public event EventHandler<GlobalKeyEventArgs>? KeyChanged;
@@ -24,6 +36,7 @@ public sealed class GlobalKeyboardHook : IDisposable
 
     public void Enable()
     {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
         if (IsEnabled)
         {
             return;
@@ -47,11 +60,42 @@ public sealed class GlobalKeyboardHook : IDisposable
             return;
         }
 
-        UnhookWindowsHookEx(_hook);
+        var hook = _hook;
+        if (!UnhookWindowsHookEx(hook))
+        {
+            throw new InvalidOperationException("バックグラウンド入力用キーボードフックを解除できません。",
+                new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error()));
+        }
+
         _hook = IntPtr.Zero;
     }
 
-    public void Dispose() => Disable();
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            Disable();
+        }
+        catch
+        {
+            // Application shutdown must continue even if Windows rejects unhooking.
+        }
+
+        _events.Writer.TryComplete();
+        try
+        {
+            _dispatchTask.GetAwaiter().GetResult();
+        }
+        catch
+        {
+            // Event subscribers must not turn input cleanup into an application crash.
+        }
+    }
 
     private IntPtr HookCallback(int code, IntPtr wParam, IntPtr lParam)
     {
@@ -64,11 +108,26 @@ public sealed class GlobalKeyboardHook : IDisposable
             {
                 var data = Marshal.PtrToStructure<KeyboardData>(lParam);
                 var key = (Keys)data.VirtualKey | Control.ModifierKeys;
-                KeyChanged?.Invoke(this, new GlobalKeyEventArgs(key, isDown));
+                _events.Writer.TryWrite(new GlobalKeyEventArgs(key, isDown));
             }
         }
 
         return CallNextHookEx(_hook, code, wParam, lParam);
+    }
+
+    private async Task DispatchEventsAsync()
+    {
+        await foreach (var eventArgs in _events.Reader.ReadAllAsync().ConfigureAwait(false))
+        {
+            try
+            {
+                KeyChanged?.Invoke(this, eventArgs);
+            }
+            catch
+            {
+                // Keep the dispatch loop alive if a subscriber is being disposed.
+            }
+        }
     }
 
     private delegate IntPtr HookProcedure(int code, IntPtr wParam, IntPtr lParam);
@@ -117,4 +176,3 @@ public sealed class GlobalKeyEventArgs : EventArgs
 
     public bool IsDown { get; }
 }
-

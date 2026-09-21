@@ -54,6 +54,12 @@ public sealed class ShortcutManager
 
     private bool Matches(string assignedKey, Keys pressedKey)
     {
+        return TryParseKey(assignedKey, out var assignedKeyCode) && assignedKeyCode == pressedKey;
+    }
+
+    public bool TryParseKey(string assignedKey, out Keys keyCode)
+    {
+        keyCode = Keys.None;
         if (string.IsNullOrWhiteSpace(assignedKey))
         {
             return false;
@@ -63,7 +69,13 @@ public sealed class ShortcutManager
         {
             var normalized = assignedKey.Trim().ToUpperInvariant();
             var converted = _converter.ConvertFromInvariantString(normalized);
-            return converted is Keys key && (key & Keys.KeyCode) == pressedKey;
+            if (converted is not Keys key)
+            {
+                return false;
+            }
+
+            keyCode = key & Keys.KeyCode;
+            return keyCode != Keys.None;
         }
         catch (ArgumentException)
         {

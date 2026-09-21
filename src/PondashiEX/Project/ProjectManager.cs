@@ -1,94 +1,245 @@
 namespace PondashiEX.Project;
 
-public sealed class ProjectManager
+public sealed class ProjectManager : IDisposable
 {
     private readonly ProjectSerializer _serializer;
+    private readonly SemaphoreSlim _operationGate = new(1, 1);
+    private readonly object _stateLock = new();
+    private ProjectModel _current = new();
+    private string? _currentPath;
+    private bool _isDirty;
+    private long _stateVersion;
+    private long _replaceRequestId;
 
     public ProjectManager(ProjectSerializer serializer)
     {
         _serializer = serializer;
     }
 
-    public ProjectModel Current { get; private set; } = new();
+    public ProjectModel Current
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _current;
+            }
+        }
+    }
 
-    public string? CurrentPath { get; private set; }
+    public string? CurrentPath
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _currentPath;
+            }
+        }
+    }
 
-    public bool IsDirty { get; private set; }
+    public bool IsDirty
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _isDirty;
+            }
+        }
+    }
 
     public event EventHandler? ProjectChanged;
 
     public void New()
     {
-        Current = new ProjectModel();
-        CurrentPath = null;
-        IsDirty = false;
+        Interlocked.Increment(ref _replaceRequestId);
+        lock (_stateLock)
+        {
+            _current = new ProjectModel();
+            _currentPath = null;
+            _isDirty = false;
+            _stateVersion++;
+        }
+
         ProjectChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    public async Task OpenAsync(string path, CancellationToken cancellationToken = default)
+    public async Task<bool> OpenAsync(
+        string path,
+        Func<ProjectModel, string, bool>? authorize = null,
+        CancellationToken cancellationToken = default)
     {
-        Current = await _serializer.LoadAsync(path, cancellationToken);
-        CurrentPath = Path.GetFullPath(path);
-        IsDirty = false;
-        ProjectChanged?.Invoke(this, EventArgs.Empty);
+        var requestId = Interlocked.Increment(ref _replaceRequestId);
+        var fullPath = ProjectPath.GetSafeFullPath(path, "プロジェクトパス");
+        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(true);
+        try
+        {
+            var candidate = await _serializer.LoadAsync(fullPath, cancellationToken).ConfigureAwait(true);
+            if (requestId != Interlocked.Read(ref _replaceRequestId)
+                || (authorize is not null && !authorize(candidate, fullPath)))
+            {
+                return false;
+            }
+
+            lock (_stateLock)
+            {
+                if (requestId != Interlocked.Read(ref _replaceRequestId))
+                {
+                    return false;
+                }
+
+                _current = candidate;
+                _currentPath = fullPath;
+                _isDirty = false;
+                _stateVersion++;
+            }
+
+            ProjectChanged?.Invoke(this, EventArgs.Empty);
+            return true;
+        }
+        finally
+        {
+            _operationGate.Release();
+        }
     }
 
     public async Task SaveAsync(CancellationToken cancellationToken = default)
     {
-        if (CurrentPath is null)
+        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(true);
+        try
         {
-            throw new InvalidOperationException("保存先が未設定です。Save Asを使用してください。");
-        }
+            ProjectModel current;
+            ProjectModel snapshot;
+            string currentPath;
+            long stateVersion;
+            lock (_stateLock)
+            {
+                current = _current;
+                currentPath = _currentPath
+                    ?? throw new InvalidOperationException("保存先が未設定です。Save Asを使用してください。");
+                stateVersion = _stateVersion;
+                snapshot = _serializer.CreateSnapshot(current);
+            }
 
-        await _serializer.SaveAsync(CurrentPath, Current, cancellationToken);
-        IsDirty = false;
-        ProjectChanged?.Invoke(this, EventArgs.Empty);
+            await _serializer.SaveAsync(currentPath, snapshot, cancellationToken).ConfigureAwait(true);
+
+            var changed = false;
+            lock (_stateLock)
+            {
+                if (ReferenceEquals(_current, current)
+                    && _stateVersion == stateVersion
+                    && string.Equals(_currentPath, currentPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    _isDirty = false;
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
+                ProjectChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+        finally
+        {
+            _operationGate.Release();
+        }
     }
 
     public async Task SaveAsAsync(string path, CancellationToken cancellationToken = default)
     {
-        var newPath = Path.GetFullPath(path);
-        var originalFiles = Current.Sounds.Select(sound => sound.File).ToArray();
-        var resolvedFiles = Current.Sounds
-            .Select(sound => ResolveSoundPath(sound))
-            .ToArray();
-
+        var newPath = ProjectPath.GetSafeFullPath(path, "保存先パス");
+        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(true);
         try
         {
-            for (var index = 0; index < Current.Sounds.Count; index++)
+            ProjectModel current;
+            ProjectModel snapshot;
+            string? oldPath;
+            long stateVersion;
+            lock (_stateLock)
             {
-                Current.Sounds[index].File = ProjectPath.ToStoredPath(newPath, resolvedFiles[index]);
+                current = _current;
+                oldPath = _currentPath;
+                stateVersion = _stateVersion;
+                snapshot = _serializer.CreateSnapshot(current);
             }
 
-            await _serializer.SaveAsync(newPath, Current, cancellationToken);
-            CurrentPath = newPath;
-            IsDirty = false;
-            ProjectChanged?.Invoke(this, EventArgs.Empty);
+            foreach (var sound in snapshot.Sounds)
+            {
+                var resolvedPath = ResolveSoundPath(sound, oldPath);
+                sound.File = ProjectPath.ToStoredPath(newPath, resolvedPath);
+            }
+
+            await _serializer.SaveAsync(newPath, snapshot, cancellationToken).ConfigureAwait(true);
+
+            var changed = false;
+            lock (_stateLock)
+            {
+                if (ReferenceEquals(_current, current) && _stateVersion == stateVersion)
+                {
+                    var storedPaths = snapshot.Sounds.ToDictionary(sound => sound.Id, sound => sound.File);
+                    foreach (var sound in current.Sounds)
+                    {
+                        if (storedPaths.TryGetValue(sound.Id, out var storedPath))
+                        {
+                            sound.File = storedPath;
+                        }
+                    }
+
+                    _currentPath = newPath;
+                    _isDirty = false;
+                    _stateVersion++;
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
+                ProjectChanged?.Invoke(this, EventArgs.Empty);
+            }
         }
-        catch
+        finally
         {
-            for (var index = 0; index < Current.Sounds.Count; index++)
-            {
-                Current.Sounds[index].File = originalFiles[index];
-            }
-
-            throw;
+            _operationGate.Release();
         }
     }
 
     public SoundDefinition AddSound(string audioFilePath)
     {
-        var storedPath = CurrentPath is null
-            ? Path.GetFullPath(audioFilePath)
-            : ProjectPath.ToStoredPath(CurrentPath, audioFilePath);
-        var sound = new SoundDefinition
+        SoundDefinition sound;
+        lock (_stateLock)
         {
-            Id = Guid.NewGuid(),
-            Name = Path.GetFileNameWithoutExtension(audioFilePath),
-            File = storedPath
-        };
-        Current.Sounds.Add(sound);
-        MarkDirty();
+            if (_current.Sounds.Count >= ProjectLimits.MaxSounds)
+            {
+                throw new InvalidOperationException($"音源は最大{ProjectLimits.MaxSounds}件まで追加できます。");
+            }
+
+            var storedPath = _currentPath is null
+                ? ProjectPath.GetSafeFullPath(audioFilePath, "音源パス")
+                : ProjectPath.ToStoredPath(_currentPath, audioFilePath);
+            if (storedPath.Length > ProjectLimits.MaxPathLength)
+            {
+                throw new InvalidOperationException($"音源パスが長すぎます（上限 {ProjectLimits.MaxPathLength}文字）。");
+            }
+
+            var soundName = Path.GetFileNameWithoutExtension(audioFilePath);
+            if (soundName.Length > ProjectLimits.MaxNameLength)
+            {
+                soundName = soundName[..ProjectLimits.MaxNameLength];
+            }
+
+            sound = new SoundDefinition
+            {
+                Id = Guid.NewGuid(),
+                Name = soundName,
+                File = storedPath
+            };
+            _current.Sounds.Add(sound);
+            MarkDirtyLocked();
+        }
+
+        ProjectChanged?.Invoke(this, EventArgs.Empty);
         return sound;
     }
 
@@ -96,26 +247,57 @@ public sealed class ProjectManager
     {
         ArgumentNullException.ThrowIfNull(sound);
         ArgumentException.ThrowIfNullOrWhiteSpace(audioFilePath);
-        sound.File = CurrentPath is null
-            ? Path.GetFullPath(audioFilePath)
-            : ProjectPath.ToStoredPath(CurrentPath, audioFilePath);
-        MarkDirty();
+        lock (_stateLock)
+        {
+            var storedPath = _currentPath is null
+                ? ProjectPath.GetSafeFullPath(audioFilePath, "音源パス")
+                : ProjectPath.ToStoredPath(_currentPath, audioFilePath);
+            if (storedPath.Length > ProjectLimits.MaxPathLength)
+            {
+                throw new InvalidOperationException($"音源パスが長すぎます（上限 {ProjectLimits.MaxPathLength}文字）。");
+            }
+
+            sound.File = storedPath;
+            MarkDirtyLocked();
+        }
+
+        ProjectChanged?.Invoke(this, EventArgs.Empty);
     }
 
     public string ResolveSoundPath(SoundDefinition sound)
     {
         ArgumentNullException.ThrowIfNull(sound);
-        if (CurrentPath is null || Path.IsPathRooted(sound.File))
+        lock (_stateLock)
         {
-            return Path.GetFullPath(sound.File);
+            return ResolveSoundPath(sound, _currentPath);
         }
-
-        return ProjectPath.Resolve(CurrentPath, sound.File);
     }
 
     public void MarkDirty()
     {
-        IsDirty = true;
+        lock (_stateLock)
+        {
+            MarkDirtyLocked();
+        }
+
         ProjectChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    public void Dispose() => _operationGate.Dispose();
+
+    private static string ResolveSoundPath(SoundDefinition sound, string? projectPath)
+    {
+        if (projectPath is null)
+        {
+            return ProjectPath.GetSafeFullPath(sound.File, "音源パス");
+        }
+
+        return ProjectPath.Resolve(projectPath, sound.File);
+    }
+
+    private void MarkDirtyLocked()
+    {
+        _isDirty = true;
+        _stateVersion++;
     }
 }

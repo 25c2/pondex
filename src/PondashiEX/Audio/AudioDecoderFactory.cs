@@ -1,6 +1,7 @@
 using NAudio.Vorbis;
 using NAudio.Wave;
 using NLayer.NAudioSupport;
+using PondashiEX.Project;
 
 namespace PondashiEX.Audio;
 
@@ -8,20 +9,21 @@ internal static class AudioDecoderFactory
 {
     public static WaveStream Open(string path)
     {
-        if (!File.Exists(path))
+        var safePath = ProjectPath.GetSafeFullPath(path, "音源パス");
+        if (!File.Exists(safePath))
         {
-            throw new FileNotFoundException("音声ファイルが見つかりません。", path);
+            throw new FileNotFoundException("音声ファイルが見つかりません。", safePath);
         }
 
-        return Path.GetExtension(path).ToLowerInvariant() switch
+        return Path.GetExtension(safePath).ToLowerInvariant() switch
         {
-            ".wav" => OpenOwned(path, static stream => new WaveFileReader(stream)),
-            ".mp3" => OpenOwned(path, static stream => new ManagedMpegStream(stream, closeOnDispose: false)),
-            ".ogg" => OpenOgg(path),
-            ".opus" => new OpusWaveReader(path),
-            ".aif" or ".aiff" => OpenOwned(path, static stream => new AiffFileReader(stream)),
-            ".flac" or ".m4a" or ".aac" or ".wma" => new MediaFoundationReader(path),
-            _ => throw new NotSupportedException($"未対応の音声形式です: {Path.GetExtension(path)}")
+            ".wav" => OpenOwned(safePath, static stream => new WaveFileReader(stream)),
+            ".mp3" => OpenOwned(safePath, static stream => new ManagedMpegStream(stream, closeOnDispose: false)),
+            ".ogg" => OpenOgg(safePath),
+            ".opus" => new OpusWaveReader(safePath),
+            ".aif" or ".aiff" => OpenOwned(safePath, static stream => new AiffFileReader(stream)),
+            ".flac" or ".m4a" or ".aac" or ".wma" => new MediaFoundationReader(safePath),
+            _ => throw new NotSupportedException($"未対応の音声形式です: {Path.GetExtension(safePath)}")
         };
     }
 
