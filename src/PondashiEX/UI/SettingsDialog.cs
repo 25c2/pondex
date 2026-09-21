@@ -9,6 +9,8 @@ public sealed class SettingsDialog : Form
     private readonly CheckBox _backgroundInputCheck;
     private readonly CheckBox _silentLoopCheck;
     private readonly CheckBox _fadeOutOnStopCheck;
+    private readonly CheckBox _fadeOutOnStopAllCheck;
+    private readonly CheckBox _darkModeCheck;
     private readonly TextBox _projectNameText;
     private readonly TextBox _themeColorText;
     private readonly NumericUpDown _soundListColumns;
@@ -21,7 +23,7 @@ public sealed class SettingsDialog : Form
         StartPosition = FormStartPosition.CenterParent;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(560, 388);
+        ClientSize = new Size(560, 472);
         MinimumSize = new Size(440, 300);
         DpiWindowHelper.Attach(this);
 
@@ -30,7 +32,7 @@ public sealed class SettingsDialog : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(14),
             ColumnCount = 2,
-            RowCount = 8,
+            RowCount = 10,
             AutoScroll = true
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
@@ -38,6 +40,8 @@ public sealed class SettingsDialog : Form
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
@@ -81,6 +85,18 @@ public sealed class SettingsDialog : Form
             Checked = settings.FadeOutOnStop,
             AutoSize = true
         };
+        _fadeOutOnStopAllCheck = new CheckBox
+        {
+            Text = "全停止でも音源ごとのFade Outを使う",
+            Checked = settings.FadeOutOnStopAll,
+            AutoSize = true
+        };
+        _darkModeCheck = new CheckBox
+        {
+            Text = "画面全体を暗い配色にする",
+            Checked = settings.DarkMode,
+            AutoSize = true
+        };
         _soundListColumns = new NumericUpDown
         {
             Minimum = 1,
@@ -101,8 +117,12 @@ public sealed class SettingsDialog : Form
         root.Controls.Add(_silentLoopCheck, 1, 4);
         root.Controls.Add(new Label { Text = "停止時フェード", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 5);
         root.Controls.Add(_fadeOutOnStopCheck, 1, 5);
-        root.Controls.Add(new Label { Text = "音源一覧の列数 (1～8)", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 6);
-        root.Controls.Add(_soundListColumns, 1, 6);
+        root.Controls.Add(new Label { Text = "全停止時フェード", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 6);
+        root.Controls.Add(_fadeOutOnStopAllCheck, 1, 6);
+        root.Controls.Add(new Label { Text = "音源一覧の列数 (1～8)", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 7);
+        root.Controls.Add(_soundListColumns, 1, 7);
+        root.Controls.Add(new Label { Text = "表示モード", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 8);
+        root.Controls.Add(_darkModeCheck, 1, 8);
 
         var buttons = new FlowLayoutPanel
         {
@@ -113,7 +133,7 @@ public sealed class SettingsDialog : Form
         var cancelButton = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, Width = 90, Height = 32 };
         buttons.Controls.Add(okButton);
         buttons.Controls.Add(cancelButton);
-        root.Controls.Add(buttons, 0, 7);
+        root.Controls.Add(buttons, 0, 9);
         root.SetColumnSpan(buttons, 2);
         Controls.Add(root);
         AcceptButton = okButton;
@@ -127,6 +147,10 @@ public sealed class SettingsDialog : Form
     public bool SilentLoop => _silentLoopCheck.Checked;
 
     public bool FadeOutOnStop => _fadeOutOnStopCheck.Checked;
+
+    public bool FadeOutOnStopAll => _fadeOutOnStopAllCheck.Checked;
+
+    public bool DarkMode => _darkModeCheck.Checked;
 
     public int SoundListColumns => (int)_soundListColumns.Value;
 

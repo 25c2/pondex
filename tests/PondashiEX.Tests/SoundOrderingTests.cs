@@ -1,3 +1,4 @@
+using System.Drawing;
 using PondashiEX.Project;
 using PondashiEX.UI;
 
@@ -62,6 +63,94 @@ public sealed class SoundOrderingTests
         Assert.False(changed);
         Assert.Equal(0, newIndex);
         Assert.Equal([first, second], sounds);
+    }
+
+    [Fact]
+    public void FindSoundDropPlacement_UsesHorizontalPositionInsideSelectedRow()
+    {
+        var ids = Enumerable.Range(0, 6).Select(_ => Guid.NewGuid()).ToArray();
+        var layouts = new[]
+        {
+            new SoundDropLayout(ids[0], new Rectangle(10, 10, 100, 80)),
+            new SoundDropLayout(ids[1], new Rectangle(120, 10, 100, 80)),
+            new SoundDropLayout(ids[2], new Rectangle(230, 10, 100, 80)),
+            new SoundDropLayout(ids[3], new Rectangle(10, 100, 100, 80)),
+            new SoundDropLayout(ids[4], new Rectangle(120, 100, 100, 80)),
+            new SoundDropLayout(ids[5], new Rectangle(230, 100, 100, 80))
+        };
+
+        var placement = MainForm.FindSoundDropPlacement(
+            layouts,
+            ids[5],
+            new Point(180, 120));
+
+        Assert.Equal(new SoundDropPlacement(ids[4], InsertAfter: true), placement);
+    }
+
+    [Fact]
+    public void FindSoundDropPlacement_DropInGapBeforeSecondRowUsesRowMajorOrder()
+    {
+        var ids = Enumerable.Range(0, 6).Select(_ => Guid.NewGuid()).ToArray();
+        var layouts = new[]
+        {
+            new SoundDropLayout(ids[0], new Rectangle(10, 10, 100, 80)),
+            new SoundDropLayout(ids[1], new Rectangle(120, 10, 100, 80)),
+            new SoundDropLayout(ids[2], new Rectangle(230, 10, 100, 80)),
+            new SoundDropLayout(ids[3], new Rectangle(10, 110, 100, 80)),
+            new SoundDropLayout(ids[4], new Rectangle(120, 110, 100, 80)),
+            new SoundDropLayout(ids[5], new Rectangle(230, 110, 100, 80))
+        };
+
+        var placement = MainForm.FindSoundDropPlacement(
+            layouts,
+            ids[0],
+            new Point(5, 105));
+
+        Assert.Equal(new SoundDropPlacement(ids[3], InsertAfter: false), placement);
+    }
+
+    [Fact]
+    public void FindSoundDropPlacement_DropBelowAllRowsMovesToEnd()
+    {
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        var third = Guid.NewGuid();
+        var layouts = new[]
+        {
+            new SoundDropLayout(first, new Rectangle(10, 10, 100, 80)),
+            new SoundDropLayout(second, new Rectangle(120, 10, 100, 80)),
+            new SoundDropLayout(third, new Rectangle(10, 100, 100, 80))
+        };
+
+        var placement = MainForm.FindSoundDropPlacement(
+            layouts,
+            first,
+            new Point(300, 300));
+
+        Assert.Equal(new SoundDropPlacement(third, InsertAfter: true), placement);
+    }
+
+    [Fact]
+    public void FindSoundDropPlacement_DroppingOnOnlyCardInLastRowKeepsItsPosition()
+    {
+        var first = Guid.NewGuid();
+        var second = Guid.NewGuid();
+        var third = Guid.NewGuid();
+        var fourth = Guid.NewGuid();
+        var layouts = new[]
+        {
+            new SoundDropLayout(first, new Rectangle(10, 10, 100, 80)),
+            new SoundDropLayout(second, new Rectangle(120, 10, 100, 80)),
+            new SoundDropLayout(third, new Rectangle(230, 10, 100, 80)),
+            new SoundDropLayout(fourth, new Rectangle(10, 100, 100, 80))
+        };
+
+        var placement = MainForm.FindSoundDropPlacement(
+            layouts,
+            fourth,
+            new Point(60, 140));
+
+        Assert.Equal(new SoundDropPlacement(third, InsertAfter: true), placement);
     }
 
     [Fact]
@@ -168,6 +257,8 @@ public sealed class SoundOrderingTests
             backgroundInput: true,
             silentLoop: true,
             fadeOutOnStop: true,
+            fadeOutOnStopAll: false,
+            darkMode: false,
             soundListColumns: 3,
             "本番",
             "#202020");
@@ -188,6 +279,8 @@ public sealed class SoundOrderingTests
             settings.BackgroundInput,
             settings.SilentLoop,
             settings.FadeOutOnStop,
+            fadeOutOnStopAll: true,
+            darkMode: true,
             soundListColumns: 2,
             project.Name,
             project.ThemeColor);

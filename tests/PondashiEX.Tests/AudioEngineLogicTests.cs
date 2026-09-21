@@ -28,6 +28,33 @@ public sealed class AudioEngineLogicTests
     }
 
     [Fact]
+    public async Task StopAll_WithFadeEnabledFadesConfiguredSoundsAndImmediatelyStopsOthers()
+    {
+        using var directory = new TestDirectory();
+        var firstPath = CreateWaveFile(directory.GetPath("fade.wav"));
+        var secondPath = CreateWaveFile(directory.GetPath("immediate.wav"));
+        using var engine = CreateEngine(out var output);
+        var fading = new SoundDefinition
+        {
+            Id = Guid.NewGuid(),
+            Name = "fade",
+            FadeOut = new FadeSettings { Enabled = true, Value = 1.0f }
+        };
+        var immediate = new SoundDefinition { Id = Guid.NewGuid(), Name = "immediate" };
+
+        await engine.PlayAsync(fading, firstPath);
+        await engine.PlayAsync(immediate, secondPath);
+        engine.FadeOutOnStopEnabled = false;
+        engine.StopAll(useFadeOut: true);
+
+        Assert.Equal(PondashiEX.Audio.PlaybackState.Fading, engine.GetState(fading.Id));
+        Assert.Equal(PondashiEX.Audio.PlaybackState.Stopped, engine.GetState(immediate.Id));
+        Assert.Contains(fading.Id, engine.GetActiveSoundIds());
+        Assert.DoesNotContain(immediate.Id, engine.GetActiveSoundIds());
+        Assert.Equal(NAudio.Wave.PlaybackState.Playing, output.PlaybackState);
+    }
+
+    [Fact]
     public async Task Stop_UsesConfiguredFadeOutWhenEnabled()
     {
         using var directory = new TestDirectory();

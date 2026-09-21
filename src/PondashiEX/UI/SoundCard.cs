@@ -38,6 +38,7 @@ public sealed class SoundCard : UserControl
     private bool _loopSecondsEdited;
     private Point? _dragStart;
     private bool _reorderDragging;
+    private bool _darkMode;
     private string _committedGroup;
 
     public SoundCard(SoundDefinition sound)
@@ -47,6 +48,7 @@ public sealed class SoundCard : UserControl
         AutoScaleMode = AutoScaleMode.Dpi;
         BorderStyle = BorderStyle.FixedSingle;
         BackColor = Color.FromArgb(245, 245, 245);
+        Tag = UiTheme.ElevatedSurfaceRole;
         Margin = new Padding(6);
         MinimumSize = new Size(320, CollapsedHeight);
         Height = CollapsedHeight;
@@ -94,6 +96,9 @@ public sealed class SoundCard : UserControl
         var stopButton = CreateButton("■ 停止", Color.FromArgb(255, 225, 225));
         _pauseButton = CreateButton("Ⅱ 一時停止", Color.FromArgb(255, 245, 205));
         _detailsButton = CreateButton("詳細 ▼", SystemColors.Control);
+        playButton.Tag = UiTheme.SuccessButtonRole;
+        stopButton.Tag = UiTheme.StopButtonRole;
+        _pauseButton.Tag = UiTheme.WarningButtonRole;
 
         _volumeTrack = new TrackBar
         {
@@ -225,6 +230,7 @@ public sealed class SoundCard : UserControl
             UseVisualStyleBackColor = false,
             Margin = new Padding(8, 2, 4, 2)
         };
+        deleteButton.Tag = UiTheme.StopButtonRole;
         filePanel.Controls.Add(_fileText);
         filePanel.Controls.Add(browseButton);
         AddLabeled(_detailsContent, "ファイル", filePanel);
@@ -448,16 +454,24 @@ public sealed class SoundCard : UserControl
 
     public event EventHandler<GroupChangedEventArgs>? GroupChangeCommitted;
 
+    internal void ApplyDarkMode(bool darkMode)
+    {
+        _darkMode = darkMode;
+        UiTheme.Apply(this, darkMode);
+        UpdateState(_state);
+    }
+
     public void UpdateState(PlaybackState state)
     {
         _state = state;
         (_stateLabel.Text, _stateLabel.BackColor) = state switch
         {
-            PlaybackState.Playing => ("再生中", Color.LightGreen),
-            PlaybackState.Paused => ("一時停止", Color.Khaki),
-            PlaybackState.Fading => ("フェード中", Color.LightSkyBlue),
-            _ => ("停止中", SystemColors.Control)
+            PlaybackState.Playing => ("再生中", _darkMode ? Color.FromArgb(42, 91, 59) : Color.LightGreen),
+            PlaybackState.Paused => ("一時停止", _darkMode ? Color.FromArgb(105, 86, 38) : Color.Khaki),
+            PlaybackState.Fading => ("フェード中", _darkMode ? Color.FromArgb(45, 78, 105) : Color.LightSkyBlue),
+            _ => ("停止中", _darkMode ? Color.FromArgb(58, 62, 67) : SystemColors.Control)
         };
+        _stateLabel.ForeColor = _darkMode ? Color.FromArgb(238, 240, 242) : SystemColors.ControlText;
         _pauseButton.Text = state == PlaybackState.Paused ? "▶ 再開" : "Ⅱ 一時停止";
     }
 

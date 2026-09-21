@@ -41,6 +41,10 @@ public sealed class ProjectSettings
 
     public bool FadeOutOnStop { get; set; } = true;
 
+    public bool FadeOutOnStopAll { get; set; }
+
+    public bool DarkMode { get; set; }
+
     public bool BackgroundInput { get; set; }
 
     public int SoundListColumns { get; set; } = 1;

@@ -8,6 +8,7 @@ public sealed class TriggerPanel : UserControl
     private IReadOnlyList<SoundDefinition> _sounds = [];
     private List<TriggerDefinition> _triggers = [];
     private bool _refreshing;
+    private bool _darkMode;
 
     public TriggerPanel()
     {
@@ -88,6 +89,12 @@ public sealed class TriggerPanel : UserControl
 
     public event EventHandler? DefinitionsChanged;
 
+    internal void ApplyDarkMode(bool darkMode)
+    {
+        _darkMode = darkMode;
+        UiTheme.Apply(this, darkMode);
+    }
+
     public void SetData(List<TriggerDefinition> triggers, IReadOnlyList<SoundDefinition> sounds)
     {
         _triggers = triggers;
@@ -108,6 +115,7 @@ public sealed class TriggerPanel : UserControl
 
         var definition = new TriggerDefinition { TargetSoundId = _sounds[0].Id };
         using var dialog = new TriggerDialog(definition, _sounds);
+        UiTheme.Apply(dialog, _darkMode);
         if (dialog.ShowDialog(this) == DialogResult.OK)
         {
             _triggers.Add(definition);
@@ -124,6 +132,7 @@ public sealed class TriggerPanel : UserControl
         }
 
         using var dialog = new TriggerDialog(selected, _sounds);
+        UiTheme.Apply(dialog, _darkMode);
         if (dialog.ShowDialog(this) == DialogResult.OK)
         {
             Changed();

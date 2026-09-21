@@ -26,6 +26,7 @@ public sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _clockTimer;
     private readonly FlowLayoutPanel _soundList;
     private readonly TriggerPanel _triggerPanel;
+    private readonly TabControl _tabs;
     private readonly Label _projectLabel;
     private readonly Label _deviceLabel;
     private readonly Label _clockLabel;
@@ -39,6 +40,8 @@ public sealed class MainForm : Form
     private bool _closingAfterSave;
     private bool _applyingProjectSettings;
     private bool _cleanupCompleted;
+    private bool _darkMode;
+    private bool _statusIsError;
     private DateTimeOffset _nextDeviceAvailabilityCheck = DateTimeOffset.MinValue;
 
     public MainForm(
@@ -93,7 +96,13 @@ public sealed class MainForm : Form
             out _masterMute);
         root.Controls.Add(header, 0, 1);
 
-        var tabs = new TabControl { Dock = DockStyle.Fill, Font = new Font(Font.FontFamily, 10) };
+        _tabs = new TabControl
+        {
+            Dock = DockStyle.Fill,
+            Font = new Font(Font.FontFamily, 10),
+            DrawMode = TabDrawMode.OwnerDrawFixed
+        };
+        _tabs.DrawItem += DrawTabItem;
         var soundsTab = new TabPage("音源") { Padding = new Padding(4) };
         _soundList = new FlowLayoutPanel
         {
@@ -103,7 +112,8 @@ public sealed class MainForm : Form
             WrapContents = true,
             BackColor = Color.FromArgb(224, 228, 232),
             Padding = new Padding(4),
-            AllowDrop = true
+            AllowDrop = true,
+            Tag = UiTheme.SoundListRole
         };
         _soundList.MouseDown += (_, _) => EndTextEditing();
         _soundList.DragEnter += OnDragEnter;
@@ -118,9 +128,9 @@ public sealed class MainForm : Form
             _projectManager.MarkDirty();
         };
         triggersTab.Controls.Add(_triggerPanel);
-        tabs.TabPages.Add(soundsTab);
-        tabs.TabPages.Add(triggersTab);
-        root.Controls.Add(tabs, 0, 2);
+        _tabs.TabPages.Add(soundsTab);
+        _tabs.TabPages.Add(triggersTab);
+        root.Controls.Add(_tabs, 0, 2);
 
         var statusStrip = new StatusStrip
         {
@@ -250,6 +260,8 @@ public sealed class MainForm : Form
 
         var addButton = HeaderButton("＋ 音源追加", Color.FromArgb(225, 235, 245));
         var stopAllButton = HeaderButton("■ 全停止", Color.FromArgb(220, 65, 65));
+        addButton.Tag = UiTheme.AccentButtonRole;
+        stopAllButton.Tag = UiTheme.DangerButtonRole;
         stopAllButton.ForeColor = Color.White;
         stopAllButton.Font = new Font(Font.FontFamily, 14, FontStyle.Bold);
         var modeButton = HeaderButton("時計 / SW切替", SystemColors.Control);
@@ -591,6 +603,7 @@ public sealed class MainForm : Form
     private void AddSoundCard(SoundDefinition sound)
     {
         var card = new SoundCard(sound);
+        card.ApplyDarkMode(_projectManager.Current.Settings.DarkMode);
         card.PlayRequested += async (_, _) => await PlaySoundAsync(sound.Id);
         card.StopRequested += (_, _) => _audioEngine.Stop(sound.Id);
         card.PauseRequested += (_, _) => _audioEngine.Pause(sound.Id);
@@ -832,10 +845,15 @@ public sealed class MainForm : Form
         await _audioEngine.PlayAsync(sound, path);
     }
 
-    private void StopAll()
+    private void StopAll(bool useConfiguredFade = true)
     {
-        _audioEngine.StopAll();
-        SetStatus("すべての音源を停止しました。", false);
+        var useFadeOut = useConfiguredFade && _projectManager.Current.Settings.FadeOutOnStopAll;
+        _audioEngine.StopAll(useFadeOut);
+        SetStatus(
+            useFadeOut
+                ? "全停止を実行しました。Fade Out設定のある音源はフェード後に停止します。"
+                : "すべての音源を即時停止しました。",
+            false);
     }
 
     private void ToggleMasterMute()
@@ -899,6 +917,7 @@ public sealed class MainForm : Form
         var devices = _deviceManager.GetOutputDevices();
         using var dialog = new SettingsDialog(_projectManager.Current.Settings, devices);
         dialog.SetProjectMetadata(_projectManager.Current.Project);
+        UiTheme.Apply(dialog, _projectManager.Current.Settings.DarkMode);
         if (dialog.ShowDialog(this) != DialogResult.OK)
         {
             return;
@@ -919,6 +938,8 @@ public sealed class MainForm : Form
             dialog.BackgroundInput,
             dialog.SilentLoop,
             dialog.FadeOutOnStop,
+            dialog.FadeOutOnStopAll,
+            dialog.DarkMode,
             dialog.SoundListColumns,
             projectName,
             dialog.ThemeColor);
@@ -926,6 +947,8 @@ public sealed class MainForm : Form
         settings.BackgroundInput = dialog.BackgroundInput;
         settings.SilentLoop = dialog.SilentLoop;
         settings.FadeOutOnStop = dialog.FadeOutOnStop;
+        settings.FadeOutOnStopAll = dialog.FadeOutOnStopAll;
+        settings.DarkMode = dialog.DarkMode;
         settings.SoundListColumns = dialog.SoundListColumns;
         project.Name = projectName;
         project.ThemeColor = dialog.ThemeColor;
@@ -946,6 +969,8 @@ public sealed class MainForm : Form
         bool backgroundInput,
         bool silentLoop,
         bool fadeOutOnStop,
+        bool fadeOutOnStopAll,
+        bool darkMode,
         int soundListColumns,
         string projectName,
         string themeColor) =>
@@ -953,6 +978,8 @@ public sealed class MainForm : Form
         || settings.BackgroundInput != backgroundInput
         || settings.SilentLoop != silentLoop
         || settings.FadeOutOnStop != fadeOutOnStop
+        || settings.FadeOutOnStopAll != fadeOutOnStopAll
+        || settings.DarkMode != darkMode
         || settings.SoundListColumns != soundListColumns
         || !string.Equals(project.Name, projectName, StringComparison.Ordinal)
         || !string.Equals(project.ThemeColor, themeColor, StringComparison.Ordinal);
@@ -963,6 +990,7 @@ public sealed class MainForm : Form
             .Select(sound => sound.Group)
             .Where(group => !string.IsNullOrWhiteSpace(group));
         using var dialog = new GroupShortcutDialog(_projectManager.Current.GroupShortcuts, groups);
+        UiTheme.Apply(dialog, _projectManager.Current.Settings.DarkMode);
         if (dialog.ShowDialog(this) != DialogResult.OK)
         {
             return;
@@ -1067,7 +1095,7 @@ public sealed class MainForm : Form
             return;
         }
 
-        StopAll();
+        StopAll(useConfiguredFade: false);
         UseWaitCursor = true;
         SetStatus("動作診断を実行しています…", false);
         try
@@ -1161,16 +1189,18 @@ public sealed class MainForm : Form
             SetStatus("バックグラウンド入力を開始できません。", true);
         }
 
+        Color themeColor;
         try
         {
-            var themeColor = ColorTranslator.FromHtml(_projectManager.Current.Project.ThemeColor);
-            BackColor = themeColor;
-            ApplyHeaderContrast(themeColor);
+            themeColor = ColorTranslator.FromHtml(_projectManager.Current.Project.ThemeColor);
         }
         catch
         {
-            BackColor = SystemColors.Control;
+            themeColor = Color.FromArgb(36, 40, 44);
         }
+
+        ApplyDisplayTheme(settings.DarkMode);
+        ApplyHeaderContrast(themeColor);
 
         UpdateProjectHeader();
     }
@@ -1475,30 +1505,83 @@ public sealed class MainForm : Form
         }
 
         var point = _soundList.PointToClient(screenPoint);
-        var target = _soundList.Controls
+        var layouts = _soundList.Controls
             .OfType<SoundCard>()
-            .FirstOrDefault(card => card != source && card.Bounds.Contains(point));
-        if (target is null)
+            .Select(card => new SoundDropLayout(card.Sound.Id, card.Bounds))
+            .ToArray();
+        var placement = FindSoundDropPlacement(layouts, source.Sound.Id, point);
+        if (placement is { } target)
         {
-            target = _soundList.Controls
-                .OfType<SoundCard>()
-                .LastOrDefault(card => card != source);
-            if (target is not null)
-            {
-                ReorderSound(source.Sound.Id, target.Sound.Id, insertAfter: true);
-            }
+            ReorderSound(source.Sound.Id, target.TargetSoundId, target.InsertAfter);
+        }
+    }
 
-            return;
+    internal static SoundDropPlacement? FindSoundDropPlacement(
+        IReadOnlyCollection<SoundDropLayout> layouts,
+        Guid sourceSoundId,
+        Point point)
+    {
+        const int rowTolerance = 4;
+        var orderedLayouts = layouts
+            .OrderBy(layout => layout.Bounds.Top)
+            .ThenBy(layout => layout.Bounds.Left)
+            .ToArray();
+        var candidates = orderedLayouts
+            .Where(layout => layout.SoundId != sourceSoundId)
+            .ToArray();
+        if (candidates.Length == 0)
+        {
+            return null;
         }
 
-        var targetPoint = new Point(point.X - target.Left, point.Y - target.Top);
-        var hasMultipleColumns = _soundList.Controls
-            .OfType<SoundCard>()
-            .Any(card => card != target && Math.Abs(card.Top - target.Top) <= 4);
-        var insertAfter = hasMultipleColumns
-            ? targetPoint.X >= target.ClientSize.Width / 2
-            : targetPoint.Y >= target.ClientSize.Height / 2;
-        ReorderSound(source.Sound.Id, target.Sound.Id, insertAfter);
+        var rows = new List<List<SoundDropLayout>>();
+        foreach (var layout in orderedLayouts)
+        {
+            var row = rows.LastOrDefault();
+            if (row is null || Math.Abs(row[0].Bounds.Top - layout.Bounds.Top) > rowTolerance)
+            {
+                row = [];
+                rows.Add(row);
+            }
+
+            row.Add(layout);
+        }
+
+        var selectedRow = rows
+            .OrderBy(row => VerticalDistance(row, point.Y))
+            .ThenBy(row => Math.Abs(RowCenter(row) - point.Y))
+            .First();
+        var rowStartIndex = rows
+            .TakeWhile(row => !ReferenceEquals(row, selectedRow))
+            .Sum(row => row.Count(layout => layout.SoundId != sourceSoundId));
+        var selectedCandidates = selectedRow
+            .Where(layout => layout.SoundId != sourceSoundId)
+            .ToList();
+        var localInsertionIndex = selectedCandidates.FindIndex(layout =>
+            point.X < layout.Bounds.Left + (layout.Bounds.Width / 2));
+        if (localInsertionIndex < 0)
+        {
+            localInsertionIndex = selectedCandidates.Count;
+        }
+
+        var insertionIndex = rowStartIndex + localInsertionIndex;
+        return insertionIndex >= candidates.Length
+            ? new SoundDropPlacement(candidates[^1].SoundId, InsertAfter: true)
+            : new SoundDropPlacement(candidates[insertionIndex].SoundId, InsertAfter: false);
+    }
+
+    private static int VerticalDistance(IReadOnlyCollection<SoundDropLayout> row, int y)
+    {
+        var top = row.Min(layout => layout.Bounds.Top);
+        var bottom = row.Max(layout => layout.Bounds.Bottom);
+        return y < top ? top - y : y > bottom ? y - bottom : 0;
+    }
+
+    private static int RowCenter(IReadOnlyCollection<SoundDropLayout> row)
+    {
+        var top = row.Min(layout => layout.Bounds.Top);
+        var bottom = row.Max(layout => layout.Bounds.Bottom);
+        return top + ((bottom - top) / 2);
     }
 
     private bool IsEditingText()
@@ -1538,7 +1621,44 @@ public sealed class MainForm : Form
     private void ShowHelp()
     {
         using var dialog = new HelpDialog();
+        UiTheme.Apply(dialog, _projectManager.Current.Settings.DarkMode);
         dialog.ShowDialog(this);
+    }
+
+    private void ApplyDisplayTheme(bool darkMode)
+    {
+        _darkMode = darkMode;
+        UiTheme.Apply(this, darkMode);
+        _triggerPanel.ApplyDarkMode(darkMode);
+        foreach (var card in _soundCards.Values)
+        {
+            card.ApplyDarkMode(darkMode);
+        }
+
+        UpdateMuteAppearance(_masterMute);
+        _tabs.Invalidate();
+        var statusText = _statusLabel.Text ?? string.Empty;
+        SetStatus(statusText.StartsWith("状態: ", StringComparison.Ordinal)
+            ? statusText[4..]
+            : statusText, _statusIsError);
+    }
+
+    private void DrawTabItem(object? sender, DrawItemEventArgs eventArgs)
+    {
+        var selected = eventArgs.Index == _tabs.SelectedIndex;
+        var background = _darkMode
+            ? selected ? Color.FromArgb(48, 52, 57) : Color.FromArgb(34, 37, 40)
+            : selected ? SystemColors.ControlLightLight : SystemColors.Control;
+        var foreground = _darkMode ? Color.FromArgb(238, 240, 242) : SystemColors.ControlText;
+        using var backgroundBrush = new SolidBrush(background);
+        using var foregroundBrush = new SolidBrush(foreground);
+        eventArgs.Graphics.FillRectangle(backgroundBrush, eventArgs.Bounds);
+        var text = _tabs.TabPages[eventArgs.Index].Text;
+        var textSize = eventArgs.Graphics.MeasureString(text, _tabs.Font);
+        var location = new PointF(
+            eventArgs.Bounds.Left + ((eventArgs.Bounds.Width - textSize.Width) / 2),
+            eventArgs.Bounds.Top + ((eventArgs.Bounds.Height - textSize.Height) / 2));
+        eventArgs.Graphics.DrawString(text, _tabs.Font, foregroundBrush, location);
     }
 
     private static void UpdateMuteAppearance(CheckBox mute)
@@ -1561,8 +1681,11 @@ public sealed class MainForm : Form
 
     private void SetStatus(string message, bool error)
     {
+        _statusIsError = error;
         _statusLabel.Text = $"状態: {message}";
-        _statusLabel.ForeColor = error ? Color.DarkRed : SystemColors.ControlText;
+        _statusLabel.ForeColor = error
+            ? _darkMode ? Color.LightCoral : Color.DarkRed
+            : _darkMode ? Color.FromArgb(238, 240, 242) : SystemColors.ControlText;
     }
 
     private void ApplyHeaderContrast(Color themeColor)
@@ -1578,12 +1701,36 @@ public sealed class MainForm : Form
 
         header.BackColor = themeColor;
         var foreground = themeColor.GetBrightness() > 0.62f ? Color.Black : Color.White;
-        foreach (var label in header.Controls.OfType<Label>())
+        var descendants = Descendants(header).ToArray();
+        foreach (var container in descendants.Where(control =>
+                     control is Panel or TableLayoutPanel or FlowLayoutPanel))
+        {
+            container.BackColor = themeColor;
+        }
+
+        foreach (var trackBar in descendants.OfType<TrackBar>())
+        {
+            trackBar.BackColor = themeColor;
+        }
+
+        foreach (var label in descendants.OfType<Label>())
         {
             label.ForeColor = foreground;
         }
 
-        _masterMute.ForeColor = foreground;
+        _masterMute.ForeColor = _masterMute.Checked ? Color.White : foreground;
+    }
+
+    private static IEnumerable<Control> Descendants(Control parent)
+    {
+        foreach (Control child in parent.Controls)
+        {
+            yield return child;
+            foreach (var descendant in Descendants(child))
+            {
+                yield return descendant;
+            }
+        }
     }
 
     private static bool IsSupportedAudioFile(string path)
@@ -1600,3 +1747,7 @@ public sealed class MainForm : Form
 }
 
 internal readonly record struct SoundRemovalResult(bool Removed, int RelatedSettingsRemoved);
+
+internal readonly record struct SoundDropLayout(Guid SoundId, Rectangle Bounds);
+
+internal readonly record struct SoundDropPlacement(Guid TargetSoundId, bool InsertAfter);

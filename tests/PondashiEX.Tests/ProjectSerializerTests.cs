@@ -14,7 +14,13 @@ public sealed class ProjectSerializerTests
         var model = new ProjectModel
         {
             Project = new ProjectMetadata { Name = "文化祭" },
-            Settings = new ProjectSettings { SoundListColumns = 3, FadeOutOnStop = false },
+            Settings = new ProjectSettings
+            {
+                SoundListColumns = 3,
+                FadeOutOnStop = false,
+                FadeOutOnStopAll = true,
+                DarkMode = true
+            },
             Sounds =
             [
                 new SoundDefinition
@@ -51,6 +57,8 @@ public sealed class ProjectSerializerTests
         Assert.Equal(soundId, Assert.Single(loaded.Sounds).Id);
         Assert.Equal(3, loaded.Settings.SoundListColumns);
         Assert.False(loaded.Settings.FadeOutOnStop);
+        Assert.True(loaded.Settings.FadeOutOnStopAll);
+        Assert.True(loaded.Settings.DarkMode);
         Assert.Equal(1.25, Assert.Single(loaded.Sounds).Loop.StartSeconds);
         var groupShortcut = Assert.Single(loaded.GroupShortcuts);
         Assert.Equal("SE", groupShortcut.Group);
@@ -80,6 +88,7 @@ public sealed class ProjectSerializerTests
 
         Assert.Equal("将来版", loaded.Project.Name);
         Assert.True(loaded.Settings.FadeOutOnStop);
+        Assert.False(loaded.Settings.FadeOutOnStopAll);
     }
 
     [Fact]

@@ -300,7 +300,7 @@ public sealed class AudioEngine : IAudioEngine
         }
     }
 
-    public void StopAll()
+    public void StopAll(bool useFadeOut = false)
     {
         lock (_sync)
         {
@@ -311,7 +311,14 @@ public sealed class AudioEngine : IAudioEngine
 
             foreach (var soundId in _instances.Keys.ToArray())
             {
-                StopCore(soundId, PlaybackEndReason.StopAll);
+                if (useFadeOut)
+                {
+                    StopWithFadeCore(soundId, PlaybackEndReason.StopAll);
+                }
+                else
+                {
+                    StopCore(soundId, PlaybackEndReason.StopAll);
+                }
             }
 
             StopOutputWhenIdle();

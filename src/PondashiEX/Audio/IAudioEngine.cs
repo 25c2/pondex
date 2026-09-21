@@ -36,7 +36,7 @@ public interface IAudioEngine : IDisposable
 
     void FadeVolume(Guid soundId, float targetVolume, TimeSpan duration);
 
-    void StopAll();
+    void StopAll(bool useFadeOut = false);
 
     PlaybackState GetState(Guid soundId);
 
