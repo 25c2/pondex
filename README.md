@@ -18,7 +18,7 @@ BGM／効果音をすばやく再生する、Windows向けのオフライン・�
 
 ## 動作環境
 
-- Windows 10以降（64bit）
+- Windows 11、またはMicrosoftのサポート期間中のWindows 10 Enterprise／LTSC（64bit）
 - 一般的なWindows音声出力デバイス
 
 [GitHub Releases](https://github.com/25c2/pond/releases)の`win-x64`版はself-containedなので、.NET Runtimeを別途インストールする必要はありません。現在の実行ファイルはコード署名されていないため、SmartScreenが表示された場合はダウンロード元と同梱のSHA-256チェックサムを確認してください。

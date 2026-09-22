@@ -4,8 +4,8 @@ PondashiEXへの改善提案・不具合報告・Pull Requestを歓迎します�
 
 ## 開発環境
 
-- Windows 10以降
-- .NET 8 SDK
+- Windows 11、またはMicrosoftのサポート期間中のWindows 10 Enterprise／LTSC
+- .NET 10 SDK（`global.json`記載バージョン）
 
 変更を送る前に、リポジトリルートで次を実行してください。
 

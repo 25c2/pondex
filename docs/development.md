@@ -2,8 +2,8 @@
 
 ## 必要な環境
 
-- Windows 10以降（64bit）
-- .NET 8 SDK
+- Windows 11、またはMicrosoftのサポート期間中のWindows 10 Enterprise／LTSC（64bit）
+- .NET 10 SDK（`global.json`記載バージョン）
 
 依存パッケージの取得先はリポジトリの`NuGet.Config`で公式nuget.orgに限定しています。
 
@@ -44,10 +44,10 @@ Releaseワークフローは次を実行します。
 2. NuGet監査、フォーマット、Releaseビルド、全テスト
 3. Windows x64 self-contained版の作成とスモークテスト
 4. ZIPとSHA-256チェックサムの作成
-5. GitHub Artifact Attestationの発行
+5. publicリポジトリの場合はGitHub Artifact Attestationを発行（個人所有のprivateリポジトリではGitHub側の制限によりスキップ）
 6. GitHub Releaseへの添付
 
-来歴はGitHub CLIで検証できます。
+publicリポジトリで発行された来歴はGitHub CLIで検証できます。
 
 ```powershell
 gh attestation verify PondashiEX-v1.0-win-x64.zip --repo 25c2/pond

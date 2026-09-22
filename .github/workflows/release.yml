@@ -31,10 +31,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup .NET 8
+      - name: Setup .NET 10
         uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5d # v5.0.0
         with:
-          dotnet-version: 8.0.425
+          dotnet-version: 10.0.401
 
       - name: Validate release tag
         shell: pwsh
@@ -115,11 +115,17 @@ jobs:
           "RELEASE_CHECKSUM=$checksum" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Attest release artifacts
+        if: github.event.repository.visibility == 'public'
         uses: actions/attest-build-provenance@00014ed6ed5efc5b1ab7f7f34a39eb55d41aa4f8 # v3.1.0
         with:
           subject-path: |
             ${{ env.RELEASE_ARCHIVE }}
             ${{ env.RELEASE_CHECKSUM }}
+
+      - name: Explain skipped attestation
+        if: github.event.repository.visibility != 'public'
+        shell: pwsh
+        run: Write-Host "Artifact attestation is skipped because GitHub does not support it for user-owned private repositories. The SHA-256 checksum is still published."
 
       - name: Create GitHub Release
         shell: pwsh

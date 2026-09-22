@@ -1,7 +1,7 @@
 {
   "version": 1,
   "dependencies": {
-    "net8.0-windows7.0": {
+    "net10.0-windows7.0": {
       "Concentus.Oggfile": {
         "type": "Direct",
         "requested": "[1.0.7, )",
@@ -32,8 +32,7 @@
         "contentHash": "haG4hqYS06nojzXsUdrt5J+PSEi7WgQBqHOKIL3S40GwksO/01+2STQmdtvyGcIp7Zl92duKNKcVHF1b4lH1+w==",
         "dependencies": {
           "NAudio.Core": "2.3.0",
-          "NVorbis": "0.10.5",
-          "System.Memory": "4.6.3"
+          "NVorbis": "0.10.5"
         }
       },
       "NLayer.NAudioSupport": {
@@ -49,11 +48,7 @@
       "Concentus": {
         "type": "Transitive",
         "resolved": "2.2.2",
-        "contentHash": "2B9YmHPKO+k7YpAAnqmiXwiMJnfjfj1C868RszOll2iZWLnGTAiC1q21L/d7CvTan7T+hyqU8dR0Dcy3cpjVfQ==",
-        "dependencies": {
-          "System.Memory": "4.5.4",
-          "System.Numerics.Vectors": "4.5.0"
-        }
+        "contentHash": "2B9YmHPKO+k7YpAAnqmiXwiMJnfjfj1C868RszOll2iZWLnGTAiC1q21L/d7CvTan7T+hyqU8dR0Dcy3cpjVfQ=="
       },
       "NAudio.Asio": {
         "type": "Transitive",
@@ -108,28 +103,9 @@
       "NVorbis": {
         "type": "Transitive",
         "resolved": "0.10.5",
-        "contentHash": "o+IptCG4Avze39HrGeztC+xIp6fOOwGVAwkoa1J++4Ji1WmZ+KIKlFl5wsgxsXqBkmdpfs/vFSUproiLKYa2bw==",
-        "dependencies": {
-          "System.Memory": "4.5.3",
-          "System.ValueTuple": "4.5.0"
-        }
-      },
-      "System.Memory": {
-        "type": "Transitive",
-        "resolved": "4.6.3",
-        "contentHash": "qdcDOgnFZY40+Q9876JUHnlHu7bosOHX8XISRoH94fwk6hgaeQGSgfZd8srWRZNt5bV9ZW2TljcegDNxsf+96A=="
-      },
-      "System.Numerics.Vectors": {
-        "type": "Transitive",
-        "resolved": "4.5.0",
-        "contentHash": "QQTlPTl06J/iiDbJCiepZ4H//BVraReU4O4EoRw1U02H5TLUIT7xn3GnDp9AXPSlJUDyFs4uWjWafNX6WrAojQ=="
-      },
-      "System.ValueTuple": {
-        "type": "Transitive",
-        "resolved": "4.5.0",
-        "contentHash": "okurQJO6NRE/apDIP23ajJ0hpiNmJ+f0BwOlB/cSqTLQlw5upkf+5+96+iG2Jw40G1fCVCyPz/FhIABUjMR+RQ=="
+        "contentHash": "o+IptCG4Avze39HrGeztC+xIp6fOOwGVAwkoa1J++4Ji1WmZ+KIKlFl5wsgxsXqBkmdpfs/vFSUproiLKYa2bw=="
       }
     },
-    "net8.0-windows7.0/win-x64": {}
+    "net10.0-windows7.0/win-x64": {}
   }
 }
