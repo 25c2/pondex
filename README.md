@@ -1,6 +1,6 @@
-# 効果音ポン出しくんEX
+# Pondex
 
-[![CI](https://github.com/25c2/pondx/actions/workflows/ci.yml/badge.svg)](https://github.com/25c2/pondx/actions/workflows/ci.yml)
+[![CI](https://github.com/25c2/pondex/actions/workflows/ci.yml/badge.svg)](https://github.com/25c2/pondex/actions/workflows/ci.yml)
 
 [効果音ポンだしくん](https://www.vector.co.jp/soft/winnt/art/se499320.html)を個人的に使いやすく仕様と操作感を参考にして再実装したものです。
 大体のコード（というかREADME以外）はAI-generatedです。
@@ -22,7 +22,7 @@
 - Windows 11 / Windows 10
 - 一般的なWindows音声出力デバイス
 
-[GitHub Releases](https://github.com/25c2/pondx/releases)の`win-x64`版はself-containedなので、.NET Runtimeを別途インストールする必要はありません。現在の実行ファイルはコード署名されていないため、SmartScreenが表示される可能性はあります。
+[GitHub Releases](https://github.com/25c2/pondex/releases)の`win-x64`版はself-containedなので、.NET Runtimeを別途インストールする必要はありません。現在の実行ファイルはコード署名されていないため、SmartScreenが表示される可能性はあります。
 
 ## はじめかた
 
