@@ -45,6 +45,7 @@ public sealed class SoundCard : UserControl
         Sound = sound;
         _committedGroup = sound.Group;
         AutoScaleMode = AutoScaleMode.Dpi;
+        DoubleBuffered = true;
         BorderStyle = BorderStyle.FixedSingle;
         BackColor = Color.FromArgb(245, 245, 245);
         Tag = UiTheme.ElevatedSurfaceRole;

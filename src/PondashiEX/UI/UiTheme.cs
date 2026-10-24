@@ -21,6 +21,9 @@ internal static class UiTheme
     public static Font CreateFont(float size, FontStyle style = FontStyle.Regular) =>
         new(FontFamilyName, size, style, GraphicsUnit.Point);
 
+    public static void ConfigureApplicationColors(bool darkMode) =>
+        Application.SetColorMode(darkMode ? SystemColorMode.Dark : SystemColorMode.Classic);
+
     public static void Apply(Control root, bool darkMode)
     {
         ApplyControl(root, darkMode);
@@ -28,8 +31,16 @@ internal static class UiTheme
 
     private static void ApplyControl(Control control, bool darkMode)
     {
+        NativeWindowTheme.Apply(control, darkMode);
         switch (control)
         {
+            case ThemedTabControl tabs:
+                tabs.ApplyTheme(darkMode);
+                break;
+            case ThemedFlowLayoutPanel flow:
+                flow.ApplyTheme(darkMode);
+                ApplySurface(flow, darkMode);
+                break;
             case DataGridView grid:
                 ApplyGrid(grid, darkMode);
                 break;
@@ -44,6 +55,7 @@ internal static class UiTheme
                 textBox.ForeColor = darkMode ? DarkForeground : SystemColors.WindowText;
                 break;
             case NumericUpDown numeric:
+                numeric.BorderStyle = darkMode ? BorderStyle.FixedSingle : BorderStyle.Fixed3D;
                 numeric.BackColor = darkMode ? DarkInput : SystemColors.Window;
                 numeric.ForeColor = darkMode ? DarkForeground : SystemColors.WindowText;
                 break;
@@ -71,6 +83,12 @@ internal static class UiTheme
                 label.BackColor = Color.Transparent;
                 break;
             case CheckBox checkBox:
+                // Flat checkbox painting can put a pale check mark on a white box in dark mode.
+                // Keep native, state-aware glyph rendering; only button-style toggles need flat borders.
+                checkBox.FlatStyle = darkMode && checkBox.Appearance == Appearance.Button
+                    ? FlatStyle.Flat : FlatStyle.Standard;
+                checkBox.FlatAppearance.BorderColor = darkMode ? DarkBorder : SystemColors.ControlDark;
+                checkBox.FlatAppearance.BorderSize = 1;
                 checkBox.ForeColor = darkMode ? DarkForeground : SystemColors.ControlText;
                 if (checkBox.Appearance != Appearance.Button)
                 {
@@ -111,6 +129,9 @@ internal static class UiTheme
 
     private static void ApplyButton(Button button, bool darkMode)
     {
+        button.FlatStyle = darkMode ? FlatStyle.Flat : FlatStyle.Standard;
+        button.FlatAppearance.BorderColor = darkMode ? DarkBorder : SystemColors.ControlDark;
+        button.FlatAppearance.BorderSize = 1;
         button.UseVisualStyleBackColor = false;
         (button.BackColor, button.ForeColor) = button.Tag switch
         {
@@ -133,6 +154,10 @@ internal static class UiTheme
                 ? (Color.FromArgb(58, 62, 67), DarkForeground)
                 : (SystemColors.Control, SystemColors.ControlText)
         };
+        button.FlatAppearance.MouseOverBackColor = darkMode
+            ? ControlPaint.Light(button.BackColor, 0.15F) : Color.Empty;
+        button.FlatAppearance.MouseDownBackColor = darkMode
+            ? ControlPaint.Dark(button.BackColor, 0.15F) : Color.Empty;
     }
 
     private static void ApplyGrid(DataGridView grid, bool darkMode)
@@ -173,15 +198,16 @@ internal static class UiTheme
 
     private static void ApplyToolStripItem(ToolStripItem item, bool darkMode)
     {
+        if (item is ToolStripStatusLabel status)
+        {
+            status.BorderSides = darkMode ? ToolStripStatusLabelBorderSides.None : ToolStripStatusLabelBorderSides.Top;
+        }
+
         item.BackColor = darkMode ? DarkSurface : SystemColors.Control;
         item.ForeColor = darkMode ? DarkForeground : SystemColors.ControlText;
         if (item is ToolStripDropDownItem dropDown)
         {
-            dropDown.DropDown.BackColor = darkMode ? DarkSurface : SystemColors.Control;
-            foreach (ToolStripItem child in dropDown.DropDownItems)
-            {
-                ApplyToolStripItem(child, darkMode);
-            }
+            ApplyToolStrip(dropDown.DropDown, darkMode);
         }
     }
 
@@ -190,6 +216,7 @@ internal static class UiTheme
         public override Color MenuStripGradientBegin => DarkSurface;
         public override Color MenuStripGradientEnd => DarkSurface;
         public override Color ToolStripDropDownBackground => DarkSurface;
+        public override Color ToolStripBorder => DarkBorder;
         public override Color ImageMarginGradientBegin => DarkSurface;
         public override Color ImageMarginGradientMiddle => DarkSurface;
         public override Color ImageMarginGradientEnd => DarkSurface;

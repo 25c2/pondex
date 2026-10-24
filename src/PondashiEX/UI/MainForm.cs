@@ -53,6 +53,7 @@ public sealed class MainForm : Form
         IAppLogger logger,
         string logDirectory)
     {
+        UiTheme.ConfigureApplicationColors(projectManager.Current.Settings.DarkMode);
         _projectManager = projectManager;
         _audioEngine = audioEngine;
         _deviceManager = deviceManager;
@@ -97,15 +98,14 @@ public sealed class MainForm : Form
             out _masterMute);
         root.Controls.Add(header, 0, 1);
 
-        _tabs = new TabControl
+        _tabs = new ThemedTabControl
         {
             Dock = DockStyle.Fill,
             Font = new Font(Font.FontFamily, 10),
             DrawMode = TabDrawMode.OwnerDrawFixed
         };
-        _tabs.DrawItem += DrawTabItem;
         var soundsTab = new TabPage("音源") { Padding = new Padding(4) };
-        _soundList = new FlowLayoutPanel
+        _soundList = new ThemedFlowLayoutPanel
         {
             Dock = DockStyle.Fill,
             AutoScroll = true,
@@ -1877,6 +1877,7 @@ public sealed class MainForm : Form
     private void ApplyDisplayTheme(bool darkMode)
     {
         _darkMode = darkMode;
+        UiTheme.ConfigureApplicationColors(darkMode);
         UiTheme.Apply(this, darkMode);
         _triggerPanel.ApplyDarkMode(darkMode);
         foreach (var card in _soundCards.Values)
@@ -1890,24 +1891,6 @@ public sealed class MainForm : Form
         SetStatus(statusText.StartsWith("状態: ", StringComparison.Ordinal)
             ? statusText[4..]
             : statusText, _statusIsError);
-    }
-
-    private void DrawTabItem(object? sender, DrawItemEventArgs eventArgs)
-    {
-        var selected = eventArgs.Index == _tabs.SelectedIndex;
-        var background = _darkMode
-            ? selected ? Color.FromArgb(48, 52, 57) : Color.FromArgb(34, 37, 40)
-            : selected ? SystemColors.ControlLightLight : SystemColors.Control;
-        var foreground = _darkMode ? Color.FromArgb(238, 240, 242) : SystemColors.ControlText;
-        using var backgroundBrush = new SolidBrush(background);
-        using var foregroundBrush = new SolidBrush(foreground);
-        eventArgs.Graphics.FillRectangle(backgroundBrush, eventArgs.Bounds);
-        var text = _tabs.TabPages[eventArgs.Index].Text;
-        var textSize = eventArgs.Graphics.MeasureString(text, _tabs.Font);
-        var location = new PointF(
-            eventArgs.Bounds.Left + ((eventArgs.Bounds.Width - textSize.Width) / 2),
-            eventArgs.Bounds.Top + ((eventArgs.Bounds.Height - textSize.Height) / 2));
-        eventArgs.Graphics.DrawString(text, _tabs.Font, foregroundBrush, location);
     }
 
     private static void UpdateMuteAppearance(CheckBox mute)
