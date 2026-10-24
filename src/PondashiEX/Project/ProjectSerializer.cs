@@ -76,8 +76,10 @@ public sealed class ProjectSerializer
             ?? throw new ArgumentException("保存先フォルダを特定できません。", nameof(path));
         Directory.CreateDirectory(directory);
 
-        var tempPath = fullPath + ".tmp";
+        var tempPath = Path.Combine(directory, $".pondex-{Guid.NewGuid():N}.tmp");
+        var temporaryBackupPath = tempPath + ".bak";
         var backupPath = fullPath + ".bak";
+        var ownsTempFile = false;
         var json = JsonSerializer.Serialize(model, _options);
         var bytes = Utf8NoBom.GetBytes(json + Environment.NewLine);
         if (bytes.LongLength > ProjectLimits.MaxFileBytes)
@@ -90,12 +92,13 @@ public sealed class ProjectSerializer
         {
             await using (var stream = new FileStream(
                 tempPath,
-                FileMode.Create,
+                FileMode.CreateNew,
                 FileAccess.Write,
                 FileShare.None,
                 bufferSize: 64 * 1024,
                 FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
+                ownsTempFile = true;
                 await stream.WriteAsync(bytes, cancellationToken);
                 await stream.FlushAsync(cancellationToken);
             }
@@ -104,7 +107,8 @@ public sealed class ProjectSerializer
 
             if (File.Exists(fullPath))
             {
-                File.Replace(tempPath, fullPath, backupPath, ignoreMetadataErrors: true);
+                File.Replace(tempPath, fullPath, temporaryBackupPath, ignoreMetadataErrors: true);
+                File.Move(temporaryBackupPath, backupPath, overwrite: true);
             }
             else
             {
@@ -113,7 +117,7 @@ public sealed class ProjectSerializer
         }
         finally
         {
-            if (File.Exists(tempPath))
+            if (ownsTempFile && File.Exists(tempPath))
             {
                 File.Delete(tempPath);
             }
@@ -146,6 +150,7 @@ public sealed class ProjectSerializer
         }
 
         if (!TryGetProperty(root, "formatVersion", out var versionElement)
+            || versionElement.ValueKind != JsonValueKind.Number
             || !versionElement.TryGetInt32(out var formatVersion))
         {
             throw new ProjectFormatException("formatVersionが存在しないか、整数ではありません。");
@@ -323,6 +328,7 @@ public sealed class ProjectSerializer
             sound.Volume = Math.Clamp(sound.Volume, 0.0f, 1.0f);
             sound.Pan = Math.Clamp(sound.Pan, -1.0f, 1.0f);
             sound.Pitch = Math.Clamp(sound.Pitch, 0.5f, 2.0f);
+            sound.Speed = Math.Clamp(sound.Speed, 0.5f, 2.0f);
             sound.Loop ??= new LoopSettings();
             sound.Loop.StartSample = Math.Max(0, sound.Loop.StartSample);
             sound.Loop.StartSeconds = Math.Clamp(sound.Loop.StartSeconds, 0.0, 24 * 60 * 60);
@@ -360,6 +366,15 @@ public sealed class ProjectSerializer
             trigger.Parameters ??= new TriggerParameters();
             ValidateString(trigger.Memo, ProjectLimits.MaxMemoLength, "イベントメモ");
             ValidateString(trigger.TargetGroup, ProjectLimits.MaxGroupLength, "イベント対象グループ");
+
+            if ((trigger.TargetGroup.Length > 0 && !model.Sounds.Any(sound =>
+                    string.Equals(sound.Group, trigger.TargetGroup, StringComparison.OrdinalIgnoreCase)))
+                || (trigger.TargetGroup.Length == 0 && !soundIds.Contains(trigger.TargetSoundId))
+                || (trigger.TriggerType is TriggerType.SoundEnded or TriggerType.SoundElapsed
+                    && (trigger.Parameters.SourceSoundId is not { } sourceId || !soundIds.Contains(sourceId))))
+            {
+                model.LoadWarnings.Add($"イベント「{trigger.Memo}」の参照先が見つかりません。対象音源・グループと条件音源を確認してください。");
+            }
         }
     }
 

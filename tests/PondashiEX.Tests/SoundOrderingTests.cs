@@ -1,4 +1,3 @@
-using System.Drawing;
 using PondashiEX.Project;
 using PondashiEX.UI;
 
@@ -66,92 +65,43 @@ public sealed class SoundOrderingTests
     }
 
     [Fact]
-    public void FindSoundDropPlacement_UsesHorizontalPositionInsideSelectedRow()
+    public async Task ApplySoundOrder_PreservesDefinitionsAndPersistsOrder()
     {
-        var ids = Enumerable.Range(0, 6).Select(_ => Guid.NewGuid()).ToArray();
-        var layouts = new[]
-        {
-            new SoundDropLayout(ids[0], new Rectangle(10, 10, 100, 80)),
-            new SoundDropLayout(ids[1], new Rectangle(120, 10, 100, 80)),
-            new SoundDropLayout(ids[2], new Rectangle(230, 10, 100, 80)),
-            new SoundDropLayout(ids[3], new Rectangle(10, 100, 100, 80)),
-            new SoundDropLayout(ids[4], new Rectangle(120, 100, 100, 80)),
-            new SoundDropLayout(ids[5], new Rectangle(230, 100, 100, 80))
-        };
+        using var directory = new TestDirectory();
+        var first = new SoundDefinition { Name = "同名", Group = "SE", Key = "A", Memo = "最初の音源" };
+        var second = new SoundDefinition { Name = "同名", Group = "BGM", Key = "B" };
+        var model = new ProjectModel { Sounds = [first, second] };
+        var originalList = model.Sounds;
+        var trigger = new TriggerDefinition { TargetSoundId = first.Id };
+        model.Triggers.Add(trigger);
 
-        var placement = MainForm.FindSoundDropPlacement(
-            layouts,
-            ids[5],
-            new Point(180, 120));
+        Assert.True(MainForm.ApplySoundOrder(model.Sounds, [second.Id, first.Id]));
 
-        Assert.Equal(new SoundDropPlacement(ids[4], InsertAfter: true), placement);
+        Assert.Same(originalList, model.Sounds);
+        Assert.Same(second, model.Sounds[0]);
+        Assert.Same(first, model.Sounds[1]);
+        Assert.Equal(first.Id, trigger.TargetSoundId);
+        var path = directory.GetPath("order.pondex");
+        var serializer = new ProjectSerializer();
+        await serializer.SaveAsync(path, model);
+        var restored = await serializer.LoadAsync(path);
+        Assert.Equal(new[] { second.Id, first.Id }, restored.Sounds.Select(sound => sound.Id));
+        Assert.Equal("最初の音源", restored.Sounds[1].Memo);
     }
 
     [Fact]
-    public void FindSoundDropPlacement_DropInGapBeforeSecondRowUsesRowMajorOrder()
+    public void ApplySoundOrder_UnchangedOrInvalidOrdersDoNotMutateModel()
     {
-        var ids = Enumerable.Range(0, 6).Select(_ => Guid.NewGuid()).ToArray();
-        var layouts = new[]
-        {
-            new SoundDropLayout(ids[0], new Rectangle(10, 10, 100, 80)),
-            new SoundDropLayout(ids[1], new Rectangle(120, 10, 100, 80)),
-            new SoundDropLayout(ids[2], new Rectangle(230, 10, 100, 80)),
-            new SoundDropLayout(ids[3], new Rectangle(10, 110, 100, 80)),
-            new SoundDropLayout(ids[4], new Rectangle(120, 110, 100, 80)),
-            new SoundDropLayout(ids[5], new Rectangle(230, 110, 100, 80))
-        };
-
-        var placement = MainForm.FindSoundDropPlacement(
-            layouts,
-            ids[0],
-            new Point(5, 105));
-
-        Assert.Equal(new SoundDropPlacement(ids[3], InsertAfter: false), placement);
+        var first = new SoundDefinition();
+        var second = new SoundDefinition();
+        var sounds = new List<SoundDefinition> { first, second };
+        Assert.False(MainForm.ApplySoundOrder(sounds, [first.Id, second.Id]));
+        Assert.False(MainForm.ApplySoundOrder(sounds, [first.Id]));
+        Assert.False(MainForm.ApplySoundOrder(sounds, [first.Id, first.Id]));
+        Assert.False(MainForm.ApplySoundOrder(sounds, [Guid.NewGuid(), second.Id]));
+        Assert.Equal([first, second], sounds);
     }
 
-    [Fact]
-    public void FindSoundDropPlacement_DropBelowAllRowsMovesToEnd()
-    {
-        var first = Guid.NewGuid();
-        var second = Guid.NewGuid();
-        var third = Guid.NewGuid();
-        var layouts = new[]
-        {
-            new SoundDropLayout(first, new Rectangle(10, 10, 100, 80)),
-            new SoundDropLayout(second, new Rectangle(120, 10, 100, 80)),
-            new SoundDropLayout(third, new Rectangle(10, 100, 100, 80))
-        };
-
-        var placement = MainForm.FindSoundDropPlacement(
-            layouts,
-            first,
-            new Point(300, 300));
-
-        Assert.Equal(new SoundDropPlacement(third, InsertAfter: true), placement);
-    }
-
-    [Fact]
-    public void FindSoundDropPlacement_DroppingOnOnlyCardInLastRowKeepsItsPosition()
-    {
-        var first = Guid.NewGuid();
-        var second = Guid.NewGuid();
-        var third = Guid.NewGuid();
-        var fourth = Guid.NewGuid();
-        var layouts = new[]
-        {
-            new SoundDropLayout(first, new Rectangle(10, 10, 100, 80)),
-            new SoundDropLayout(second, new Rectangle(120, 10, 100, 80)),
-            new SoundDropLayout(third, new Rectangle(230, 10, 100, 80)),
-            new SoundDropLayout(fourth, new Rectangle(10, 100, 100, 80))
-        };
-
-        var placement = MainForm.FindSoundDropPlacement(
-            layouts,
-            fourth,
-            new Point(60, 140));
-
-        Assert.Equal(new SoundDropPlacement(third, InsertAfter: true), placement);
-    }
 
     [Fact]
     public void RetargetGroupReferences_UpdatesShortcutsAndTriggersAndRemovesDuplicates()

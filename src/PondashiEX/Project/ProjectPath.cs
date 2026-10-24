@@ -65,9 +65,7 @@ public static class ProjectPath
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         EnsureNotRemoteOrDevice(path, displayName);
-        var fullPath = Path.GetFullPath(path);
-        EnsureNotRemoteOrDevice(fullPath, displayName);
-        return fullPath;
+        return ResolveLocalLinks(Path.GetFullPath(path), displayName, 0);
     }
 
     public static bool IsRemoteOrDevice(string path)
@@ -93,5 +91,53 @@ public static class ProjectPath
         {
             throw new InvalidOperationException($"{displayName}にUNCパスまたはデバイスパスは使用できません。");
         }
+    }
+
+    private static string ResolveLocalLinks(string fullPath, string displayName, int depth)
+    {
+        EnsureNotRemoteOrDevice(fullPath, displayName);
+        if (depth > 32)
+        {
+            throw new InvalidOperationException($"{displayName}のリンクが循環しているか、深すぎます。");
+        }
+
+        var root = Path.GetPathRoot(fullPath)!;
+        if (new DriveInfo(root).DriveType == DriveType.Network)
+        {
+            throw new InvalidOperationException($"{displayName}にネットワークドライブは使用できません。");
+        }
+
+        var parts = fullPath[root.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+        var current = root;
+        for (var index = 0; index < parts.Length; index++)
+        {
+            current = Path.Combine(current, parts[index]);
+            FileAttributes attributes;
+            try
+            {
+                attributes = File.GetAttributes(current);
+            }
+            catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+            {
+                continue;
+            }
+
+            if ((attributes & FileAttributes.ReparsePoint) == 0)
+            {
+                continue;
+            }
+
+            FileSystemInfo entry = (attributes & FileAttributes.Directory) != 0
+                ? new DirectoryInfo(current)
+                : new FileInfo(current);
+            var target = entry.LinkTarget
+                ?? throw new InvalidOperationException($"{displayName}に解決できないリンクが含まれます。");
+            EnsureNotRemoteOrDevice(target, displayName);
+            var targetPath = Path.GetFullPath(target, Path.GetDirectoryName(current)!);
+            var remainder = Path.Combine(new[] { targetPath }.Concat(parts.Skip(index + 1)).ToArray());
+            return ResolveLocalLinks(remainder, displayName, depth + 1);
+        }
+
+        return current;
     }
 }

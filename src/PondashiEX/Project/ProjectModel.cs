@@ -68,6 +68,8 @@ public sealed class SoundDefinition
 
     public float Pitch { get; set; } = 1.0f;
 
+    public float Speed { get; set; } = 1.0f;
+
     public LoopSettings Loop { get; set; } = new();
 
     public FadeSettings FadeIn { get; set; } = new();

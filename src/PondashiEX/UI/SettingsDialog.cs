@@ -48,8 +48,8 @@ public sealed class SettingsDialog : Form
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        _projectNameText = new TextBox { Text = string.Empty, Dock = DockStyle.Fill };
-        _themeColorText = new TextBox { Text = "#202020", Width = 100 };
+        _projectNameText = new TextBox { Text = string.Empty, Dock = DockStyle.Fill, MaxLength = ProjectLimits.MaxNameLength };
+        _themeColorText = new TextBox { Text = "#202020", Width = 100, MaxLength = ProjectLimits.MaxThemeColorLength };
 
         _deviceCombo = new ComboBox
         {

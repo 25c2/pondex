@@ -45,7 +45,7 @@ public sealed class TriggerDialog : Form
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         _enabledCheck = new CheckBox { Text = "有効", Checked = definition.Enabled, AutoSize = true };
-        _memoText = new TextBox { Text = definition.Memo, Dock = DockStyle.Fill };
+        _memoText = new TextBox { Text = definition.Memo, Dock = DockStyle.Fill, MaxLength = ProjectLimits.MaxMemoLength };
         _typeCombo = CreateEnumCombo<TriggerType>(definition.TriggerType);
         _clockTime = new DateTimePicker
         {
@@ -113,7 +113,7 @@ public sealed class TriggerDialog : Form
 
     private void SaveAndClose()
     {
-        if (_targetSoundCombo.SelectedItem is not TargetItem target)
+        if (_targetSoundCombo.SelectedItem is not TargetItem { Missing: false } target)
         {
             MessageBox.Show(this, "アクション対象の音源を選択してください。", "入力確認", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
@@ -122,7 +122,7 @@ public sealed class TriggerDialog : Form
         var type = (TriggerType)_typeCombo.SelectedItem!;
         var action = (TriggerAction)_actionCombo.SelectedItem!;
         var needsSource = type is TriggerType.SoundEnded or TriggerType.SoundElapsed;
-        if (needsSource && _sourceSoundCombo.SelectedItem is not SoundItem)
+        if (needsSource && _sourceSoundCombo.SelectedItem is not SoundItem { Missing: false })
         {
             MessageBox.Show(this, "条件となる音源を選択してください。", "入力確認", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
@@ -207,6 +207,12 @@ public sealed class TriggerDialog : Form
         if (selectedId is { } id)
         {
             combo.SelectedItem = sounds.FirstOrDefault(sound => sound.Id == id);
+            if (combo.SelectedIndex < 0)
+            {
+                var missing = new SoundItem(id, "不明な音源", Missing: true);
+                combo.Items.Add(missing);
+                combo.SelectedItem = missing;
+            }
         }
 
         if (combo.SelectedIndex < 0 && combo.Items.Count > 0)
@@ -232,6 +238,14 @@ public sealed class TriggerDialog : Form
         combo.SelectedItem = !string.IsNullOrWhiteSpace(selectedGroup)
             ? targets.FirstOrDefault(target => string.Equals(target.Group, selectedGroup, StringComparison.OrdinalIgnoreCase))
             : targets.FirstOrDefault(target => target.SoundId == selectedSoundId);
+        if (combo.SelectedIndex < 0 && (selectedSoundId != Guid.Empty || !string.IsNullOrWhiteSpace(selectedGroup)))
+        {
+            var missing = new TargetItem(selectedSoundId, selectedGroup,
+                !string.IsNullOrWhiteSpace(selectedGroup) ? $"不明なグループ: {selectedGroup}" : $"不明な音源: {selectedSoundId}",
+                Missing: true);
+            combo.Items.Add(missing);
+            combo.SelectedItem = missing;
+        }
         if (combo.SelectedIndex < 0 && combo.Items.Count > 0)
         {
             combo.SelectedIndex = 0;
@@ -251,10 +265,10 @@ public sealed class TriggerDialog : Form
         root.Controls.Add(control, 1, row);
     }
 
-    private sealed record SoundItem(Guid Id, string Name)
+    private sealed record SoundItem(Guid Id, string Name, bool Missing = false)
     {
         public string DisplayName => $"{Name}  [{Id.ToString()[..8]}]";
     }
 
-    private sealed record TargetItem(Guid? SoundId, string? Group, string DisplayName);
+    private sealed record TargetItem(Guid? SoundId, string? Group, string DisplayName, bool Missing = false);
 }

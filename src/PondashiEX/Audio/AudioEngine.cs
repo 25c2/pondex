@@ -174,6 +174,7 @@ public sealed class AudioEngine : IAudioEngine
         }
 
         SoundInstance? prepared = null;
+        SoundInstance? completionInstance = null;
         try
         {
             prepared = await Task.Run(
@@ -181,8 +182,9 @@ public sealed class AudioEngine : IAudioEngine
                     sound,
                     resolvedPath,
                     MixerFormat,
-                    () => QueueNaturalCompletion(sound.Id, requestVersion)),
+                    () => QueueNaturalCompletion(sound.Id, completionInstance)),
                 cancellationToken).ConfigureAwait(false);
+            completionInstance = prepared;
 
             lock (_sync)
             {
@@ -488,14 +490,15 @@ public sealed class AudioEngine : IAudioEngine
         StopCore(soundId, reason);
     }
 
-    private void QueueNaturalCompletion(Guid soundId, long expectedOperationVersion)
+    private void QueueNaturalCompletion(Guid soundId, SoundInstance? expectedInstance)
     {
         ThreadPool.QueueUserWorkItem(_ =>
         {
             lock (_sync)
             {
-                if (!_soundOperationVersions.TryGetValue(soundId, out var currentVersion)
-                    || currentVersion != expectedOperationVersion)
+                if (!_instances.TryGetValue(soundId, out var current)
+                    || !ReferenceEquals(current, expectedInstance)
+                    || current.State == PlaybackState.Fading)
                 {
                     return;
                 }

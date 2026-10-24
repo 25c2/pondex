@@ -176,6 +176,27 @@ public sealed class TriggerEngineTests
         Assert.Single(engine.Tick(DateTimeOffset.Now, TimeSpan.Zero));
     }
 
+    [Fact]
+    public void SoundElapsed_ExcludesTimeSpentPaused()
+    {
+        var sourceId = Guid.NewGuid();
+        var trigger = CreateTrigger(TriggerType.SoundElapsed,
+            new TriggerParameters { SourceSoundId = sourceId, Elapsed = TimeSpan.FromSeconds(10) });
+        var time = new ManualTimeProvider();
+        var engine = new TriggerEngine(time);
+        engine.SetTriggers([trigger]);
+        engine.OnSoundStarted(sourceId);
+        time.Advance(TimeSpan.FromSeconds(4));
+        engine.SetSoundPaused(sourceId, true);
+        time.Advance(TimeSpan.FromSeconds(100));
+        Assert.Empty(engine.Tick(DateTimeOffset.Now, TimeSpan.Zero));
+        engine.SetSoundPaused(sourceId, false);
+        time.Advance(TimeSpan.FromSeconds(5));
+        Assert.Empty(engine.Tick(DateTimeOffset.Now, TimeSpan.Zero));
+        time.Advance(TimeSpan.FromSeconds(1));
+        Assert.Single(engine.Tick(DateTimeOffset.Now, TimeSpan.Zero));
+    }
+
     private static TriggerDefinition CreateTrigger(TriggerType type, TriggerParameters parameters) => new()
     {
         Enabled = true,

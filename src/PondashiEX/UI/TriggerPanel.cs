@@ -5,6 +5,7 @@ namespace PondashiEX.UI;
 public sealed class TriggerPanel : UserControl
 {
     private readonly DataGridView _grid;
+    private readonly Button _addButton;
     private IReadOnlyList<SoundDefinition> _sounds = [];
     private List<TriggerDefinition> _triggers = [];
     private bool _refreshing;
@@ -48,6 +49,7 @@ public sealed class TriggerPanel : UserControl
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(4) };
         var addButton = new Button { Text = "＋ 追加", Width = 90, Height = 32 };
+        _addButton = addButton;
         var editButton = new Button { Text = "編集", Width = 90, Height = 32 };
         var deleteButton = new Button { Text = "削除", Width = 90, Height = 32 };
         var toggleButton = new Button { Text = "有効/無効", Width = 100, Height = 32 };
@@ -107,6 +109,11 @@ public sealed class TriggerPanel : UserControl
 
     private void AddTrigger()
     {
+        if (_triggers.Count >= ProjectLimits.MaxTriggers)
+        {
+            return;
+        }
+
         if (_sounds.Count == 0)
         {
             MessageBox.Show(this, "先に音源を追加してください。", "イベントトリガ", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -174,6 +181,7 @@ public sealed class TriggerPanel : UserControl
 
     private void RefreshGrid()
     {
+        _addButton.Enabled = _triggers.Count < ProjectLimits.MaxTriggers;
         _refreshing = true;
         try
         {

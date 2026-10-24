@@ -39,6 +39,17 @@ public sealed class GroupShortcutDialogTests
         Assert.Equal("A", definition.Key);
     }
 
+    [Fact]
+    public void MaximumCount_DisablesAndGuardsAdd()
+    {
+        var definitions = Enumerable.Range(0, ProjectLimits.MaxGroupShortcuts)
+            .Select(index => new GroupShortcutDefinition { Group = "SE", Key = $"Key{index}" });
+        using var dialog = new GroupShortcutDialog(definitions, ["SE"]);
+        Assert.False(Descendants(dialog).OfType<Button>().Single(button => button.Text == "追加").Enabled);
+        typeof(GroupShortcutDialog).GetMethod("AddShortcut", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(dialog, null);
+        Assert.Equal(ProjectLimits.MaxGroupShortcuts, dialog.Definitions.Count);
+    }
+
     private static IEnumerable<Control> Descendants(Control parent)
     {
         foreach (Control child in parent.Controls)

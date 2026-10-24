@@ -55,6 +55,20 @@ public sealed class TriggerPanelTests
         Assert.Equal("グループ: SE", grid.Rows[0].Cells[4].Value);
     }
 
+    [Fact]
+    public void MaximumCount_DisablesAndGuardsAdd()
+    {
+        var sound = new SoundDefinition();
+        var definitions = Enumerable.Range(0, ProjectLimits.MaxTriggers)
+            .Select(_ => new TriggerDefinition { TargetSoundId = sound.Id }).ToList();
+        using var panel = new TriggerPanel();
+        panel.SetData(definitions, [sound]);
+        var toolbar = panel.Controls[0].Controls.OfType<FlowLayoutPanel>().Single();
+        Assert.False(toolbar.Controls.OfType<Button>().Single(button => button.Text == "＋ 追加").Enabled);
+        typeof(TriggerPanel).GetMethod("AddTrigger", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(panel, null);
+        Assert.Equal(ProjectLimits.MaxTriggers, definitions.Count);
+    }
+
     private static DataGridView GetGrid(TriggerPanel panel) =>
         (DataGridView)(typeof(TriggerPanel).GetField("_grid", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(panel)
             ?? throw new InvalidOperationException("TriggerPanelの一覧が見つかりません。"));

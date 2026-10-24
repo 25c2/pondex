@@ -94,6 +94,56 @@ public sealed class SoundInstanceTests
         Assert.Equal(sourceSamples[3] / 32768.0f, buffer[10], 5);
     }
 
+    [Fact]
+    public void ApplyLiveSettings_ChangesSpeedOfExistingPlayback()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("speed.wav");
+        WriteSineWave(path);
+        var definition = new SoundDefinition();
+        using var instance = SoundInstance.Create(definition, path,
+            WaveFormat.CreateIeeeFloatWaveFormat(44_100, 2), () => { });
+        var buffer = new float[200];
+        Assert.Equal(200, instance.Output.Read(buffer, 0, buffer.Length));
+        definition.Speed = 2;
+        instance.ApplyLiveSettings(definition);
+        var remaining = 0;
+        int read;
+        while ((read = instance.Output.Read(buffer, 0, buffer.Length)) > 0) { remaining += read; }
+        Assert.Equal(4310, remaining); // (4410 source frames - 100 already played) / 2 * 2 channels.
+    }
+
+    [Fact]
+    public void ApplyLiveSettings_ChangesPitchOfExistingPlayback()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("live-pitch.wav");
+        WriteSineWave(path);
+        var definition = new SoundDefinition { Loop = new LoopSettings { Enabled = true } };
+        using var instance = SoundInstance.Create(definition, path,
+            WaveFormat.CreateIeeeFloatWaveFormat(44_100, 2), () => { });
+        var buffer = new float[44_100];
+        instance.Output.Read(buffer, 0, buffer.Length);
+        var originalCrossings = CountCrossings(buffer);
+        definition.Pitch = 1.5F;
+        instance.ApplyLiveSettings(definition);
+        instance.Output.Read(buffer, 0, buffer.Length); // Allow the pitch processor to fill its window.
+        instance.Output.Read(buffer, 0, buffer.Length);
+        var shiftedCrossings = CountCrossings(buffer);
+        Assert.InRange(shiftedCrossings / (double)originalCrossings, 1.4, 1.6);
+    }
+
+    private static int CountCrossings(float[] samples)
+    {
+        var crossings = 0;
+        for (var index = 2; index < samples.Length; index += 2)
+        {
+            if (samples[index - 2] <= 0 && samples[index] > 0) { crossings++; }
+        }
+
+        return crossings;
+    }
+
     private static void WriteSineWave(string path)
     {
         const int sampleRate = 44_100;

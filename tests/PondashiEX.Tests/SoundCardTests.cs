@@ -7,33 +7,23 @@ namespace PondashiEX.Tests;
 public sealed class SoundCardTests
 {
     [Fact]
-    public void Constructor_ShowsDragHandle()
+    public void Constructor_ShowsPlainNameWithoutDragHandle()
     {
         using var card = new SoundCard(new SoundDefinition { Name = "ベル" });
 
         Assert.Contains(
             Descendants(card).OfType<Label>(),
-            label => label.Text == "↕ ベル" && label.Cursor == Cursors.SizeAll);
+            label => label.Text == "ベル" && label.Cursor != Cursors.SizeAll);
     }
 
     [Fact]
-    public void DraggingNamePastThreshold_RaisesReorderDropRequest()
+    public void TextEditors_MatchProjectSaveLimits()
     {
-        using var form = new Form();
-        using var card = new SoundCard(new SoundDefinition { Name = "ベル" });
-        form.Controls.Add(card);
-        form.Show();
-        var nameLabel = Descendants(card)
-            .OfType<Label>()
-            .Single(label => label.Text == "↕ ベル");
-        SoundReorderDropEventArgs? requested = null;
-        card.ReorderDropRequested += (_, eventArgs) => requested = eventArgs;
-
-        RaiseMouseEvent(nameLabel, "OnMouseDown", new MouseEventArgs(MouseButtons.Left, 1, 2, 2, 0));
-        RaiseMouseEvent(nameLabel, "OnMouseMove", new MouseEventArgs(MouseButtons.Left, 0, 80, 20, 0));
-        RaiseMouseEvent(nameLabel, "OnMouseUp", new MouseEventArgs(MouseButtons.Left, 1, 80, 20, 0));
-
-        Assert.NotNull(requested);
+        using var card = new SoundCard(new SoundDefinition());
+        var editors = Descendants(card).OfType<TextBox>().ToArray();
+        Assert.Contains(editors, editor => editor.Width == 170 && editor.MaxLength == ProjectLimits.MaxNameLength);
+        Assert.Contains(editors, editor => editor.Width == 100 && editor.MaxLength == ProjectLimits.MaxGroupLength);
+        Assert.Contains(editors, editor => editor.Width == 230 && editor.MaxLength == ProjectLimits.MaxMemoLength);
     }
 
     [Fact]

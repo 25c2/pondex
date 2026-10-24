@@ -5,7 +5,7 @@ namespace PondashiEX.Trigger;
 public sealed class TriggerEngine
 {
     private readonly object _sync = new();
-    private readonly Dictionary<Guid, long> _soundStarted = [];
+    private readonly Dictionary<Guid, SoundClock> _soundStarted = [];
     private readonly HashSet<Guid> _soundEndedSinceTick = [];
     private readonly HashSet<Guid> _latchedTriggers = [];
     private readonly TimeProvider _timeProvider;
@@ -45,7 +45,7 @@ public sealed class TriggerEngine
     {
         lock (_sync)
         {
-            _soundStarted[soundId] = _timeProvider.GetTimestamp();
+            _soundStarted[soundId] = new SoundClock(_timeProvider.GetTimestamp());
             _soundEndedSinceTick.Remove(soundId);
             foreach (var trigger in _triggers.Where(item =>
                          item.TriggerType == TriggerType.SoundElapsed
@@ -65,6 +65,28 @@ public sealed class TriggerEngine
             {
                 _soundEndedSinceTick.Add(soundId);
             }
+        }
+    }
+
+    public void SetSoundPaused(Guid soundId, bool paused)
+    {
+        lock (_sync)
+        {
+            if (!_soundStarted.TryGetValue(soundId, out var clock) || clock.Paused == paused)
+            {
+                return;
+            }
+
+            if (paused)
+            {
+                clock.Elapsed += _timeProvider.GetElapsedTime(clock.Started);
+            }
+            else
+            {
+                clock.Started = _timeProvider.GetTimestamp();
+            }
+
+            clock.Paused = paused;
         }
     }
 
@@ -125,8 +147,9 @@ public sealed class TriggerEngine
                 && _soundEndedSinceTick.Contains(endedSoundId),
             TriggerType.SoundElapsed => parameters.SourceSoundId is { } startedSoundId
                 && parameters.Elapsed is { } soundTarget
-                && _soundStarted.TryGetValue(startedSoundId, out var startedTimestamp)
-                && _timeProvider.GetElapsedTime(startedTimestamp) >= soundTarget,
+                && _soundStarted.TryGetValue(startedSoundId, out var clock)
+                && !clock.Paused
+                && clock.Elapsed + _timeProvider.GetElapsedTime(clock.Started) >= soundTarget,
             _ => false
         };
     }
@@ -157,6 +180,15 @@ public sealed class TriggerEngine
         }
 
         return candidate <= now;
+    }
+
+    private sealed class SoundClock(long started)
+    {
+        public long Started { get; set; } = started;
+
+        public TimeSpan Elapsed { get; set; }
+
+        public bool Paused { get; set; }
     }
 }
 

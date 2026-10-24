@@ -8,6 +8,7 @@ public sealed class GroupShortcutDialog : Form
     private readonly ComboBox _groupCombo;
     private readonly TextBox _keyText;
     private readonly ListView _shortcutList;
+    private readonly Button _addButton;
 
     public GroupShortcutDialog(
         IEnumerable<GroupShortcutDefinition> definitions,
@@ -96,6 +97,7 @@ public sealed class GroupShortcutDialog : Form
             AutoSize = true,
             Padding = new Padding(10, 3, 10, 3)
         };
+        _addButton = addButton;
         addButton.Click += (_, _) => AddShortcut();
         editor.Controls.Add(addButton, 4, 0);
         root.Controls.Add(editor, 0, 1);
@@ -170,6 +172,11 @@ public sealed class GroupShortcutDialog : Form
 
     private void AddShortcut()
     {
+        if (_shortcutList.Items.Count >= ProjectLimits.MaxGroupShortcuts)
+        {
+            return;
+        }
+
         if (_groupCombo.SelectedItem is not string group)
         {
             MessageBox.Show(this, "先に音源へグループを設定してください。", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -202,6 +209,7 @@ public sealed class GroupShortcutDialog : Form
         if (_shortcutList.SelectedItems.Count > 0)
         {
             _shortcutList.Items.Remove(_shortcutList.SelectedItems[0]);
+            _addButton.Enabled = _shortcutList.Items.Count < ProjectLimits.MaxGroupShortcuts;
         }
     }
 
@@ -213,6 +221,7 @@ public sealed class GroupShortcutDialog : Form
         };
         item.SubItems.Add(definition.Key);
         _shortcutList.Items.Add(item);
+        _addButton.Enabled = _shortcutList.Items.Count < ProjectLimits.MaxGroupShortcuts;
     }
 
     private static Label CreateEditorLabel(string text) => new()

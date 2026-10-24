@@ -182,6 +182,7 @@ public sealed class MainForm : Form
         Resize += (_, _) => ResizeSoundCards();
         FormClosing += OnFormClosing;
         FormClosed += OnFormClosed;
+        Deactivate += (_, _) => _shortcutDispatcher.Reset();
 
         ApplyProjectSettings();
         RebuildSoundCards();
@@ -204,6 +205,10 @@ public sealed class MainForm : Form
         var openItem = new ToolStripMenuItem("開く(&O)…", null, async (_, _) => await OpenWithDialogAsync());
         var saveItem = new ToolStripMenuItem("保存(&S)", null, async (_, _) => await SaveProjectAsync(forceSaveAs: false));
         var saveAsItem = new ToolStripMenuItem("名前を付けて保存(&A)…", null, async (_, _) => await SaveProjectAsync(forceSaveAs: true));
+        newItem.ShortcutKeys = Keys.Control | Keys.N;
+        openItem.ShortcutKeys = Keys.Control | Keys.O;
+        saveItem.ShortcutKeys = Keys.Control | Keys.S;
+        saveAsItem.ShortcutKeys = Keys.Control | Keys.Shift | Keys.S;
         var addItem = new ToolStripMenuItem("音源を追加…", null, (_, _) => AddSoundsWithDialog());
         recentMenu = new ToolStripMenuItem("最近使ったプロジェクト");
         file.DropDownItems.AddRange([newItem, openItem, saveItem, saveAsItem, new ToolStripSeparator(), addItem, recentMenu]);
@@ -215,9 +220,10 @@ public sealed class MainForm : Form
         };
         muteMenuItem = new ToolStripMenuItem("ミュート(&M)", null, (_, _) => ToggleMasterMute());
         var groupShortcuts = new ToolStripMenuItem("グループショートカット(&G)…", null, (_, _) => ShowGroupShortcuts());
+        var soundOrder = new ToolStripMenuItem("音源の並び替え(&L)…", null, (_, _) => ShowSoundOrder());
         var diagnostics = new ToolStripMenuItem("動作診断(&D)…", null, async (_, _) => await RunSelfTestAsync());
         operations.DropDownItems.AddRange(
-            [stopAllItem, muteMenuItem, new ToolStripSeparator(), groupShortcuts, new ToolStripSeparator(), diagnostics]);
+            [stopAllItem, muteMenuItem, new ToolStripSeparator(), soundOrder, groupShortcuts, new ToolStripSeparator(), diagnostics]);
 
         var settings = new ToolStripMenuItem("設定(&S)", null, (_, _) => ShowSettings());
         var help = new ToolStripMenuItem("ヘルプ(&H)");
@@ -243,8 +249,8 @@ public sealed class MainForm : Form
             RowCount = 2,
             BackColor = Color.FromArgb(36, 40, 44)
         };
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 37));
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 23));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
@@ -329,6 +335,91 @@ public sealed class MainForm : Form
         header.Controls.Add(addButton, 4, 0);
         header.Controls.Add(stopAllButton, 5, 0);
         header.SetRowSpan(stopAllButton, 2);
+
+        var projectLabelControl = projectLabel;
+        var deviceLabelControl = deviceLabel;
+        var clockLabelControl = clockLabel;
+        var clockModeLabelControl = clockModeLabel;
+        bool? compactLayout = null;
+        void ArrangeHeader()
+        {
+            var compact = header.ClientSize.Width < (int)(1100 * header.DeviceDpi / 96F);
+            if (compactLayout == compact)
+            {
+                return;
+            }
+
+            compactLayout = compact;
+            header.SuspendLayout();
+            header.Controls.Clear();
+            header.ColumnStyles.Clear();
+            header.RowStyles.Clear();
+            header.ColumnCount = compact ? 3 : 6;
+            header.RowCount = compact ? 5 : 2;
+            if (compact)
+            {
+                header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+                header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+                header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+                foreach (var height in new[] { 30, 40, 44, 40, 40 })
+                {
+                    header.RowStyles.Add(new RowStyle(SizeType.Absolute, height * header.DeviceDpi / 96F));
+                }
+
+                header.Controls.Add(projectLabelControl, 0, 0);
+                header.SetColumnSpan(projectLabelControl, 2);
+                header.Controls.Add(deviceLabelControl, 2, 0);
+                header.Controls.Add(masterPanel, 0, 1);
+                header.SetColumnSpan(masterPanel, 2);
+                header.Controls.Add(masterMuteControl, 2, 1);
+                header.Controls.Add(clockLabelControl, 0, 2);
+                header.Controls.Add(modeButton, 1, 2);
+                header.Controls.Add(startButton, 0, 3);
+                header.Controls.Add(resetButton, 1, 3);
+                header.Controls.Add(addButton, 0, 4);
+                header.SetColumnSpan(addButton, 2);
+                header.Controls.Add(stopAllButton, 2, 2);
+                header.SetRowSpan(stopAllButton, 3);
+            }
+            else
+            {
+                header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300 * header.DeviceDpi / 96F));
+                foreach (var width in new[] { 190, 130, 120, 160 })
+                {
+                    header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, width * header.DeviceDpi / 96F));
+                }
+
+                header.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+                header.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+                header.Controls.Add(projectLabelControl, 0, 0);
+                header.SetColumnSpan(projectLabelControl, 1);
+                header.Controls.Add(deviceLabelControl, 0, 1);
+                header.Controls.Add(masterPanel, 1, 0);
+                header.SetColumnSpan(masterPanel, 1);
+                header.Controls.Add(masterMuteControl, 1, 1);
+                header.Controls.Add(clockModeLabelControl, 2, 0);
+                header.Controls.Add(clockLabelControl, 2, 1);
+                header.Controls.Add(modeButton, 3, 0);
+                header.Controls.Add(startButton, 3, 1);
+                header.Controls.Add(addButton, 4, 0);
+                header.SetColumnSpan(addButton, 1);
+                header.Controls.Add(resetButton, 4, 1);
+                header.Controls.Add(stopAllButton, 5, 0);
+                header.SetRowSpan(stopAllButton, 2);
+            }
+
+            if (header.Parent is TableLayoutPanel parent)
+            {
+                parent.RowStyles[1].Height = (compact ? 210 : 104) * header.DeviceDpi / 96F;
+            }
+
+            header.ResumeLayout(true);
+        }
+
+        header.SizeChanged += (_, _) => ArrangeHeader();
+        header.ParentChanged += (_, _) => ArrangeHeader();
+        header.Disposed += (_, _) => clockModeLabelControl.Dispose();
 
         addButton.Click += (_, _) => AddSoundsWithDialog();
         stopAllButton.Click += (_, _) => StopAll();
@@ -513,6 +604,7 @@ public sealed class MainForm : Form
 
         try
         {
+            var savingProject = _projectManager.Current;
             SetProjectOperationBusy(true);
             if (forceSaveAs || _projectManager.CurrentPath is null)
             {
@@ -533,6 +625,12 @@ public sealed class MainForm : Form
             else
             {
                 await _projectManager.SaveAsync();
+            }
+
+            if (!ReferenceEquals(savingProject, _projectManager.Current) || _projectManager.IsDirty)
+            {
+                SetStatus("保存中の変更が残っています。もう一度保存してください。終了・切替は中止しました。", true);
+                return false;
             }
 
             if (_projectManager.CurrentPath is { } savedPath)
@@ -558,6 +656,11 @@ public sealed class MainForm : Form
 
     private void AddSoundsWithDialog()
     {
+        if (_projectOperationInProgress)
+        {
+            return;
+        }
+
         using var dialog = new OpenFileDialog
         {
             Filter = AudioFileFormats.OpenFileFilter,
@@ -572,6 +675,11 @@ public sealed class MainForm : Form
 
     private void AddSoundFiles(IEnumerable<string> paths)
     {
+        if (_projectOperationInProgress)
+        {
+            return;
+        }
+
         var added = new List<SoundDefinition>();
         foreach (var path in paths)
         {
@@ -694,7 +802,6 @@ public sealed class MainForm : Form
         card.DeleteRequested += (_, _) => DeleteSound(sound, card);
         card.InvalidKeyRejected += (_, _) =>
             SetStatus("使用できないキー名だったため、割り当てを解除しました。A、2、F1などを入力してください。", true);
-        card.ReorderDropRequested += (_, eventArgs) => ReorderDraggedSound(card, eventArgs.ScreenPoint);
         card.GroupChangeCommitted += (_, eventArgs) => OnSoundGroupChangeCommitted(eventArgs);
         card.VolumeFadeRequested += (_, eventArgs) =>
         {
@@ -711,26 +818,63 @@ public sealed class MainForm : Form
         _soundList.Controls.Add(card);
     }
 
-    private void ReorderSound(Guid sourceSoundId, Guid targetSoundId, bool insertAfter)
+    private void ShowSoundOrder()
     {
-        if (!ReorderSoundDefinitions(
-                _projectManager.Current.Sounds,
-                sourceSoundId,
-                targetSoundId,
-                insertAfter,
-                out var newIndex))
+        if (_projectOperationInProgress)
         {
             return;
         }
 
-        if (_soundCards.TryGetValue(sourceSoundId, out var card))
+        var project = _projectManager.Current;
+        if (project.Sounds.Count < 2)
         {
-            _soundList.Controls.SetChildIndex(card, newIndex);
-            _soundList.PerformLayout();
+            SetStatus("並び替えるには音源を2件以上追加してください。", false);
+            return;
+        }
+
+        using var dialog = new SoundOrderDialog(project.Sounds);
+        UiTheme.Apply(dialog, project.Settings.DarkMode);
+        if (dialog.ShowDialog(this) != DialogResult.OK
+            || !ReferenceEquals(project, _projectManager.Current)
+            || !ApplySoundOrder(project.Sounds, dialog.OrderedSoundIds))
+        {
+            return;
+        }
+
+        _soundList.SuspendLayout();
+        try
+        {
+            for (var index = 0; index < project.Sounds.Count; index++)
+            {
+                _soundList.Controls.SetChildIndex(_soundCards[project.Sounds[index].Id], index);
+            }
+        }
+        finally
+        {
+            _soundList.ResumeLayout(true);
         }
 
         _projectManager.MarkDirty();
         SetStatus("音源を並べ替えました。", false);
+    }
+
+    internal static bool ApplySoundOrder(List<SoundDefinition> sounds, IReadOnlyList<Guid> orderedIds)
+    {
+        if (orderedIds.Count != sounds.Count || orderedIds.Distinct().Count() != sounds.Count)
+        {
+            return false;
+        }
+
+        var byId = sounds.ToDictionary(sound => sound.Id);
+        if (orderedIds.Any(id => !byId.ContainsKey(id)) || sounds.Select(sound => sound.Id).SequenceEqual(orderedIds))
+        {
+            return false;
+        }
+
+        var ordered = orderedIds.Select(id => byId[id]).ToArray();
+        sounds.Clear();
+        sounds.AddRange(ordered);
+        return true;
     }
 
     internal static bool ReorderSoundDefinitions(
@@ -1395,6 +1539,7 @@ public sealed class MainForm : Form
 
     private void OnSoundStateChanged(object? sender, SoundStateChangedEventArgs eventArgs)
     {
+        _triggerEngine.SetSoundPaused(eventArgs.SoundId, eventArgs.State == PlaybackState.Paused);
         if (IsDisposed || Disposing)
         {
             return;
@@ -1402,10 +1547,15 @@ public sealed class MainForm : Form
 
         if (InvokeRequired)
         {
-            TryBeginInvoke(() => OnSoundStateChanged(sender, eventArgs));
+            TryBeginInvoke(() => UpdateSoundStateDisplay(eventArgs));
             return;
         }
 
+        UpdateSoundStateDisplay(eventArgs);
+    }
+
+    private void UpdateSoundStateDisplay(SoundStateChangedEventArgs eventArgs)
+    {
         if (_soundCards.TryGetValue(eventArgs.SoundId, out var card))
         {
             card.UpdateState(eventArgs.State);
@@ -1482,6 +1632,12 @@ public sealed class MainForm : Form
 
     private async Task<bool> EnsureCanReplaceProjectAsync()
     {
+        if (_projectOperationInProgress)
+        {
+            SetStatus("プロジェクト操作が完了するまで待ってください。", true);
+            return false;
+        }
+
         if (!_projectManager.IsDirty)
         {
             return true;
@@ -1555,6 +1711,12 @@ public sealed class MainForm : Form
 
     private async void OnFormClosing(object? sender, FormClosingEventArgs eventArgs)
     {
+        if (_projectOperationInProgress)
+        {
+            eventArgs.Cancel = true;
+            return;
+        }
+
         if (_closingAfterSave || !_projectManager.IsDirty)
         {
             return;
@@ -1639,6 +1801,12 @@ public sealed class MainForm : Form
 
     private void OnDragEnter(object? sender, DragEventArgs eventArgs)
     {
+        if (_projectOperationInProgress)
+        {
+            eventArgs.Effect = DragDropEffects.None;
+            return;
+        }
+
         if (eventArgs.Data?.GetDataPresent(DataFormats.FileDrop) == true)
         {
             eventArgs.Effect = DragDropEffects.Copy;
@@ -1647,102 +1815,26 @@ public sealed class MainForm : Form
 
     private void OnDragDrop(object? sender, DragEventArgs eventArgs)
     {
+        if (_projectOperationInProgress)
+        {
+            return;
+        }
+
         if (eventArgs.Data?.GetData(DataFormats.FileDrop) is string[] paths)
         {
             AddSoundFiles(paths);
         }
     }
 
-    private void ReorderDraggedSound(SoundCard source, Point screenPoint)
-    {
-        var listBounds = _soundList.RectangleToScreen(_soundList.ClientRectangle);
-        if (!listBounds.Contains(screenPoint))
-        {
-            return;
-        }
-
-        var point = _soundList.PointToClient(screenPoint);
-        var layouts = _soundList.Controls
-            .OfType<SoundCard>()
-            .Select(card => new SoundDropLayout(card.Sound.Id, card.Bounds))
-            .ToArray();
-        var placement = FindSoundDropPlacement(layouts, source.Sound.Id, point);
-        if (placement is { } target)
-        {
-            ReorderSound(source.Sound.Id, target.TargetSoundId, target.InsertAfter);
-        }
-    }
-
-    internal static SoundDropPlacement? FindSoundDropPlacement(
-        IReadOnlyCollection<SoundDropLayout> layouts,
-        Guid sourceSoundId,
-        Point point)
-    {
-        const int rowTolerance = 4;
-        var orderedLayouts = layouts
-            .OrderBy(layout => layout.Bounds.Top)
-            .ThenBy(layout => layout.Bounds.Left)
-            .ToArray();
-        var candidates = orderedLayouts
-            .Where(layout => layout.SoundId != sourceSoundId)
-            .ToArray();
-        if (candidates.Length == 0)
-        {
-            return null;
-        }
-
-        var rows = new List<List<SoundDropLayout>>();
-        foreach (var layout in orderedLayouts)
-        {
-            var row = rows.LastOrDefault();
-            if (row is null || Math.Abs(row[0].Bounds.Top - layout.Bounds.Top) > rowTolerance)
-            {
-                row = [];
-                rows.Add(row);
-            }
-
-            row.Add(layout);
-        }
-
-        var selectedRow = rows
-            .OrderBy(row => VerticalDistance(row, point.Y))
-            .ThenBy(row => Math.Abs(RowCenter(row) - point.Y))
-            .First();
-        var rowStartIndex = rows
-            .TakeWhile(row => !ReferenceEquals(row, selectedRow))
-            .Sum(row => row.Count(layout => layout.SoundId != sourceSoundId));
-        var selectedCandidates = selectedRow
-            .Where(layout => layout.SoundId != sourceSoundId)
-            .ToList();
-        var localInsertionIndex = selectedCandidates.FindIndex(layout =>
-            point.X < layout.Bounds.Left + (layout.Bounds.Width / 2));
-        if (localInsertionIndex < 0)
-        {
-            localInsertionIndex = selectedCandidates.Count;
-        }
-
-        var insertionIndex = rowStartIndex + localInsertionIndex;
-        return insertionIndex >= candidates.Length
-            ? new SoundDropPlacement(candidates[^1].SoundId, InsertAfter: true)
-            : new SoundDropPlacement(candidates[insertionIndex].SoundId, InsertAfter: false);
-    }
-
-    private static int VerticalDistance(IReadOnlyCollection<SoundDropLayout> row, int y)
-    {
-        var top = row.Min(layout => layout.Bounds.Top);
-        var bottom = row.Max(layout => layout.Bounds.Bottom);
-        return y < top ? top - y : y > bottom ? y - bottom : 0;
-    }
-
-    private static int RowCenter(IReadOnlyCollection<SoundDropLayout> row)
-    {
-        var top = row.Min(layout => layout.Bounds.Top);
-        var bottom = row.Max(layout => layout.Bounds.Bottom);
-        return top + ((bottom - top) / 2);
-    }
 
     private bool IsEditingText()
     {
+        if (_projectOperationInProgress || !Enabled || OwnedForms.Any(form => form.Visible)
+            || (Form.ActiveForm is { } active && active != this))
+        {
+            return true;
+        }
+
         if (!ContainsFocus)
         {
             return false;
@@ -1904,7 +1996,3 @@ public sealed class MainForm : Form
 }
 
 internal readonly record struct SoundRemovalResult(bool Removed, int RelatedSettingsRemoved);
-
-internal readonly record struct SoundDropLayout(Guid SoundId, Rectangle Bounds);
-
-internal readonly record struct SoundDropPlacement(Guid TargetSoundId, bool InsertAfter);

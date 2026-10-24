@@ -51,6 +51,33 @@ public sealed class TriggerDialogTests
         Assert.Equal("グループ: SE", targetCombo.GetItemText(targetCombo.SelectedItem));
     }
 
+    [Fact]
+    public void MissingReferences_AreDisplayedWithoutSelectingAnotherSound()
+    {
+        var missingSource = Guid.NewGuid();
+        var missingTarget = Guid.NewGuid();
+        var trigger = new TriggerDefinition
+        {
+            TargetSoundId = missingTarget,
+            TriggerType = TriggerType.SoundElapsed,
+            Parameters = new TriggerParameters { SourceSoundId = missingSource }
+        };
+        using var dialog = new TriggerDialog(trigger, [new SoundDefinition { Name = "別の音源" }]);
+        var combos = Descendants(dialog).OfType<ComboBox>().ToArray();
+        Assert.Equal(2, combos.Count(combo => combo.GetItemText(combo.SelectedItem)?.Contains("不明な音源", StringComparison.Ordinal) == true));
+        Assert.Equal(missingTarget, trigger.TargetSoundId);
+        Assert.Equal(missingSource, trigger.Parameters.SourceSoundId);
+    }
+
+    [Fact]
+    public void MissingGroup_IsDisplayedWithoutSelectingAnotherTarget()
+    {
+        var trigger = new TriggerDefinition { TargetGroup = "消えたグループ" };
+        using var dialog = new TriggerDialog(trigger, [new SoundDefinition { Group = "別グループ" }]);
+        Assert.Contains(Descendants(dialog).OfType<ComboBox>(), combo =>
+            combo.GetItemText(combo.SelectedItem) == "不明なグループ: 消えたグループ");
+    }
+
     private static IEnumerable<Control> Descendants(Control parent)
     {
         foreach (Control child in parent.Controls)

@@ -10,7 +10,7 @@ PondashiEX の配布物には、以下の第三者製ソフトウェアが含ま
 | NLayer / NLayer.NAudioSupport | 2.0.1 | Managed MP3デコーダ・NAudioブリッジ | MIT | https://github.com/naudio/NLayer |
 | Concentus.Oggfile | 1.0.7 | Managed Ogg Opusブリッジ | MIT | https://github.com/lostromb/concentus.oggfile |
 | Concentus | 2.2.2 | Managed Opusデコーダ | BSD-3-Clause系（下記参照） | https://github.com/lostromb/concentus |
-| .NET Runtime / Windows Desktop Runtime | 10.0.12 | self-contained実行環境 | MITおよび同梱notice記載の各ライセンス | https://github.com/dotnet/runtime |
+| .NET Runtime / Windows Desktop Runtime | 10.0.13 | self-contained実行環境 | MITおよび同梱notice記載の各ライセンス | https://github.com/dotnet/runtime |
 
 テスト専用依存（Microsoft.NET.Test.Sdk、xUnit、xunit.runner.visualstudio）は最終アプリ配布物には含めません。
 

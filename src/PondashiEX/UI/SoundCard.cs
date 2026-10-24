@@ -36,10 +36,9 @@ public sealed class SoundCard : UserControl
     private bool _suppressVolumeChanged;
     private bool _normalizingKey;
     private bool _loopSecondsEdited;
-    private Point? _dragStart;
-    private bool _reorderDragging;
     private bool _darkMode;
     private string _committedGroup;
+    private bool _updatingPlaybackSettings;
 
     public SoundCard(SoundDefinition sound)
     {
@@ -71,12 +70,11 @@ public sealed class SoundCard : UserControl
 
         _nameLabel = new Label
         {
-            Text = DragLabelText(sound.Name),
+            Text = sound.Name,
             Dock = DockStyle.Fill,
             AutoEllipsis = true,
             Font = new Font(Font, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleLeft,
-            Cursor = Cursors.SizeAll
+            TextAlign = ContentAlignment.MiddleLeft
         };
         _stateLabel = new Label
         {
@@ -157,9 +155,9 @@ public sealed class SoundCard : UserControl
             WrapContents = true,
             Padding = new Padding(4)
         };
-        _nameText = new TextBox { Text = sound.Name, Width = 170 };
+        _nameText = new TextBox { Text = sound.Name, Width = 170, MaxLength = ProjectLimits.MaxNameLength };
         _keyText = new TextBox { Text = sound.Key, Width = 52, MaxLength = 20 };
-        _groupText = new TextBox { Text = sound.Group, Width = 100 };
+        _groupText = new TextBox { Text = sound.Group, Width = 100, MaxLength = ProjectLimits.MaxGroupLength };
         _panValue = new NumericUpDown
         {
             Minimum = -100,
@@ -196,7 +194,7 @@ public sealed class SoundCard : UserControl
         _fadeOutCheck = new CheckBox { Text = "Fade Out", Checked = sound.FadeOut.Enabled, AutoSize = true };
         sound.FadeOut.Value = NormalizeFadeValue(sound.FadeOut);
         _fadeOutValue = CreateFadeValue(sound.FadeOut.Value);
-        _memoText = new TextBox { Text = sound.Memo, Width = 230 };
+        _memoText = new TextBox { Text = sound.Memo, Width = 230, MaxLength = ProjectLimits.MaxMemoLength };
         AddLabeled(_detailsContent, "名前", _nameText);
         AddLabeled(_detailsContent, "キー", _keyText);
         AddLabeled(_detailsContent, "グループ", _groupText);
@@ -235,13 +233,16 @@ public sealed class SoundCard : UserControl
         filePanel.Controls.Add(browseButton);
         AddLabeled(_detailsContent, "ファイル", filePanel);
         _detailsContent.Controls.Add(deleteButton);
+        var playbackSettingsButton = new Button { Text = "速度・音程の調整…", AutoSize = true, Height = 28 };
+        playbackSettingsButton.Click += (_, _) => ShowPlaybackSettings();
+        _detailsContent.Controls.Add(playbackSettingsButton);
+        _toolTip.SetToolTip(playbackSettingsButton, "再生を止めずに速度・音程・Panを変更します。");
         _toolTip.SetToolTip(_volumeTrack, "0～100%。ホイール、矢印キー、ドラッグで調整できます。");
         _toolTip.SetToolTip(_keyText, "空白は使用できません。A、2、F1などのキー名を入力します。");
         _toolTip.SetToolTip(_panValue, "-100で左、0で中央、+100で右。右クリックで中央へ戻せます。");
         _toolTip.SetToolTip(_loopStart, "初回は0秒から再生し、音源末尾に達したときに戻る位置です。音源長以上なら先頭へ戻ります。");
         _toolTip.SetToolTip(_fadeInCheck, "再生開始時に、無音から設定音量まで指定秒数で上げます。");
         _toolTip.SetToolTip(_fadeOutCheck, "停止時に、指定秒数で音量を下げてから停止します。");
-        _toolTip.SetToolTip(_nameLabel, "ここをドラッグして音源を並べ替えます。");
         _toolTip.SetToolTip(deleteButton, "音声ファイル自体は削除せず、このプロジェクトから登録だけを削除します。");
         _detailsPanel.Controls.Add(_detailsContent);
         root.Controls.Add(_detailsPanel, 0, 3);
@@ -280,47 +281,6 @@ public sealed class SoundCard : UserControl
             {
                 UpdatePreferredHeight();
             }
-        };
-        _nameLabel.MouseDown += (_, eventArgs) =>
-        {
-            if (eventArgs.Button == MouseButtons.Left)
-            {
-                _dragStart = eventArgs.Location;
-                _nameLabel.Capture = true;
-            }
-        };
-        _nameLabel.MouseUp += (_, eventArgs) =>
-        {
-            var shouldReorder = eventArgs.Button == MouseButtons.Left && _reorderDragging;
-            var screenPoint = _nameLabel.PointToScreen(eventArgs.Location);
-            _dragStart = null;
-            _reorderDragging = false;
-            _nameLabel.Capture = false;
-            if (shouldReorder)
-            {
-                ReorderDropRequested?.Invoke(this, new SoundReorderDropEventArgs(screenPoint));
-            }
-        };
-        _nameLabel.MouseMove += (_, eventArgs) =>
-        {
-            if (eventArgs.Button != MouseButtons.Left || _dragStart is not { } dragStart)
-            {
-                return;
-            }
-
-            var dragSize = SystemInformation.DragSize;
-            var dragBounds = new Rectangle(
-                dragStart.X - (dragSize.Width / 2),
-                dragStart.Y - (dragSize.Height / 2),
-                dragSize.Width,
-                dragSize.Height);
-            if (dragBounds.Contains(eventArgs.Location))
-            {
-                return;
-            }
-
-            _reorderDragging = true;
-            _nameLabel.Capture = true;
         };
         _volumeTrack.ValueChanged += (_, _) =>
         {
@@ -450,7 +410,6 @@ public sealed class SoundCard : UserControl
 
     public event EventHandler<VolumeFadeRequestedEventArgs>? VolumeFadeRequested;
 
-    public event EventHandler<SoundReorderDropEventArgs>? ReorderDropRequested;
 
     public event EventHandler<GroupChangedEventArgs>? GroupChangeCommitted;
 
@@ -652,6 +611,11 @@ public sealed class SoundCard : UserControl
 
     private void UpdateDefinition()
     {
+        if (_updatingPlaybackSettings)
+        {
+            return;
+        }
+
         Sound.Name = string.IsNullOrWhiteSpace(_nameText.Text) ? "名称未設定" : _nameText.Text.Trim();
         Sound.Key = _keyText.Text.Trim();
         Sound.Group = _groupText.Text.Trim();
@@ -668,9 +632,32 @@ public sealed class SoundCard : UserControl
         Sound.FadeOut.Enabled = _fadeOutCheck.Checked;
         Sound.FadeOut.Value = (float)_fadeOutValue.Value;
         Sound.Memo = _memoText.Text;
-        _nameLabel.Text = DragLabelText(Sound.Name);
+        _nameLabel.Text = Sound.Name;
         _summaryLabel.Text = SummaryText();
         DefinitionChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void ShowPlaybackSettings()
+    {
+        using var dialog = new PlaybackSettingsDialog(Sound);
+        UiTheme.Apply(dialog, _darkMode);
+        dialog.SettingsChanged += (_, _) =>
+        {
+            _updatingPlaybackSettings = true;
+            try
+            {
+                Sound.Speed = dialog.Speed;
+                _pitchValue.Value = (decimal)dialog.Pitch;
+                _panValue.Value = (decimal)(dialog.Pan * 100);
+            }
+            finally
+            {
+                _updatingPlaybackSettings = false;
+            }
+
+            UpdateDefinition();
+        };
+        dialog.ShowDialog(this);
     }
 
     private void NormalizeKeyAndUpdate()
@@ -760,19 +747,7 @@ public sealed class SoundCard : UserControl
 
     private string SummaryText() => $"キー: {DisplayOrDash(Sound.Key)}   グループ: {DisplayOrDash(Sound.Group)}";
 
-    private static string DragLabelText(string name) => $"↕ {name}";
-
     private static string DisplayOrDash(string value) => string.IsNullOrWhiteSpace(value) ? "—" : value;
-}
-
-public sealed class SoundReorderDropEventArgs : EventArgs
-{
-    public SoundReorderDropEventArgs(Point screenPoint)
-    {
-        ScreenPoint = screenPoint;
-    }
-
-    public Point ScreenPoint { get; }
 }
 
 public sealed class GroupChangedEventArgs : EventArgs

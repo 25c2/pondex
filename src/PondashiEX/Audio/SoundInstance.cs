@@ -13,6 +13,8 @@ internal sealed class SoundInstance : IDisposable
     private readonly RampedVolumeSampleProvider _volumeProvider;
     private readonly FadeInOutSampleProvider _fadeProvider;
     private readonly CompletionSampleProvider _completionProvider;
+    private readonly PlaybackRateSampleProvider _rateProvider;
+    private readonly LivePitchSampleProvider _pitchProvider;
     private bool _disposed;
 
     private SoundInstance(
@@ -24,6 +26,8 @@ internal sealed class SoundInstance : IDisposable
         RampedVolumeSampleProvider volumeProvider,
         FadeInOutSampleProvider fadeProvider,
         CompletionSampleProvider completionProvider,
+        PlaybackRateSampleProvider rateProvider,
+        LivePitchSampleProvider pitchProvider,
         ISampleProvider output)
     {
         Definition = definition;
@@ -34,6 +38,8 @@ internal sealed class SoundInstance : IDisposable
         _volumeProvider = volumeProvider;
         _fadeProvider = fadeProvider;
         _completionProvider = completionProvider;
+        _rateProvider = rateProvider;
+        _pitchProvider = pitchProvider;
         Output = output;
         State = PlaybackState.Playing;
         StartedAt = DateTimeOffset.Now;
@@ -70,13 +76,9 @@ internal sealed class SoundInstance : IDisposable
                 provider = new WdlResamplingSampleProvider(provider, mixerFormat.SampleRate);
             }
 
-            if (Math.Abs(definition.Pitch - 1.0f) > 0.001f)
-            {
-                provider = new SmbPitchShiftingSampleProvider(provider)
-                {
-                    PitchFactor = Math.Clamp(definition.Pitch, 0.5f, 2.0f)
-                };
-            }
+            var rateProvider = new PlaybackRateSampleProvider(provider) { Speed = definition.Speed };
+            var pitchProvider = new LivePitchSampleProvider(rateProvider) { Factor = definition.Pitch };
+            provider = pitchProvider;
 
             var balanceProvider = new StereoBalanceSampleProvider(provider)
             {
@@ -106,6 +108,8 @@ internal sealed class SoundInstance : IDisposable
                 volumeProvider,
                 fadeProvider,
                 completionProvider,
+                rateProvider,
+                pitchProvider,
                 completionProvider);
         }
         catch
@@ -152,6 +156,8 @@ internal sealed class SoundInstance : IDisposable
     {
         _volumeProvider.Volume = Math.Clamp(definition.Volume, 0.0f, 1.0f);
         _balanceProvider.Pan = definition.Pan;
+        _rateProvider.Speed = definition.Speed;
+        _pitchProvider.Factor = definition.Pitch;
         var loopStartSample = definition.Loop.StartSeconds > 0
             ? (long)Math.Round(definition.Loop.StartSeconds * _decoder.WaveFormat.SampleRate)
             : definition.Loop.StartSample;

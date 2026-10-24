@@ -29,6 +29,7 @@ public sealed class ProjectSerializerTests
                     Name = "開演ベル",
                     File = "sounds/bell.ogg",
                     Key = "A",
+                    Speed = 1.25F,
                     Loop = new LoopSettings { Enabled = true, StartSeconds = 1.25 }
                 }
             ],
@@ -60,6 +61,7 @@ public sealed class ProjectSerializerTests
         Assert.True(loaded.Settings.FadeOutOnStopAll);
         Assert.True(loaded.Settings.DarkMode);
         Assert.Equal(1.25, Assert.Single(loaded.Sounds).Loop.StartSeconds);
+        Assert.Equal(1.25F, Assert.Single(loaded.Sounds).Speed);
         var groupShortcut = Assert.Single(loaded.GroupShortcuts);
         Assert.Equal("SE", groupShortcut.Group);
         Assert.Equal("G", groupShortcut.Key);
@@ -122,6 +124,63 @@ public sealed class ProjectSerializerTests
             () => new ProjectSerializer().LoadAsync(path));
 
         Assert.Contains("formatVersion", exception.Message);
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("[]")]
+    [InlineData("null")]
+    [InlineData("true")]
+    [InlineData("\"1\"")]
+    [InlineData("1.5")]
+    [InlineData("99999999999999999999")]
+    public async Task Load_InvalidVersionTypeProducesProjectFormatException(string value)
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("invalid-version.pondex");
+        await File.WriteAllTextAsync(path, "{\"formatVersion\":" + value + "}");
+        var error = await Assert.ThrowsAsync<ProjectFormatException>(() => new ProjectSerializer().LoadAsync(path));
+        Assert.Contains("整数", error.Message);
+    }
+
+    [Fact]
+    public async Task Save_DoesNotTouchPreexistingFixedTempFile()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("safe.pondex");
+        await File.WriteAllTextAsync(path + ".tmp", "別のデータ");
+        await new ProjectSerializer().SaveAsync(path, new ProjectModel());
+        Assert.Equal("別のデータ", await File.ReadAllTextAsync(path + ".tmp"));
+        Assert.Single(Directory.GetFiles(directory.Path, "*.tmp"));
+    }
+
+    [Fact]
+    public async Task Save_HardLinkedFixedTempCannotOverwriteAnotherFile()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("show.pondex");
+        var unrelated = directory.GetPath("unrelated.txt");
+        await File.WriteAllTextAsync(unrelated, "保存対象外");
+        Assert.True(TestLinks.CreateHardLink(path + ".tmp", unrelated, IntPtr.Zero));
+        await new ProjectSerializer().SaveAsync(path, new ProjectModel());
+        Assert.Equal("保存対象外", await File.ReadAllTextAsync(unrelated));
+    }
+
+    [Fact]
+    public async Task Save_HardLinkedBackupAndDestinationDoNotModifyOtherNames()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("show.pondex");
+        var unrelated = directory.GetPath("unrelated.txt");
+        var backupTarget = directory.GetPath("backup-target.txt");
+        await File.WriteAllTextAsync(unrelated, "元データ");
+        await File.WriteAllTextAsync(backupTarget, "バックアップ対象外");
+        Assert.True(TestLinks.CreateHardLink(path, unrelated, IntPtr.Zero));
+        Assert.True(TestLinks.CreateHardLink(path + ".bak", backupTarget, IntPtr.Zero));
+        await new ProjectSerializer().SaveAsync(path, new ProjectModel());
+        Assert.Equal("元データ", await File.ReadAllTextAsync(unrelated));
+        Assert.Equal("バックアップ対象外", await File.ReadAllTextAsync(backupTarget));
+        Assert.Equal("元データ", await File.ReadAllTextAsync(path + ".bak"));
     }
 
     [Fact]

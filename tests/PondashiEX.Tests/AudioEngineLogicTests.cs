@@ -291,6 +291,30 @@ public sealed class AudioEngineLogicTests
         return new AudioEngine(new NullLogger(), (_, _) => captured);
     }
 
+    [Fact]
+    public async Task FailedRetrigger_OriginalSoundStillCompletesNaturally()
+    {
+        using var directory = new TestDirectory();
+        var path = CreateWaveFile(directory.GetPath("original.wav"));
+        ISampleProvider? mixer = null;
+        using var engine = new AudioEngine(new NullLogger(), (_, provider) =>
+        {
+            mixer = provider;
+            return new FakeAudioOutput();
+        });
+        var ended = new TaskCompletionSource<PlaybackEndReason?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.PlaybackEnded += (_, args) => ended.TrySetResult(args.EndReason);
+        var sound = new SoundDefinition();
+        await engine.PlayAsync(sound, path);
+        await engine.PlayAsync(sound, directory.GetPath("missing.wav"));
+        var buffer = new float[16_384];
+        mixer!.Read(buffer, 0, buffer.Length);
+
+        Assert.Equal(PlaybackEndReason.Natural, await ended.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Empty(engine.GetActiveSoundIds());
+        Assert.Equal(PondashiEX.Audio.PlaybackState.Stopped, engine.GetState(sound.Id));
+    }
+
     private static string CreateWaveFile(string path)
     {
         using var writer = new WaveFileWriter(path, new WaveFormat(44_100, 16, 1));
