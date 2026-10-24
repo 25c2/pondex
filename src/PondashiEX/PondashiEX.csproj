@@ -34,6 +34,9 @@
 
   <ItemGroup>
     <None Include="..\..\README.md" Link="README.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\docs\usage.md" Link="docs\usage.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\docs\development.md" Link="docs\development.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\CONTRIBUTING.md" Link="CONTRIBUTING.md" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\LICENSE" Link="LICENSE" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\THIRD_PARTY_NOTICES.md" Link="THIRD_PARTY_NOTICES.md" CopyToOutputDirectory="PreserveNewest" />
     <None Include="$(MSBuildSDKsPath)\..\..\..\LICENSE.txt" Link="DOTNET_LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />

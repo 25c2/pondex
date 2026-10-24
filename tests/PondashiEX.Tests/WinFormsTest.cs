@@ -1,4 +1,5 @@
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
 using PondashiEX.UI;
 
 namespace PondashiEX.Tests;
@@ -12,6 +13,26 @@ public sealed class WinFormsTestGroup
 
 internal static class WinFormsTest
 {
+    internal static void WithNeutralKeyboard(Action action)
+    {
+        // Synthetic WM_KEY*/WM_MOUSEWHEEL messages otherwise inherit physical
+        // Shift/Alt/mouse-button state from the interactive desktop. Only neutralize
+        // this test thread's keyboard-state table; do not inject OS key-up events.
+        var original = new byte[256];
+        Assert.True(GetKeyboardState(original));
+        Assert.True(SetKeyboardState(new byte[256]));
+        try { action(); }
+        finally { Assert.True(SetKeyboardState(original)); }
+    }
+
+    [DllImport("user32.dll", ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetKeyboardState([Out] byte[] keyState);
+
+    [DllImport("user32.dll", ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetKeyboardState(byte[] keyState);
+
     public static void Run(Action action)
     {
         Exception? failure = null;

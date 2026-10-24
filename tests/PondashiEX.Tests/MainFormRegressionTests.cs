@@ -15,6 +15,56 @@ namespace PondashiEX.Tests;
 public sealed class MainFormRegressionTests
 {
     [Fact]
+    public void MasterTypedValue_IsCommittedBeforeDirectSave() => RunOnSta(() =>
+    {
+        using var directory = new TestDirectory();
+        using var manager = new ProjectManager(new ProjectSerializer());
+        var path = directory.GetPath("master.pondex");
+        manager.SaveAsAsync(path).GetAwaiter().GetResult();
+        using var engine = CreateEngine();
+        using var form = CreateForm(manager, engine, directory.Path);
+        form.Show();
+        var numeric = (NumericUpDown)typeof(MainForm).GetField("_masterVolumeValue", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
+        numeric.Focus();
+        numeric.Text = "37";
+        var save = (Task<bool>)Method("SaveProjectAsync").Invoke(form, [false])!;
+        PumpUntil(save);
+        Assert.True(save.GetAwaiter().GetResult());
+        Assert.Equal(0.37F, new ProjectSerializer().LoadAsync(path).GetAwaiter().GetResult().Settings.MasterVolume);
+        Assert.False(manager.IsDirty);
+        form.CloseWithoutSavePromptForSmokeTest();
+    });
+
+    [Fact]
+    public void HeaderResize_ActualControlRectanglesStayWithinParent() => RunOnSta(() =>
+    {
+        using var directory = new TestDirectory();
+        using var manager = new ProjectManager(new ProjectSerializer());
+        using var engine = CreateEngine();
+        using var form = CreateForm(manager, engine, directory.Path);
+        form.Show();
+        Application.DoEvents();
+        var master = Assert.Single(Descendants(form).OfType<TrackBar>());
+        var header = (TableLayoutPanel)master.Parent!.Parent!;
+        var root = (TableLayoutPanel)header.Parent!;
+        root.Dock = DockStyle.None;
+        ReadOnlySpan<int> widths = [900, 1180, 500, 1500, 900];
+        foreach (var width in widths)
+        {
+            root.Size = new Size(width, 700);
+            Application.DoEvents();
+            foreach (var control in Descendants(header).Where(control => control is Button or CheckBox or TrackBar or NumericUpDown or Label))
+            {
+                var bounds = header.RectangleToClient(control.RectangleToScreen(control.ClientRectangle));
+                Assert.True(header.ClientRectangle.Contains(bounds), $"幅{width}: {control.Text} {bounds}, header={header.ClientRectangle}");
+                Assert.True(control.Height > 12, $"高さ不足: {control.Text}");
+            }
+            Assert.Contains(Descendants(header).OfType<Label>(), label => label.Text is "現在時刻" or "ストップウォッチ");
+        }
+        form.CloseWithoutSavePromptForSmokeTest();
+    });
+
+    [Fact]
     public void SaveDuringEdits_DoesNotAuthorizeClosingOrReplacingProject() => RunOnSta(() =>
     {
         using var directory = new TestDirectory();
@@ -304,8 +354,11 @@ public sealed class MainFormRegressionTests
             ClickCheckBox(check);
             Assert.False(check.Checked, "クリックでOFFに戻せません。");
             check.Focus();
-            SendMessage(check.Handle, 0x0100 /* WM_KEYDOWN */, (IntPtr)Keys.Space, IntPtr.Zero);
-            SendMessage(check.Handle, 0x0101 /* WM_KEYUP */, (IntPtr)Keys.Space, IntPtr.Zero);
+            WinFormsTest.WithNeutralKeyboard(() =>
+            {
+                SendMessage(check.Handle, 0x0100 /* WM_KEYDOWN */, (IntPtr)Keys.Space, IntPtr.Zero);
+                SendMessage(check.Handle, 0x0101 /* WM_KEYUP */, (IntPtr)Keys.Space, IntPtr.Zero);
+            });
             Assert.True(check.Checked, "SpaceでONにできません。");
             Assert.Equal(3, changes);
             Assert.Equal(3, clicks);
@@ -497,16 +550,21 @@ public sealed class MainFormRegressionTests
         Application.DoEvents();
         var list = Descendants(form).OfType<ThemedFlowLayoutPanel>().Single();
         var slider = Descendants(list.Controls[0]).OfType<TrackBar>().Single();
-        slider.Focus();
+        form.Activate();
+        Application.DoEvents();
+        Assert.True(slider.Focus(), "音量スライダーにフォーカスを設定できませんでした。");
+        Application.DoEvents();
         var before = sounds[0].Volume;
         SendWheel(slider, -120);
-        Assert.True(sounds[0].Volume < before);
+        Assert.True(sounds[0].Volume < before,
+            $"ホイール後: sound={sounds[0].Volume}, before={before}, slider={slider.Value}, focused={slider.Focused}, modifiers={Control.ModifierKeys}, buttons={Control.MouseButtons}, lines={SystemInformation.MouseWheelScrollLines}");
         Assert.Equal(0, -list.AutoScrollPosition.Y);
         Assert.False(list.IsSmoothScrolling);
         Assert.All(sounds.Skip(1), sound => Assert.Equal(0.5F, sound.Volume));
         var numeric = Descendants(list.Controls[0]).OfType<NumericUpDown>()
             .Single(control => control.Minimum == 0 && control.Maximum == 100);
-        numeric.Focus();
+        Assert.True(numeric.Focus(), "音量数値欄にフォーカスを設定できませんでした。");
+        Application.DoEvents();
         before = sounds[0].Volume;
         SendWheel(numeric, -120);
         Assert.True(sounds[0].Volume < before);
@@ -519,7 +577,8 @@ public sealed class MainFormRegressionTests
     {
         var point = control.PointToScreen(new Point(10, 10));
         var coordinates = (IntPtr)((point.Y << 16) | (point.X & 0xFFFF));
-        SendMessage(control.Handle, 0x020A /* WM_MOUSEWHEEL */, (IntPtr)(delta << 16), coordinates);
+        WinFormsTest.WithNeutralKeyboard(() =>
+            SendMessage(control.Handle, 0x020A /* WM_MOUSEWHEEL */, (IntPtr)(delta << 16), coordinates));
     }
 
     [Theory]

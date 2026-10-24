@@ -30,11 +30,12 @@ public sealed class TriggerDialog : Form
 
         var root = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Padding = new Padding(14),
             ColumnCount = 2,
-            RowCount = 9,
-            AutoScroll = true
+            RowCount = 8
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -42,7 +43,6 @@ public sealed class TriggerDialog : Form
         {
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         }
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         _enabledCheck = new CheckBox { Text = "有効", Checked = definition.Enabled, AutoSize = true };
         _memoText = new TextBox { Text = definition.Memo, Dock = DockStyle.Fill, MaxLength = ProjectLimits.MaxMemoLength };
@@ -91,7 +91,9 @@ public sealed class TriggerDialog : Form
 
         var buttons = new FlowLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Bottom,
+            Height = 52,
+            Padding = new Padding(8),
             FlowDirection = FlowDirection.RightToLeft
         };
         var okButton = new Button { Text = "OK", Width = 90, Height = 32 };
@@ -99,9 +101,10 @@ public sealed class TriggerDialog : Form
         okButton.Click += (_, _) => SaveAndClose();
         buttons.Controls.Add(okButton);
         buttons.Controls.Add(cancelButton);
-        root.Controls.Add(buttons, 0, 8);
-        root.SetColumnSpan(buttons, 2);
-        Controls.Add(root);
+        var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
+        scroll.Controls.Add(root);
+        Controls.Add(scroll);
+        Controls.Add(buttons);
         AcceptButton = okButton;
         CancelButton = cancelButton;
 
@@ -169,6 +172,7 @@ public sealed class TriggerDialog : Form
         var values = Enum.GetValues<TEnum>();
         var combo = new ComboBox
         {
+            FormattingEnabled = true,
             DropDownStyle = ComboBoxStyle.DropDownList,
             Dock = DockStyle.Fill
         };

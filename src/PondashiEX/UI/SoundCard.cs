@@ -40,6 +40,7 @@ public sealed class SoundCard : UserControl
     private string _committedGroup;
     private bool _updatingPlaybackSettings;
     private bool _detailsCreated;
+    private bool _updatingHeight;
     private readonly Func<string> _resolveSoundPath;
     private string _loopDisplayText = string.Empty;
 
@@ -196,6 +197,7 @@ public sealed class SoundCard : UserControl
         };
         SizeChanged += (_, _) =>
         {
+            UpdateState(_state);
             if (_detailsPanel.Visible)
             {
                 UpdatePreferredHeight();
@@ -262,7 +264,8 @@ public sealed class SoundCard : UserControl
         RegisterEditor(_volumeValue);
         RegisterBackgroundFocusTargets(this);
 
-        _toolTip.SetToolTip(_volumeTrack, "0～100%。ホイール、矢印キー、ドラッグで調整できます。");
+        _toolTip.SetToolTip(_volumeTrack, "0～100%。ホイール、矢印キー、ドラッグで調整。右クリックで音量フェードを設定できます。");
+        _pauseButton.SizeChanged += (_, _) => UpdateState(_state);
         UpdateState(PlaybackState.Stopped);
     }
 
@@ -461,7 +464,11 @@ public sealed class SoundCard : UserControl
             _ => ("停止中", _darkMode ? Color.FromArgb(58, 62, 67) : SystemColors.Control)
         };
         _stateLabel.ForeColor = _darkMode ? Color.FromArgb(238, 240, 242) : SystemColors.ControlText;
-        _pauseButton.Text = state == PlaybackState.Paused ? "▶ 再開" : "Ⅱ 一時停止";
+        var pauseTextWidth = TextRenderer.MeasureText("Ⅱ 一時停止", _pauseButton.Font).Width
+            + _pauseButton.Padding.Horizontal + 10 * DeviceDpi / 96;
+        _pauseButton.Text = state == PlaybackState.Paused ? "▶ 再開"
+            : (_pauseButton.ClientSize.Width < pauseTextWidth ? "Ⅱ 休止" : "Ⅱ 一時停止");
+        _toolTip.SetToolTip(_pauseButton, state == PlaybackState.Paused ? "再生を再開" : "一時停止");
     }
 
     internal void EndEditing() => _detailsButton.Focus();
@@ -621,25 +628,39 @@ public sealed class SoundCard : UserControl
 
     private void UpdatePreferredHeight()
     {
-        if (!_detailsPanel.Visible)
+        if (_updatingHeight) { return; }
+        _updatingHeight = true;
+        try
         {
-            if (Height != CollapsedHeight)
+            if (!_detailsPanel.Visible)
             {
-                Height = CollapsedHeight;
+                if (Height != CollapsedHeight)
+                {
+                    Height = CollapsedHeight;
+                }
+
+                return;
             }
 
-            return;
+            var availableWidth = Math.Max(1, ClientSize.Width - 24);
+            // File + browse must fit as a single field even in a three-column card.
+            var fileField = _fileText.Parent!.Parent!;
+            var otherWidth = fileField.GetPreferredSize(Size.Empty).Width - _fileText.Width;
+            _fileText.Width = Math.Max(40, availableWidth - _detailsContent.Padding.Horizontal
+                - fileField.Margin.Horizontal - otherWidth);
+            _detailsContent.MaximumSize = new Size(availableWidth, 0);
+            _detailsContent.Width = availableWidth;
+            _detailsContent.PerformLayout();
+            var detailsHeight = _detailsContent.Controls.Cast<Control>()
+                .Select(control => control.Bottom + control.Margin.Bottom).DefaultIfEmpty(0).Max()
+                + _detailsContent.Padding.Bottom;
+            var targetHeight = CollapsedHeight + Math.Max(36, detailsHeight) + 12;
+            if (Height != targetHeight)
+            {
+                Height = targetHeight;
+            }
         }
-
-        var availableWidth = Math.Max(MinimumSize.Width - 18, ClientSize.Width - 18);
-        _detailsContent.MaximumSize = new Size(availableWidth, 0);
-        _detailsContent.PerformLayout();
-        var detailsHeight = _detailsContent.GetPreferredSize(new Size(availableWidth, 0)).Height;
-        var targetHeight = CollapsedHeight + Math.Max(36, detailsHeight) + 6;
-        if (Height != targetHeight)
-        {
-            Height = targetHeight;
-        }
+        finally { _updatingHeight = false; }
     }
 
     private void UpdateDefinition()

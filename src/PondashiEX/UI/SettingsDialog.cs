@@ -29,11 +29,12 @@ public sealed class SettingsDialog : Form
 
         var root = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Padding = new Padding(14),
             ColumnCount = 2,
-            RowCount = 10,
-            AutoScroll = true
+            RowCount = 9
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -46,7 +47,6 @@ public sealed class SettingsDialog : Form
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         _projectNameText = new TextBox { Text = string.Empty, Dock = DockStyle.Fill, MaxLength = ProjectLimits.MaxNameLength };
         _themeColorText = new TextBox { Text = "#202020", Width = 100, MaxLength = ProjectLimits.MaxThemeColorLength };
@@ -126,16 +126,19 @@ public sealed class SettingsDialog : Form
 
         var buttons = new FlowLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Bottom,
+            Height = 52,
+            Padding = new Padding(8),
             FlowDirection = FlowDirection.RightToLeft
         };
         var okButton = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 90, Height = 32 };
         var cancelButton = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, Width = 90, Height = 32 };
         buttons.Controls.Add(okButton);
         buttons.Controls.Add(cancelButton);
-        root.Controls.Add(buttons, 0, 9);
-        root.SetColumnSpan(buttons, 2);
-        Controls.Add(root);
+        var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
+        scroll.Controls.Add(root);
+        Controls.Add(scroll);
+        Controls.Add(buttons);
         AcceptButton = okButton;
         CancelButton = cancelButton;
     }

@@ -197,6 +197,21 @@ public sealed class TriggerEngineTests
         Assert.Single(engine.Tick(DateTimeOffset.Now, TimeSpan.Zero));
     }
 
+    [Fact]
+    public void StopwatchZero_ResetRearmsWithoutRearmingOtherConditions()
+    {
+        var stopwatch = CreateTrigger(TriggerType.StopwatchElapsed, new TriggerParameters { Elapsed = TimeSpan.Zero });
+        var clock = CreateTrigger(TriggerType.ClockTime, new TriggerParameters { ClockTime = new TimeOnly(12, 0) });
+        var engine = new TriggerEngine();
+        engine.SetTriggers([stopwatch, clock]);
+        var now = new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.Zero);
+        Assert.Equal(stopwatch, Assert.Single(engine.Tick(now.AddSeconds(-1), TimeSpan.Zero)));
+        Assert.Equal(clock, Assert.Single(engine.Tick(now, TimeSpan.Zero)));
+        Assert.Empty(engine.Tick(now, TimeSpan.Zero));
+        engine.ResetStopwatch();
+        Assert.Equal(stopwatch, Assert.Single(engine.Tick(now, TimeSpan.Zero)));
+    }
+
     private static TriggerDefinition CreateTrigger(TriggerType type, TriggerParameters parameters) => new()
     {
         Enabled = true,

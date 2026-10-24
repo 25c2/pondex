@@ -34,7 +34,9 @@ internal sealed class RampedVolumeSampleProvider : ISampleProvider
         {
             lock (_sync)
             {
-                _currentVolume = Math.Clamp(value, 0.0f, 1.0f);
+                var target = Math.Clamp(value, 0.0f, 1.0f);
+                if (target == _targetVolume) { return; }
+                _currentVolume = target;
                 _targetVolume = _currentVolume;
                 _stepPerFrame = 0;
                 _framesRemaining = 0;

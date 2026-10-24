@@ -11,6 +11,19 @@ public sealed class TriggerEngine
     private readonly TimeProvider _timeProvider;
     private IReadOnlyList<TriggerDefinition> _triggers = [];
     private DateTimeOffset? _lastTickNow;
+    private TimeSpan _lastStopwatchElapsed;
+
+    public void ResetStopwatch()
+    {
+        lock (_sync)
+        {
+            foreach (var trigger in _triggers.Where(trigger => trigger.TriggerType == TriggerType.StopwatchElapsed))
+            {
+                _latchedTriggers.Remove(trigger.Id);
+            }
+            _lastStopwatchElapsed = TimeSpan.Zero;
+        }
+    }
 
     public TriggerEngine(TimeProvider? timeProvider = null)
     {
@@ -30,6 +43,7 @@ public sealed class TriggerEngine
                 _soundEndedSinceTick.Clear();
                 _latchedTriggers.Clear();
                 _lastTickNow = null;
+                _lastStopwatchElapsed = TimeSpan.Zero;
                 return;
             }
 
@@ -97,6 +111,8 @@ public sealed class TriggerEngine
         List<TriggerDefinition> fired;
         lock (_sync)
         {
+            if (stopwatchElapsed < _lastStopwatchElapsed) { ResetStopwatch(); }
+            _lastStopwatchElapsed = stopwatchElapsed;
             fired = [];
             foreach (var trigger in _triggers.Where(trigger => trigger.Enabled))
             {

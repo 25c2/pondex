@@ -91,6 +91,19 @@ public sealed class TriggerPanel : UserControl
 
     public event EventHandler? DefinitionsChanged;
 
+    internal void RefreshSoundNames()
+    {
+        foreach (DataGridViewRow gridRow in _grid.Rows)
+        {
+            if (gridRow.DataBoundItem is TriggerRow row)
+            {
+                row.Condition = DescribeCondition(row.Definition);
+                row.Target = DescribeTarget(row.Definition);
+            }
+        }
+        _grid.Invalidate();
+    }
+
     internal void ApplyDarkMode(bool darkMode)
     {
         _darkMode = darkMode;
@@ -248,10 +261,10 @@ public sealed class TriggerPanel : UserControl
 
         public string Memo { get; }
 
-        public string Condition { get; }
+        public string Condition { get; set; }
 
         public string Action { get; }
 
-        public string Target { get; }
+        public string Target { get; set; }
     }
 }

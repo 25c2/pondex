@@ -29,26 +29,15 @@ internal static class AudioDecoderFactory
 
     private static WaveStream OpenOgg(string path)
     {
-        var header = new byte[4_096];
-        using (var stream = new FileStream(
-                   path,
-                   FileMode.Open,
-                   FileAccess.Read,
-                   FileShare.Read | FileShare.Delete,
-                   bufferSize: header.Length,
-                   FileOptions.SequentialScan))
+        var header = OggIdentification.ReadPacket(path);
+        if (header.AsSpan().StartsWith("OpusHead"u8))
         {
-            var read = stream.Read(header, 0, header.Length);
-            var contents = header.AsSpan(0, read);
-            if (contents.IndexOf("OpusHead"u8) >= 0)
-            {
-                return new OpusWaveReader(path);
-            }
+            return new OpusWaveReader(path);
+        }
 
-            if (contents.IndexOf("\x01vorbis"u8) < 0)
-            {
-                throw new NotSupportedException("Oggコンテナ内の音声形式を判別できません。VorbisまたはOpusを指定してください。");
-            }
+        if (!header.AsSpan().StartsWith("\x01vorbis"u8))
+        {
+            throw new NotSupportedException("Oggコンテナ内の音声形式を判別できません。VorbisまたはOpusを指定してください。");
         }
 
         return OpenOwned(path, static stream => new VorbisWaveReader(stream, closeOnDispose: false));

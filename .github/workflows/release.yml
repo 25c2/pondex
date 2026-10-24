@@ -39,7 +39,7 @@ jobs:
       - name: Validate release tag
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
+          $tag = $env:GITHUB_REF_NAME
           $pattern = '^v(?<version>[0-9]+\.[0-9]+(?:\.[0-9]+(?:\.[0-9]+)?)?(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?)$'
           if ($tag -notmatch $pattern) {
             throw "タグは v0.2、v0.2.1、v26.09.20.1 または v26.09.20-beta.1 の形式にしてください: $tag"
@@ -132,7 +132,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "${{ github.ref_name }}"
+          $tag = $env:GITHUB_REF_NAME
           $title = "効果音ポン出しくんEX $tag"
           $arguments = @(
             "release", "create", $tag,

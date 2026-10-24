@@ -7,6 +7,17 @@ namespace PondashiEX.Tests;
 public sealed class AppStorageTests
 {
     [Fact]
+    public void InvalidNetworkHistoryEntryDoesNotDiscardValidLocalEntries()
+    {
+        using var directory = new TestDirectory();
+        var project = directory.GetPath("show.pondex");
+        File.WriteAllText(project, "{}");
+        var history = directory.GetPath("history.json");
+        File.WriteAllText(history, JsonSerializer.Serialize(new[] { @"\\untrusted.invalid\share\show.pondex", project }));
+        Assert.Equal(project, Assert.Single(new RecentProjectStore(history).Load()));
+    }
+
+    [Fact]
     public void WritableApplicationFolderIsPreferredAndProbeFilesAreRemoved()
     {
         using var directory = new TestDirectory();

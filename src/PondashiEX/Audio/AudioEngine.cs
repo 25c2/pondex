@@ -29,6 +29,8 @@ public sealed class AudioEngine : IAudioEngine
     private bool _disposed;
     private int _outputRecoveryQueued;
     private long _outputSamplesRead;
+    private OutputActivitySampleProvider? _activityProvider;
+    private long _outputPositionBase;
 
     public AudioEngine(IAppLogger logger)
         : this(
@@ -480,6 +482,7 @@ public sealed class AudioEngine : IAudioEngine
         {
             try
             {
+                _outputPositionBase = _activityProvider?.CompletionPosition ?? 0;
                 _output.Play();
             }
             catch (Exception exception) when (_deviceNumber != -1)
@@ -520,6 +523,12 @@ public sealed class AudioEngine : IAudioEngine
             return;
         }
 
+        if (instance.State == PlaybackState.Paused)
+        {
+            StopCore(soundId, reason);
+            return;
+        }
+
         if (_fadePolicy.GetFadeOutDuration(instance.Definition.FadeOut) is { } duration)
         {
             instance.BeginFadeOut(duration);
@@ -533,19 +542,41 @@ public sealed class AudioEngine : IAudioEngine
 
     private void QueueNaturalCompletion(Guid soundId, SoundInstance? expectedInstance)
     {
-        ThreadPool.QueueUserWorkItem(_ =>
+        // Rendering happens ahead of the device. Capture the end of this output
+        // block while still in Read, then wait off the audio callback for playback.
+        var expectedOutput = _output;
+        var target = (_activityProvider?.CompletionPosition ?? 0) - _outputPositionBase;
+        _ = Task.Run(async () =>
         {
-            lock (_sync)
+            while (true)
             {
-                if (!_instances.TryGetValue(soundId, out var current)
-                    || !ReferenceEquals(current, expectedInstance)
-                    || current.State == PlaybackState.Fading)
+                lock (_sync)
                 {
-                    return;
-                }
+                    if (_disposed || !ReferenceEquals(_output, expectedOutput)
+                        || !_instances.TryGetValue(soundId, out var current)
+                        || !ReferenceEquals(current, expectedInstance)
+                        || current.State == PlaybackState.Fading)
+                    {
+                        return;
+                    }
 
-                StopCore(soundId, PlaybackEndReason.Natural);
-                StopOutputWhenIdle();
+                    try
+                    {
+                        if (expectedOutput is null || expectedOutput.HasConsumedSamples(target))
+                        {
+                            StopCore(soundId, PlaybackEndReason.Natural);
+                            StopOutputWhenIdle();
+                            return;
+                        }
+                    }
+                    catch (Exception exception)
+                    {
+                        // Let the existing output recovery path report device failure.
+                        QueueOutputRecovery(exception);
+                        return;
+                    }
+                }
+                await Task.Delay(10).ConfigureAwait(false);
             }
         });
     }
@@ -599,6 +630,8 @@ public sealed class AudioEngine : IAudioEngine
             _masterVolumeProvider,
             count => Interlocked.Add(ref _outputSamplesRead, count));
         var output = _outputFactory(deviceNumber, activityProvider);
+        _activityProvider = activityProvider;
+        _outputPositionBase = 0;
         output.PlaybackStopped += OnOutputPlaybackStopped;
         return output;
     }

@@ -16,8 +16,54 @@ PondashiEX の配布物には、以下の第三者製ソフトウェアが含ま
 
 ## MIT License
 
-MIT対象パッケージの著作権者には、Logan Stromberg、Andrew Ward、Mark Heath、
-Ivan Ivon、.NET Foundationおよび各contributorsが含まれます。
+以下は各バージョンのLICENSEおよびNuGetパッケージに記載された著作権表記です。
+各表記と、その直後の共通のMIT許諾文・免責条項を一組として同梱します。
+
+### NAudio 2.4.0（各サブパッケージ共通）
+
+Copyright 2020 Mark Heath
+
+© Mark Heath 2026
+
+© Mark Heath 2023
+
+（nuspecの年はNAudio.WinMMが2023、その他の上記NAudioパッケージが2026です。）
+
+出典: [同梱バージョンのlicense.txt](https://github.com/naudio/NAudio/blob/7c855e6737435f781dcbac782930a0de7a13cb2b/license.txt) および各パッケージのnuspec。
+
+### NAudio.Vorbis.Latest 1.6.0
+
+Copyright (c) 2021 Andrew Ward
+
+Copyright © Andrew Ward 2021, 2024-2026 Ivan Ivon
+
+出典: [同梱バージョンのLICENSE](https://github.com/i2van/NAudio.Vorbis.Latest/blob/d10f1b0b9590d522474f0602fb4e0c97f02ace5d/LICENSE) およびNAudio.Vorbis.Latest.nuspec。
+
+### NVorbis 0.10.5
+
+Copyright (c) 2020 Andrew Ward
+
+出典: NuGetパッケージ内のLICENSE。
+
+### NLayer / NLayer.NAudioSupport 2.0.1
+
+Copyright (c) 2018 Mark Heath, Andrew Ward & Contributors
+
+© Mark Heath 2026
+
+出典: [同梱バージョンのLICENSE](https://github.com/naudio/NLayer/blob/191c104a9fef8be13521d3956e537599b493a573/LICENSE) および各パッケージのnuspec。
+
+### Concentus.Oggfile 1.0.7
+
+Concentus.OggFile is based on a fork of the NVorbis library (https://github.com/NVorbis/NVorbis)
+
+Copyright (c) 2020 Andrew Ward and Logan Stromberg
+
+Copyright © Logan Stromberg, Andrew Ward
+
+出典: [同梱バージョンのLICENSE](https://github.com/lostromb/concentus.oggfile/blob/27c3125205ddcd891822a398284b246636fafb94/LICENSE) およびConcentus.Oggfile.nuspec。
+
+### MIT許諾文（上記すべてに適用）
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -36,8 +82,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-主な著作者は、NAudioがMark Heathおよびcontributors、NAudio.Vorbis.LatestがAndrew Ward・Ivan Ivon、NVorbisがAndrew Ward、NLayerがMark Heath・Andrew Ward、Concentus系がLogan StrombergおよびOpus contributors、System系が.NET Foundationおよびcontributorsです。
 
 ## Concentus / Opus License
 
@@ -71,5 +115,11 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+This repository and its redistributable packages contain independently compiled
+versions of the Opus C reference library, which is maintained by Xiph.org and the
+Opus open-source contributors. The source code for these libraries is freely available
+at https://gitlab.xiph.org/xiph/opus/-/tags/v1.5.2, and all binaries are being
+redistributed to you under the same terms of the general Opus license dictated above.
 
 配布物には、この文書に加えて `DOTNET_LICENSE.txt` と `DOTNET_THIRD_PARTY_NOTICES.txt` を同梱します。

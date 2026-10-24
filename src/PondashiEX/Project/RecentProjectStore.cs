@@ -85,7 +85,7 @@ public sealed class RecentProjectStore
         {
             return ProjectPath.GetSafeFullPath(Path.GetFullPath(entry, _portableRoot), "履歴のプロジェクトパス");
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or InvalidOperationException)
         {
             return null;
         }

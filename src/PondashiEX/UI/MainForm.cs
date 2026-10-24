@@ -36,6 +36,9 @@ public sealed class MainForm : Form
     private readonly ToolStripMenuItem _muteMenuItem;
     private readonly TrackBar _masterVolume;
     private readonly CheckBox _masterMute;
+    private NumericUpDown _masterVolumeValue = null!;
+    private Button _stopAllButton = null!;
+    private readonly ToolTip _headerToolTip = new();
     private bool _stopwatchMode;
     private bool _closingAfterSave;
     private bool _applyingProjectSettings;
@@ -276,6 +279,7 @@ public sealed class MainForm : Form
 
         var addButton = HeaderButton("＋ 音源追加", Color.FromArgb(225, 235, 245));
         var stopAllButton = HeaderButton("■ 全停止", Color.FromArgb(220, 65, 65));
+        _stopAllButton = stopAllButton;
         addButton.Tag = UiTheme.AccentButtonRole;
         stopAllButton.Tag = UiTheme.DangerButtonRole;
         stopAllButton.ForeColor = Color.White;
@@ -305,6 +309,7 @@ public sealed class MainForm : Form
             TextAlign = HorizontalAlignment.Right,
             Margin = new Padding(3, 5, 0, 5)
         };
+        _masterVolumeValue = masterVolumeValue;
         var masterMuteControl = new CheckBox
         {
             Text = "ミュート",
@@ -349,10 +354,33 @@ public sealed class MainForm : Form
         var deviceLabelControl = deviceLabel;
         var clockLabelControl = clockLabel;
         var clockModeLabelControl = clockModeLabel;
+        var compactClock = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, Margin = Padding.Empty };
+        compactClock.RowStyles.Add(new RowStyle(SizeType.Absolute, 22 * header.DeviceDpi / 96F));
+        compactClock.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         bool? compactLayout = null;
+        var layoutQueued = false;
+        void QueueHeaderLayout()
+        {
+            if (layoutQueued || !header.IsHandleCreated || header.IsDisposed) { return; }
+            layoutQueued = true;
+            header.BeginInvoke(() =>
+            {
+                layoutQueued = false;
+                if (!header.IsDisposed && header.Parent is TableLayoutPanel parent)
+                {
+                    parent.PerformLayout();
+                }
+            });
+        }
         void ArrangeHeader()
         {
             var compact = header.ClientSize.Width < (int)(1100 * header.DeviceDpi / 96F);
+            var desiredHeight = (compact ? 236 : 104) * header.DeviceDpi / 96F;
+            if (header.Parent is TableLayoutPanel parent && parent.RowStyles[1].Height != desiredHeight)
+            {
+                parent.RowStyles[1].Height = desiredHeight;
+                QueueHeaderLayout();
+            }
             if (compactLayout == compact)
             {
                 return;
@@ -370,7 +398,7 @@ public sealed class MainForm : Form
                 header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
                 header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
                 header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-                foreach (var height in new[] { 30, 40, 44, 40, 40 })
+                foreach (var height in new[] { 30, 40, 66, 40, 40 })
                 {
                     header.RowStyles.Add(new RowStyle(SizeType.Absolute, height * header.DeviceDpi / 96F));
                 }
@@ -381,7 +409,9 @@ public sealed class MainForm : Form
                 header.Controls.Add(masterPanel, 0, 1);
                 header.SetColumnSpan(masterPanel, 2);
                 header.Controls.Add(masterMuteControl, 2, 1);
-                header.Controls.Add(clockLabelControl, 0, 2);
+                compactClock.Controls.Add(clockModeLabelControl, 0, 0);
+                compactClock.Controls.Add(clockLabelControl, 0, 1);
+                header.Controls.Add(compactClock, 0, 2);
                 header.Controls.Add(modeButton, 1, 2);
                 header.Controls.Add(startButton, 0, 3);
                 header.Controls.Add(resetButton, 1, 3);
@@ -418,16 +448,15 @@ public sealed class MainForm : Form
                 header.SetRowSpan(stopAllButton, 2);
             }
 
-            if (header.Parent is TableLayoutPanel parent)
-            {
-                parent.RowStyles[1].Height = (compact ? 210 : 104) * header.DeviceDpi / 96F;
-            }
-
             header.ResumeLayout(true);
+            QueueHeaderLayout();
         }
 
         header.SizeChanged += (_, _) => ArrangeHeader();
         header.ParentChanged += (_, _) => ArrangeHeader();
+        header.HandleCreated += (_, _) => QueueHeaderLayout();
+        header.Disposed += (_, _) => compactClock.Dispose();
+        header.Disposed += (_, _) => _headerToolTip.Dispose();
         header.Disposed += (_, _) => clockModeLabelControl.Dispose();
 
         addButton.Click += (_, _) => AddSoundsWithDialog();
@@ -454,6 +483,7 @@ public sealed class MainForm : Form
         resetButton.Click += (_, _) =>
         {
             _stopwatch.Reset();
+            _triggerEngine.ResetStopwatch();
             _stopwatchMode = true;
             UpdateClockDisplay();
         };
@@ -614,6 +644,7 @@ public sealed class MainForm : Form
         try
         {
             var savingProject = _projectManager.Current;
+            _ = _masterVolumeValue.Value;
             SetProjectOperationBusy(true);
             if (forceSaveAs || _projectManager.CurrentPath is null)
             {
@@ -825,9 +856,15 @@ public sealed class MainForm : Form
             _audioEngine.FadeVolume(sound.Id, eventArgs.TargetVolume, eventArgs.Duration);
             _projectManager.MarkDirty();
         };
+        var displayName = sound.Name;
         card.DefinitionChanged += (_, _) =>
         {
             _audioEngine.ApplyLiveSettings(sound);
+            if (!string.Equals(displayName, sound.Name, StringComparison.Ordinal))
+            {
+                displayName = sound.Name;
+                _triggerPanel.RefreshSoundNames();
+            }
             _projectManager.MarkDirty();
         };
         card.UpdateState(_audioEngine.GetState(sound.Id));
@@ -1641,7 +1678,12 @@ public sealed class MainForm : Form
     {
         var dirty = _projectManager.IsDirty ? " *" : string.Empty;
         _projectLabel.Text = $"プロジェクト: {_projectManager.Current.Project.Name}{dirty}";
-        Text = $"効果音ポン出しくんEX — {_projectManager.Current.Project.Name}{dirty}";
+        var path = _projectManager.CurrentPath;
+        var fileName = path is null ? "未保存" : Path.GetFileName(path);
+        Text = $"効果音ポン出しくんEX — {_projectManager.Current.Project.Name} [{fileName}]{dirty}";
+        _headerToolTip.SetToolTip(_projectLabel, path ?? "まだ保存されていないプロジェクトです。");
+        _stopAllButton.Text = _projectManager.Current.Settings.FadeOutOnStopAll
+            ? "■ 全停止\n(フェード)" : "■ 全停止\n(即時)";
     }
 
     private void RefreshRecentMenu()
@@ -1670,6 +1712,7 @@ public sealed class MainForm : Form
             return false;
         }
 
+        _ = _masterVolumeValue.Value;
         if (!_projectManager.IsDirty)
         {
             return true;
@@ -1749,6 +1792,7 @@ public sealed class MainForm : Form
             return;
         }
 
+        _ = _masterVolumeValue.Value;
         if (_closingAfterSave || !_projectManager.IsDirty)
         {
             return;
@@ -1780,6 +1824,7 @@ public sealed class MainForm : Form
         _globalHook.KeyChanged -= OnGlobalKeyChanged;
         _clockTimer.Stop();
         _clockTimer.Dispose();
+        _headerToolTip.Dispose();
         Application.RemoveMessageFilter(_messageFilter);
         _globalHook.Dispose();
         _audioEngine.StopAll();
