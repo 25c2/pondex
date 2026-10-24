@@ -18,7 +18,9 @@ internal static class Program
         Application.SetCompatibleTextRenderingDefault(false);
 
         var smokeTest = args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase);
-        var (logger, logDirectory) = CreateLogger();
+        var userDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PondashiEX");
+        var storage = AppStoragePaths.Resolve(AppContext.BaseDirectory, userDirectory, Path.GetTempPath());
+        var (logger, logDirectory) = CreateLogger(storage);
         logger.Info("PondashiEXを起動しました。");
 
         Application.ThreadException += (_, eventArgs) =>
@@ -67,7 +69,9 @@ internal static class Program
                 new AudioDeviceManager(),
                 triggerEngine,
                 logger,
-                logDirectory);
+                logDirectory,
+                new RecentProjectStore(Path.Combine(storage.DataDirectory, "recent-projects.json"),
+                    Path.Combine(userDirectory, "recent-projects.json"), AppContext.BaseDirectory));
             if (smokeTest)
             {
                 mainForm.Shown += (_, _) => mainForm.BeginInvoke(mainForm.CloseWithoutSavePromptForSmokeTest);
@@ -96,24 +100,21 @@ internal static class Program
         }
     }
 
-    private static (FileLogger Logger, string Directory) CreateLogger()
+    private static (FileLogger Logger, string Directory) CreateLogger(AppStoragePaths storage)
     {
-        var preferredDirectory = Path.Combine(AppContext.BaseDirectory, "Logs");
         try
         {
-            return (new FileLogger(preferredDirectory), preferredDirectory);
+            var logger = storage.CanWrite ? new FileLogger(storage.LogDirectory) : new FileLogger(TextWriter.Null, 1);
+            if (!storage.IsPortable)
+            {
+                logger.Warning($"実行フォルダへ書き込めないため、保存先を切り替えました: {storage.DataDirectory}");
+            }
+            return (logger, storage.LogDirectory);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Read-only installation folders must not prevent a stage application from starting.
-            var fallbackDirectory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "PondashiEX",
-                "Logs");
-            var logger = new FileLogger(fallbackDirectory);
-            logger.Warning(
-                $"実行フォルダへログを書き込めないため、ユーザーログへ切り替えました: {exception.Message}");
-            return (logger, fallbackDirectory);
+            // A destination may become unavailable after the probe (USB removal, full disk).
+            return (new FileLogger(TextWriter.Null, 1), storage.LogDirectory);
         }
     }
 

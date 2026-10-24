@@ -26,6 +26,7 @@ public sealed class UiThemeTests
     public void SoundCard_CanReturnFromDarkModeToLightMode()
     {
         using var card = new SoundCard(new SoundDefinition());
+        card.EnsureDetailsCreated();
         card.ApplyDarkMode(true);
 
         card.ApplyDarkMode(false);

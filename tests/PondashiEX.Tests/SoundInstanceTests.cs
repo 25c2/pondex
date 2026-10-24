@@ -56,13 +56,17 @@ public sealed class SoundInstanceTests
         Assert.Contains(buffer.Take(read), sample => Math.Abs(sample) > 0.001f);
     }
 
-    [Fact]
-    public void ApplyLiveSettings_UsesLoopStartSecondsOnNextLoop()
+    [Theory]
+    [InlineData(44100, false)]
+    [InlineData(48000, false)]
+    [InlineData(44100, true)]
+    [InlineData(48000, true)]
+    public void LoopStartSeconds_UsesSourceRateOnCreationAndLiveUpdate(int sampleRate, bool onCreation)
     {
         using var directory = new TestDirectory();
         var path = directory.GetPath("loop-seconds.wav");
         short[] sourceSamples = [1000, 2000, 3000, 4000];
-        using (var writer = new WaveFileWriter(path, new WaveFormat(44_100, 16, 1)))
+        using (var writer = new WaveFileWriter(path, new WaveFormat(sampleRate, 16, 1)))
         {
             foreach (var sample in sourceSamples)
             {
@@ -74,14 +78,14 @@ public sealed class SoundInstanceTests
         var definition = new SoundDefinition
         {
             Id = Guid.NewGuid(),
-            Loop = new LoopSettings { Enabled = true }
+            Loop = new LoopSettings { Enabled = true, StartSeconds = onCreation ? 2.0 / sampleRate : 0 }
         };
         using var instance = SoundInstance.Create(
             definition,
             path,
-            WaveFormat.CreateIeeeFloatWaveFormat(44_100, 2),
+            WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 2),
             () => { });
-        definition.Loop.StartSeconds = 2.0 / 44_100;
+        definition.Loop.StartSeconds = 2.0 / sampleRate;
         instance.ApplyLiveSettings(definition);
         var buffer = new float[12];
 

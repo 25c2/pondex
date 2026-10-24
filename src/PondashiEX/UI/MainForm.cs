@@ -44,6 +44,7 @@ public sealed class MainForm : Form
     private bool _statusIsError;
     private bool _projectOperationInProgress;
     private DateTimeOffset _nextDeviceAvailabilityCheck = DateTimeOffset.MinValue;
+    private long _playbackGeneration;
 
     public MainForm(
         ProjectManager projectManager,
@@ -51,7 +52,8 @@ public sealed class MainForm : Form
         AudioDeviceManager deviceManager,
         TriggerEngine triggerEngine,
         IAppLogger logger,
-        string logDirectory)
+        string logDirectory,
+        RecentProjectStore? recentProjects = null)
     {
         UiTheme.ConfigureApplicationColors(projectManager.Current.Settings.DarkMode);
         _projectManager = projectManager;
@@ -60,10 +62,7 @@ public sealed class MainForm : Form
         _triggerEngine = triggerEngine;
         _logger = logger;
         _logDirectory = Path.GetFullPath(logDirectory);
-        var settingsDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "PondashiEX");
-        _recentProjects = new RecentProjectStore(Path.Combine(settingsDirectory, "recent-projects.json"));
+        _recentProjects = recentProjects ?? new RecentProjectStore(Path.Combine(_logDirectory, "recent-projects.json"));
 
         Text = "効果音ポン出しくんEX";
         MinimumSize = new Size(500, 320);
@@ -222,8 +221,18 @@ public sealed class MainForm : Form
         var groupShortcuts = new ToolStripMenuItem("グループショートカット(&G)…", null, (_, _) => ShowGroupShortcuts());
         var soundOrder = new ToolStripMenuItem("音源の並び替え(&L)…", null, (_, _) => ShowSoundOrder());
         var diagnostics = new ToolStripMenuItem("動作診断(&D)…", null, async (_, _) => await RunSelfTestAsync());
+        var timings = new ToolStripMenuItem("再生開始時間をログに記録") { CheckOnClick = true };
+        timings.CheckedChanged += (_, _) =>
+        {
+            _audioEngine.PlaybackTimingEnabled = timings.Checked;
+            SetStatus(timings.Checked
+                ? "再生開始の内部処理時間を計測します。実際の出音遅延ではありません。"
+                : "再生開始の計測を終了しました。", false);
+        };
+        var emergencyStop = new ToolStripMenuItem("緊急強制停止（フェードなし）", null, (_, _) => EmergencyStopAll());
         operations.DropDownItems.AddRange(
-            [stopAllItem, muteMenuItem, new ToolStripSeparator(), soundOrder, groupShortcuts, new ToolStripSeparator(), diagnostics]);
+            [stopAllItem, muteMenuItem, new ToolStripSeparator(), soundOrder, groupShortcuts,
+                new ToolStripSeparator(), diagnostics, timings, new ToolStripSeparator(), emergencyStop]);
 
         var settings = new ToolStripMenuItem("設定(&S)", null, (_, _) => ShowSettings());
         var help = new ToolStripMenuItem("ヘルプ(&H)");
@@ -639,7 +648,15 @@ public sealed class MainForm : Form
             }
             _logger.Info($"プロジェクトを保存しました: {_projectManager.CurrentPath}");
             RefreshRecentMenu();
-            SetStatus("保存しました。", false);
+            if (_projectManager.LastSaveResult is { BackupWarning: { } warning } result)
+            {
+                _logger.Warning($"{warning} 復旧用バックアップ: {result.RecoveryBackupPath}");
+                SetStatus($"保存しました（バックアップ整理に失敗）。復旧用: {result.RecoveryBackupPath}", true);
+            }
+            else
+            {
+                SetStatus("保存しました。", false);
+            }
             return true;
         }
         catch (Exception exception)
@@ -792,7 +809,7 @@ public sealed class MainForm : Form
 
     private void AddSoundCard(SoundDefinition sound)
     {
-        var card = new SoundCard(sound);
+        var card = new SoundCard(sound, () => _projectManager.ResolveSoundPath(sound));
         card.ApplyDarkMode(_projectManager.Current.Settings.DarkMode);
         card.PlayRequested += async (_, _) => await PlaySoundAsync(sound.Id);
         card.StopRequested += (_, _) => _audioEngine.Stop(sound.Id);
@@ -1096,6 +1113,14 @@ public sealed class MainForm : Form
         SetStatus(_masterMute.Checked ? "ミュートしました。" : "ミュートを解除しました。", false);
     }
 
+    private void EmergencyStopAll()
+    {
+        Interlocked.Increment(ref _playbackGeneration);
+        // Keep held-key state so an auto-repeat does not count as a new press after the stop.
+        _audioEngine.EmergencyStopAll();
+        SetStatus("緊急強制停止：すべての音源と保留中の再生を即時停止しました。", false);
+    }
+
     private void ExecuteShortcuts(IReadOnlyList<ShortcutCommand> commands)
     {
         if (IsDisposed || Disposing)
@@ -1106,7 +1131,14 @@ public sealed class MainForm : Form
         if (InvokeRequired)
         {
             var commandSnapshot = commands.ToArray();
-            TryBeginInvoke(() => ExecuteShortcuts(commandSnapshot));
+            var generation = Interlocked.Read(ref _playbackGeneration);
+            TryBeginInvoke(() =>
+            {
+                if (generation == Interlocked.Read(ref _playbackGeneration))
+                {
+                    ExecuteShortcuts(commandSnapshot);
+                }
+            });
             return;
         }
 
@@ -1771,9 +1803,11 @@ public sealed class MainForm : Form
 
     private void OnGlobalKeyChanged(object? sender, GlobalKeyEventArgs eventArgs)
     {
+        var generation = Interlocked.Read(ref _playbackGeneration);
         TryBeginInvoke(() =>
         {
-            if (_projectManager.Current.Settings.BackgroundInput)
+            if (generation == Interlocked.Read(ref _playbackGeneration)
+                && _projectManager.Current.Settings.BackgroundInput)
             {
                 _shortcutDispatcher.OnKeyChanged(eventArgs.KeyData, eventArgs.IsDown);
             }

@@ -322,6 +322,97 @@ public sealed class AudioEngineLogicTests
         return path;
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task EmergencyStopAll_StopsPlayingPausedFadingAndOutput(bool silentLoop)
+    {
+        using var directory = new TestDirectory();
+        var path = CreateWaveFile(directory.GetPath("emergency.wav"));
+        using var engine = CreateEngine(out var output);
+        engine.SilentLoopEnabled = silentLoop;
+        var sounds = Enumerable.Range(0, 3).Select(_ => new SoundDefinition
+        {
+            Loop = new LoopSettings { Enabled = true },
+            FadeOut = new FadeSettings { Enabled = true, Value = 10 }
+        }).ToArray();
+        foreach (var sound in sounds) { await engine.PlayAsync(sound, path); }
+        engine.Pause(sounds[1].Id);
+        engine.Stop(sounds[2].Id);
+        Assert.Equal(PondashiEX.Audio.PlaybackState.Paused, engine.GetState(sounds[1].Id));
+        Assert.Equal(PondashiEX.Audio.PlaybackState.Fading, engine.GetState(sounds[2].Id));
+
+        engine.EmergencyStopAll();
+
+        Assert.Empty(engine.GetActiveSoundIds());
+        Assert.All(sounds, sound => Assert.Equal(PondashiEX.Audio.PlaybackState.Stopped, engine.GetState(sound.Id)));
+        Assert.Equal(NAudio.Wave.PlaybackState.Stopped, output.PlaybackState);
+        using var exclusive = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+    }
+
+    [Fact]
+    public async Task EmergencyStopAll_InvalidatesInFlightPreparationAndAllowsNewExplicitPlay()
+    {
+        using var directory = new TestDirectory();
+        var path = CreateWaveFile(directory.GetPath("pending.wav"));
+        var prepared = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var release = new ManualResetEventSlim();
+        var requests = 0;
+        using var engine = new AudioEngine(new NullLogger(), (_, _) => new FakeAudioOutput(),
+            prepareSound: (sound, file, format, completed) =>
+            {
+                var instance = SoundInstance.Create(sound, file, format, completed);
+                if (Interlocked.Increment(ref requests) == 1)
+                {
+                    prepared.SetResult();
+                    if (!release.Wait(TimeSpan.FromSeconds(10))) { instance.Dispose(); throw new TimeoutException(); }
+                }
+                return instance;
+            });
+        var sound = new SoundDefinition();
+        var starts = 0;
+        engine.PlaybackStarted += (_, _) => starts++;
+        var pending = engine.PlayAsync(sound, path);
+        try
+        {
+            await prepared.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            engine.EmergencyStopAll();
+        }
+        finally { release.Set(); }
+        await pending;
+        Assert.Empty(engine.GetActiveSoundIds());
+        Assert.Equal(0, starts);
+        using (File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
+        await engine.PlayAsync(sound, path);
+        Assert.Equal(1, starts);
+        Assert.Equal(PondashiEX.Audio.PlaybackState.Playing, engine.GetState(sound.Id));
+    }
+
+    [Fact]
+    public async Task PlaybackStartTiming_IsOptInAndDistinguishesFirstAndRepeatedPreparation()
+    {
+        using var directory = new TestDirectory();
+        var path = CreateWaveFile(directory.GetPath("timing.wav"));
+        using var engine = CreateEngine(out _);
+        var sound = new SoundDefinition();
+        await engine.PlayAsync(sound, path);
+        Assert.Empty(engine.GetPlaybackStartTimings());
+        engine.PlaybackTimingEnabled = true;
+        await engine.PlayAsync(sound, path);
+        await engine.PlayAsync(sound, path);
+        var timings = engine.GetPlaybackStartTimings();
+        Assert.Equal([1, 2], timings.Select(timing => timing.Attempt));
+        Assert.All(timings, timing =>
+        {
+            Assert.Equal(sound.Id, timing.SoundId);
+            Assert.True(timing.PreparationMilliseconds >= 0);
+            Assert.True(timing.StartMilliseconds >= timing.PreparationMilliseconds);
+        });
+        engine.PlaybackTimingEnabled = false;
+        await engine.PlayAsync(sound, path);
+        Assert.Equal(2, engine.GetPlaybackStartTimings().Count);
+    }
+
     private sealed class FakeAudioOutput : IAudioOutput
     {
         public event EventHandler<StoppedEventArgs>? PlaybackStopped;

@@ -51,6 +51,8 @@ public sealed class ProjectManager : IDisposable
 
     public event EventHandler? ProjectChanged;
 
+    public ProjectSaveResult? LastSaveResult { get; private set; }
+
     public void New()
     {
         Interlocked.Increment(ref _replaceRequestId);
@@ -122,7 +124,8 @@ public sealed class ProjectManager : IDisposable
                 snapshot = _serializer.CreateSnapshot(current);
             }
 
-            await _serializer.SaveAsync(currentPath, snapshot, cancellationToken).ConfigureAwait(true);
+            LastSaveResult = null;
+            LastSaveResult = await _serializer.SaveAsync(currentPath, snapshot, cancellationToken).ConfigureAwait(true);
 
             var changed = false;
             lock (_stateLock)
@@ -171,7 +174,8 @@ public sealed class ProjectManager : IDisposable
                 sound.File = ProjectPath.ToStoredPath(newPath, resolvedPath);
             }
 
-            await _serializer.SaveAsync(newPath, snapshot, cancellationToken).ConfigureAwait(true);
+            LastSaveResult = null;
+            LastSaveResult = await _serializer.SaveAsync(newPath, snapshot, cancellationToken).ConfigureAwait(true);
 
             var changed = false;
             lock (_stateLock)

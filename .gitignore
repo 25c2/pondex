@@ -41,6 +41,7 @@ packages/
 *.pondex.tmp
 *.pondex.bak
 recent-projects.json
+[Dd]ata/
 
 # OS-generated files
 .DS_Store

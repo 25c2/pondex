@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 using PondashiEX.Project;
@@ -14,6 +16,8 @@ public sealed class AudioEngine : IAudioEngine
     private readonly IAppLogger _logger;
     private readonly Func<int, ISampleProvider, IAudioOutput> _outputFactory;
     private readonly IFadePolicy _fadePolicy;
+    private readonly Func<SoundDefinition, string, WaveFormat, Action, SoundInstance> _prepareSound;
+    private readonly PlaybackStartDiagnostics _startDiagnostics = new();
     private MixingSampleProvider _mixer;
     private VolumeSampleProvider _masterVolumeProvider;
     private IAudioOutput? _output;
@@ -37,11 +41,13 @@ public sealed class AudioEngine : IAudioEngine
     internal AudioEngine(
         IAppLogger logger,
         Func<int, ISampleProvider, IAudioOutput> outputFactory,
-        IFadePolicy? fadePolicy = null)
+        IFadePolicy? fadePolicy = null,
+        Func<SoundDefinition, string, WaveFormat, Action, SoundInstance>? prepareSound = null)
     {
         _logger = logger;
         _outputFactory = outputFactory;
         _fadePolicy = fadePolicy ?? new SecondsFadePolicy();
+        _prepareSound = prepareSound ?? SoundInstance.Create;
         (_mixer, _masterVolumeProvider) = CreateMixer();
     }
 
@@ -150,6 +156,14 @@ public sealed class AudioEngine : IAudioEngine
 
     internal long OutputSamplesRead => Interlocked.Read(ref _outputSamplesRead);
 
+    public bool PlaybackTimingEnabled
+    {
+        get => _startDiagnostics.Enabled;
+        set => _startDiagnostics.Enabled = value;
+    }
+
+    public IReadOnlyList<PlaybackStartTiming> GetPlaybackStartTimings() => _startDiagnostics.Snapshot();
+
     internal long GetSoundSamplesRead(Guid soundId)
     {
         lock (_sync)
@@ -166,6 +180,8 @@ public sealed class AudioEngine : IAudioEngine
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(sound);
         ArgumentException.ThrowIfNullOrWhiteSpace(resolvedPath);
+        var timingRequest = _startDiagnostics.Begin(sound.Id);
+        PlaybackStartTiming? timing = null;
 
         long requestVersion;
         lock (_sync)
@@ -178,13 +194,14 @@ public sealed class AudioEngine : IAudioEngine
         try
         {
             prepared = await Task.Run(
-                () => SoundInstance.Create(
+                () => _prepareSound(
                     sound,
                     resolvedPath,
                     MixerFormat,
                     () => QueueNaturalCompletion(sound.Id, completionInstance)),
                 cancellationToken).ConfigureAwait(false);
             completionInstance = prepared;
+            var preparedAt = timingRequest.Attempt > 0 ? Stopwatch.GetTimestamp() : 0;
 
             lock (_sync)
             {
@@ -219,12 +236,22 @@ public sealed class AudioEngine : IAudioEngine
                     throw;
                 }
 
+                if (timingRequest.Attempt > 0)
+                {
+                    timing = _startDiagnostics.Complete(sound.Id, timingRequest, preparedAt, Stopwatch.GetTimestamp());
+                }
                 StateChanged?.Invoke(this, new SoundStateChangedEventArgs(sound.Id, PlaybackState.Playing));
                 PlaybackStarted?.Invoke(this, new SoundPlaybackEventArgs(sound.Id));
                 prepared = null;
             }
 
             _logger.Info($"再生開始: {sound.Name} ({sound.Id})");
+            if (timing is not null)
+            {
+                // Outside both the audio callback and engine lock; FileLogger enqueues asynchronously.
+                _logger.Info(string.Create(CultureInfo.InvariantCulture,
+                    $"再生開始計測: {sound.Id} attempt={timing.Attempt} prepare_ms={timing.PreparationMilliseconds:F3} start_ms={timing.StartMilliseconds:F3}（内部処理時間。実際の出音遅延ではありません）"));
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -324,6 +351,20 @@ public sealed class AudioEngine : IAudioEngine
             }
 
             StopOutputWhenIdle();
+        }
+    }
+
+    public void EmergencyStopAll()
+    {
+        lock (_sync)
+        {
+            // StopAll also invalidates every in-flight preparation before disposing active instances.
+            StopAll(useFadeOut: false);
+            if (_silentLoopEnabled)
+            {
+                // Flush queued device buffers even when normal operation keeps the output warm.
+                _output?.Stop();
+            }
         }
     }
 

@@ -111,6 +111,70 @@ public sealed class ProjectSerializerTests
     }
 
     [Fact]
+    public async Task Save_BackupRotationFailureKeepsCommittedProjectAndBothRecoveryCopies()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("rotation.pondex");
+        var serializer = new ProjectSerializer();
+        using var manager = new ProjectManager(serializer);
+        manager.Current.Project.Name = "one";
+        await manager.SaveAsAsync(path);
+        manager.Current.Project.Name = "two";
+        manager.MarkDirty();
+        await manager.SaveAsync();
+        manager.Current.Project.Name = "three";
+        manager.MarkDirty();
+        using (File.Open(path + ".bak", FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            await manager.SaveAsync();
+            Assert.False(manager.IsDirty);
+            Assert.Equal("three", (await serializer.LoadAsync(path)).Project.Name);
+            Assert.NotNull(manager.LastSaveResult?.BackupWarning);
+        }
+        Assert.Equal("one", (await serializer.LoadAsync(path + ".bak")).Project.Name);
+        Assert.Equal("two", (await serializer.LoadAsync(manager.LastSaveResult!.RecoveryBackupPath!)).Project.Name);
+        Assert.Empty(Directory.GetFiles(directory.Path, "*.tmp"));
+    }
+
+    [Fact]
+    public async Task Save_CancelledBeforeCommitPreservesOriginalAndRemovesOwnedTempFile()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("cancel.pondex");
+        var serializer = new ProjectSerializer();
+        var model = new ProjectModel();
+        model.Project.Name = "original";
+        await serializer.SaveAsync(path, model);
+        model.Project.Name = "changed";
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => serializer.SaveAsync(path, model, cancellation.Token));
+        Assert.Equal("original", (await serializer.LoadAsync(path)).Project.Name);
+        Assert.Empty(Directory.GetFiles(directory.Path, "*.tmp"));
+    }
+
+    [Fact]
+    public async Task Save_ReplacementFailurePreservesOriginalAndExistingBackup()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("locked.pondex");
+        var serializer = new ProjectSerializer();
+        var model = new ProjectModel();
+        model.Project.Name = "first";
+        await serializer.SaveAsync(path, model);
+        model.Project.Name = "second";
+        await serializer.SaveAsync(path, model);
+        model.Project.Name = "third";
+        using (File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            await Assert.ThrowsAnyAsync<IOException>(() => serializer.SaveAsync(path, model));
+        }
+        Assert.Equal("second", (await serializer.LoadAsync(path)).Project.Name);
+        Assert.Equal("first", (await serializer.LoadAsync(path + ".bak")).Project.Name);
+        Assert.Empty(Directory.GetFiles(directory.Path, "*.tmp"));
+    }
+
+    [Fact]
     public async Task Load_RejectsUnsupportedFormatVersion()
     {
         using var directory = new TestDirectory();

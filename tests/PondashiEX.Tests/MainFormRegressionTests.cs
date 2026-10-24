@@ -149,6 +149,7 @@ public sealed class MainFormRegressionTests
     [Theory]
     [InlineData(1)]
     [InlineData(3)]
+    [InlineData(8)]
     public void ReorderDialog_UpdatesActualCardsWithoutRecreatingThem(int columns) => RunOnSta(() =>
     {
         using var directory = new TestDirectory();
@@ -648,6 +649,68 @@ public sealed class MainFormRegressionTests
             ExceptionDispatchInfo.Capture(failure).Throw();
         }
     }
+
+    [Fact]
+    public void EmergencyMenu_StopsImmediatelyAndDiscardsPreviouslyQueuedBackgroundKey() => RunOnSta(() =>
+    {
+        using var directory = new TestDirectory();
+        using var manager = new ProjectManager(new ProjectSerializer());
+        var wavePath = directory.GetPath("emergency.wav");
+        using (var writer = new WaveFileWriter(wavePath, new WaveFormat(44100, 16, 1)))
+        {
+            writer.Write(new byte[8820], 0, 8820);
+        }
+        var sound = new SoundDefinition { Key = "A", File = wavePath, FadeOut = new FadeSettings { Enabled = true, Value = 10 } };
+        manager.Current.Sounds.Add(sound);
+        manager.Current.Settings.FadeOutOnStopAll = true;
+        manager.Current.Settings.BackgroundInput = true;
+        using var engine = CreateEngine();
+        using var form = CreateForm(manager, engine, directory.Path);
+        form.Show();
+        Application.DoEvents();
+        engine.PlayAsync(sound, wavePath).GetAwaiter().GetResult();
+        var starts = 0;
+        engine.PlaybackStarted += (_, _) => starts++;
+        var dispatcher = (ShortcutDispatcher)typeof(MainForm).GetField("_shortcutDispatcher", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
+        var held = (HashSet<Keys>)typeof(ShortcutDispatcher).GetField("_pressed", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(dispatcher)!;
+        held.Add(Keys.B);
+        Method("OnGlobalKeyChanged").Invoke(form, [null, new GlobalKeyEventArgs(Keys.A, true)]);
+        var emergency = form.MainMenuStrip!.Items.OfType<ToolStripMenuItem>()
+            .SelectMany(item => item.DropDownItems.OfType<ToolStripMenuItem>())
+            .Single(item => item.Text?.StartsWith("緊急強制停止", StringComparison.Ordinal) == true);
+        Assert.Equal(Keys.None, emergency.ShortcutKeys);
+        emergency.PerformClick();
+        Application.DoEvents();
+        Assert.Equal(0, starts);
+        Assert.Empty(engine.GetActiveSoundIds());
+        Assert.True(manager.Current.Settings.FadeOutOnStopAll);
+        Assert.Contains(Keys.B, held);
+        form.CloseWithoutSavePromptForSmokeTest();
+    });
+
+    [Fact]
+    public void CollapsedSoundCards_RecordConstructionCost() => RunOnSta(() =>
+    {
+        using var warmup = new SoundCard(new SoundDefinition());
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var cards = Enumerable.Range(0, 200).Select(index => new SoundCard(new SoundDefinition { Name = $"音源{index}" })).ToArray();
+        try
+        {
+            var count = cards.Sum(card => Descendants(card).Count());
+            Console.WriteLine($"CollapsedCards count=200 controls={count} allocated_bytes={GC.GetAllocatedBytesForCurrentThread() - allocatedBefore} elapsed_ms={started.Elapsed.TotalMilliseconds:F1}");
+            Assert.True(count <= 4000, $"折りたたみカードのコントロールが多すぎます: {count}");
+            Assert.All(cards, card =>
+            {
+                Assert.False(card.DetailsCreated);
+                Assert.DoesNotContain(Descendants(card).OfType<TextBox>(), editor => editor.Parent is not NumericUpDown);
+            });
+        }
+        finally
+        {
+            foreach (var card in cards) { card.Dispose(); }
+        }
+    });
 
     private static IEnumerable<Control> Descendants(Control parent)
     {

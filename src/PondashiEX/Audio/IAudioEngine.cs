@@ -24,6 +24,10 @@ public interface IAudioEngine : IDisposable
 
     int OutputDeviceNumber { get; }
 
+    bool PlaybackTimingEnabled { get; set; }
+
+    IReadOnlyList<PlaybackStartTiming> GetPlaybackStartTimings();
+
     Task PlayAsync(SoundDefinition sound, string resolvedPath, CancellationToken cancellationToken = default);
 
     void Stop(Guid soundId);
@@ -37,6 +41,8 @@ public interface IAudioEngine : IDisposable
     void FadeVolume(Guid soundId, float targetVolume, TimeSpan duration);
 
     void StopAll(bool useFadeOut = false);
+
+    void EmergencyStopAll();
 
     PlaybackState GetState(Guid soundId);
 

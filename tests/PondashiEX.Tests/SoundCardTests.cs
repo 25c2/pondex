@@ -20,6 +20,7 @@ public sealed class SoundCardTests
     public void TextEditors_MatchProjectSaveLimits()
     {
         using var card = new SoundCard(new SoundDefinition());
+        card.EnsureDetailsCreated();
         var editors = Descendants(card).OfType<TextBox>().ToArray();
         Assert.Contains(editors, editor => editor.Width == 170 && editor.MaxLength == ProjectLimits.MaxNameLength);
         Assert.Contains(editors, editor => editor.Width == 100 && editor.MaxLength == ProjectLimits.MaxGroupLength);
@@ -31,6 +32,7 @@ public sealed class SoundCardTests
     {
         var sound = new SoundDefinition { Group = "SE" };
         using var card = new SoundCard(sound);
+        card.EnsureDetailsCreated();
         var groupEditor = Descendants(card)
             .OfType<TextBox>()
             .Single(textBox => textBox.Width == 100);
@@ -72,6 +74,7 @@ public sealed class SoundCardTests
     {
         using var form = new Form();
         using var card = new SoundCard(new SoundDefinition());
+        card.EnsureDetailsCreated();
         form.Controls.Add(card);
         form.Show();
         var detailsButton = DetailsButton(card);
@@ -95,6 +98,7 @@ public sealed class SoundCardTests
         using var form = new Form();
         var sound = new SoundDefinition { Memo = "変更前" };
         using var card = new SoundCard(sound);
+        card.EnsureDetailsCreated();
         form.Controls.Add(card);
         form.Show();
         var detailsButton = DetailsButton(card);
@@ -118,6 +122,7 @@ public sealed class SoundCardTests
     {
         using var form = new Form();
         using var card = new SoundCard(new SoundDefinition());
+        card.EnsureDetailsCreated();
         form.Controls.Add(card);
         form.Show();
         var detailsButton = DetailsButton(card);
@@ -141,6 +146,7 @@ public sealed class SoundCardTests
     {
         var sound = new SoundDefinition();
         using var card = new SoundCard(sound);
+        card.EnsureDetailsCreated();
         var fadeIn = Descendants(card)
             .OfType<CheckBox>()
             .Single(checkBox => checkBox.Text == "Fade In");
@@ -199,6 +205,7 @@ public sealed class SoundCardTests
     {
         var sound = new SoundDefinition();
         using var card = new SoundCard(sound);
+        card.EnsureDetailsCreated();
         var keyEditor = Descendants(card)
             .OfType<TextBox>()
             .Single(textBox => textBox.MaxLength == 20);
@@ -214,6 +221,7 @@ public sealed class SoundCardTests
     {
         var sound = new SoundDefinition();
         using var card = new SoundCard(sound);
+        card.EnsureDetailsCreated();
         var keyEditor = Descendants(card)
             .OfType<TextBox>()
             .Single(textBox => textBox.MaxLength == 20);
@@ -236,6 +244,7 @@ public sealed class SoundCardTests
             Loop = new LoopSettings { Enabled = true, StartSample = 44_100 }
         };
         using var card = new SoundCard(sound);
+        card.EnsureDetailsCreated();
         var loopStart = Descendants(card)
             .OfType<NumericUpDown>()
             .Single(numeric => numeric.DecimalPlaces == 2 && numeric.Maximum == 24 * 60 * 60);
@@ -251,6 +260,7 @@ public sealed class SoundCardTests
     {
         var sound = new SoundDefinition { Loop = new LoopSettings { Enabled = true } };
         using var card = new SoundCard(sound);
+        card.EnsureDetailsCreated();
         var loopStart = Descendants(card)
             .OfType<NumericUpDown>()
             .Single(numeric => numeric.DecimalPlaces == 2 && numeric.Maximum == 24 * 60 * 60);
@@ -269,6 +279,100 @@ public sealed class SoundCardTests
     private static Button DetailsButton(SoundCard card) => Descendants(card)
         .OfType<Button>()
         .Single(button => button.Text.StartsWith("詳細", StringComparison.Ordinal));
+
+    [Fact]
+    public void Details_AreCreatedOnceAndDisposedWithCard()
+    {
+        var card = new SoundCard(new SoundDefinition());
+        Assert.False(card.DetailsCreated);
+        Assert.DoesNotContain(Descendants(card).OfType<TextBox>(), editor => editor.Parent is not NumericUpDown);
+        card.EnsureDetailsCreated();
+        var editors = Descendants(card).OfType<TextBox>().ToArray();
+        Assert.NotEmpty(editors);
+        card.EnsureDetailsCreated();
+        Assert.Equal(editors, Descendants(card).OfType<TextBox>());
+        card.Dispose();
+        Assert.All(editors, editor => Assert.True(editor.IsDisposed));
+    }
+
+    [Fact]
+    public void CollapsedVolumeFadeAndPlayDoNotCreateDetailsOrRewriteLoopSettings()
+    {
+        var sound = new SoundDefinition
+        {
+            Loop = new LoopSettings { StartSample = 48000 },
+            FadeOut = new FadeSettings { Enabled = true, Value = 2 }
+        };
+        using var card = new SoundCard(sound);
+        VolumeFadeRequestedEventArgs? fade = null;
+        card.VolumeFadeRequested += (_, args) => fade = args;
+        var volume = Descendants(card).OfType<TrackBar>().Single();
+        volume.Width = 200;
+        RaiseEvent(volume, "OnMouseUp", new MouseEventArgs(MouseButtons.Right, 1, 100, 0, 0));
+        Assert.NotNull(fade);
+        Assert.Equal(TimeSpan.FromSeconds(2), fade.Duration);
+        Descendants(card).OfType<Button>().Single(button => button.Text == "▶ 再生").PerformClick();
+        Assert.False(card.DetailsCreated);
+        Assert.Equal(48000, sound.Loop.StartSample);
+        Assert.Equal(0, sound.Loop.StartSeconds);
+    }
+
+    [Fact]
+    public void MissingLegacyFile_ShowsNoticeAndPreservesSamplePositionWhenOtherFieldsChange()
+    {
+        using var directory = new TestDirectory();
+        var sound = new SoundDefinition { File = directory.GetPath("missing.wav"), Loop = new LoopSettings { StartSample = 48000 } };
+        using var card = new SoundCard(sound);
+        card.EnsureDetailsCreated();
+        Assert.Contains(Descendants(card).OfType<Label>(), label => label.Text.Contains("秒換算不可", StringComparison.Ordinal));
+        Descendants(card).OfType<TrackBar>().Single().Value = 37;
+        Descendants(card).OfType<Button>().Single(button => button.Text == "▶ 再生").PerformClick();
+        Assert.Equal(48000, sound.Loop.StartSample);
+        Assert.Equal(0, sound.Loop.StartSeconds);
+    }
+
+    [Theory]
+    [InlineData(44100)]
+    [InlineData(48000)]
+    public void UneditedLegacySamplePosition_IsNotRoundedWhenPlaying(int sampleRate)
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("fractional.wav");
+        using (var writer = new NAudio.Wave.WaveFileWriter(path, new NAudio.Wave.WaveFormat(sampleRate, 16, 1)))
+        {
+            writer.Write(new byte[sampleRate * 2], 0, sampleRate * 2);
+        }
+        var sound = new SoundDefinition { File = path, Loop = new LoopSettings { StartSample = 12345 } };
+        using var card = new SoundCard(sound);
+        card.EnsureDetailsCreated();
+        var changes = 0;
+        card.DefinitionChanged += (_, _) => changes++;
+        Descendants(card).OfType<Button>().Single(button => button.Text == "▶ 再生").PerformClick();
+        Assert.Equal(12345, sound.Loop.StartSample);
+        Assert.Equal(0, sound.Loop.StartSeconds);
+        Assert.Equal(0, changes);
+    }
+
+    [Theory]
+    [InlineData(44100)]
+    [InlineData(48000)]
+    public void LegacyLoopDisplay_UsesSourceRateAndDoesNotRewriteUneditedSamples(int sampleRate)
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("rate.wav");
+        using (var writer = new NAudio.Wave.WaveFileWriter(path, new NAudio.Wave.WaveFormat(sampleRate, 16, 1)))
+        {
+            writer.Write(new byte[200], 0, 200);
+        }
+        var sound = new SoundDefinition { File = path, Loop = new LoopSettings { StartSample = sampleRate * 2 } };
+        using var card = new SoundCard(sound);
+        card.EnsureDetailsCreated();
+        var loopStart = Descendants(card).OfType<NumericUpDown>().Single(numeric => numeric.Maximum == 86400);
+        Assert.Equal(2, loopStart.Value);
+        Descendants(card).OfType<Button>().Single(button => button.Text == "▶ 再生").PerformClick();
+        Assert.Equal(sampleRate * 2, sound.Loop.StartSample);
+        Assert.Equal(0, sound.Loop.StartSeconds);
+    }
 
     private static void RaiseKeyDown(Control control, Keys key)
     {

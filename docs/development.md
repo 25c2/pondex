@@ -2,10 +2,12 @@
 
 ## 必要な環境
 
-- Windows 11、またはMicrosoftのサポート期間中のWindows 10 Enterprise／LTSC（64bit）
+- [.NET 10の対応OS](https://github.com/dotnet/core/blob/main/release-notes/10.0/supported-os.md)に含まれるWindows（64bit）
 - .NET 10 SDK（`global.json`記載バージョン）
 
 依存パッケージの取得先はリポジトリの`NuGet.Config`で公式nuget.orgに限定しています。
+
+CIでの検証とは別に、使用するPC・音声デバイスでself-contained版の起動と再生を確認してください。
 
 ## ビルドとテスト
 
@@ -50,7 +52,7 @@ Releaseワークフローは次を実行します。
 publicリポジトリで発行された来歴はGitHub CLIで検証できます。
 
 ```powershell
-gh attestation verify PondashiEX-v1.0-win-x64.zip --repo 25c2/pond
+gh attestation verify PondashiEX-v1.0-win-x64.zip --repo 25c2/pondex
 ```
 
 ワークフローは`release` Environmentを使用します。GitHubのリポジトリ設定でRequired reviewersを設定すると、公開前の承認ゲートになります。

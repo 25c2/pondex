@@ -65,7 +65,7 @@ public sealed class ProjectSerializer
         }
     }
 
-    public async Task SaveAsync(string path, ProjectModel model, CancellationToken cancellationToken = default)
+    public async Task<ProjectSaveResult> SaveAsync(string path, ProjectModel model, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(model);
@@ -104,22 +104,43 @@ public sealed class ProjectSerializer
             }
 
             await ValidateTemporaryFileAsync(tempPath, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
 
             if (File.Exists(fullPath))
             {
                 File.Replace(tempPath, fullPath, temporaryBackupPath, ignoreMetadataErrors: true);
-                File.Move(temporaryBackupPath, backupPath, overwrite: true);
+                // The project is committed. A failed backup rotation must not turn this into a failed save.
+                // Rename rather than copy/delete so an existing backup survives a failed rotation.
+                try
+                {
+                    File.Move(temporaryBackupPath, backupPath, overwrite: true);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    return new ProjectSaveResult(
+                        $"本体は保存しましたが、バックアップを整理できませんでした: {exception.Message}",
+                        temporaryBackupPath);
+                }
             }
             else
             {
                 File.Move(tempPath, fullPath);
             }
+
+            return new ProjectSaveResult();
         }
         finally
         {
             if (ownsTempFile && File.Exists(tempPath))
             {
-                File.Delete(tempPath);
+                try
+                {
+                    File.Delete(tempPath);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    // Cleanup must not mask the original write/validation/cancellation failure.
+                }
             }
         }
     }
@@ -394,6 +415,8 @@ public sealed class ProjectSerializer
         }
     }
 }
+
+public sealed record ProjectSaveResult(string? BackupWarning = null, string? RecoveryBackupPath = null);
 
 public sealed class ProjectFormatException : Exception
 {

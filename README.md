@@ -19,7 +19,7 @@
 
 ## 動作環境
 
-- Windows 11 / Windows 10
+- Windows（64bit、[.NET 10の対応OS](https://github.com/dotnet/core/blob/main/release-notes/10.0/supported-os.md)）
 - 一般的なWindows音声出力デバイス
 
 [GitHub Releases](https://github.com/25c2/pondex/releases)の`win-x64`版はself-containedなので、.NET Runtimeを別途インストールする必要はありません。現在の実行ファイルはコード署名されていないため、SmartScreenが表示される可能性はあります。
