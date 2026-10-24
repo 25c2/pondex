@@ -3,6 +3,7 @@ using PondashiEX.UI;
 
 namespace PondashiEX.Tests;
 
+[Collection(WinFormsTestGroup.Name)]
 public sealed class PlaybackSettingsDialogTests
 {
     private static readonly int[] StandardPositions = [100, 100, 0];

@@ -4,7 +4,7 @@ using PondashiEX.UI;
 
 namespace PondashiEX.Tests;
 
-[Collection("Application color mode")]
+[Collection(WinFormsTestGroup.Name)]
 public sealed class UiThemeTests
 {
     [Fact]

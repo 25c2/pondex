@@ -4,6 +4,7 @@ using System.Reflection;
 
 namespace PondashiEX.Tests;
 
+[Collection(WinFormsTestGroup.Name)]
 public sealed class SoundCardTests
 {
     [Fact]
@@ -69,8 +70,10 @@ public sealed class SoundCardTests
         Assert.Equal(collapsedHeight, card.Height);
     }
 
-    [Fact]
-    public void Enter_FinishesTextEditingAndKeepsEnteredValue()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Enter_FinishesTextEditingAndKeepsEnteredValue(bool hideAfterEditing) => WinFormsTest.Run(() =>
     {
         using var form = new Form();
         using var card = new SoundCard(new SoundDefinition());
@@ -82,18 +85,23 @@ public sealed class SoundCardTests
         var keyEditor = Descendants(card)
             .OfType<TextBox>()
             .Single(textBox => textBox.MaxLength == 20);
-        keyEditor.Focus();
+        card.ActiveControl = keyEditor;
+        Assert.Same(keyEditor, card.ActiveControl);
         keyEditor.Text = "A";
 
         RaiseKeyDown(keyEditor, Keys.Enter);
+        if (hideAfterEditing) { form.Hide(); }
 
         Assert.False(keyEditor.ContainsFocus);
-        Assert.True(detailsButton.Focused);
+        Assert.Same(detailsButton, card.ActiveControl);
+        Assert.Same(card, form.ActiveControl);
         Assert.Equal("A", card.Sound.Key);
-    }
+    });
 
-    [Fact]
-    public void Escape_RestoresValueFromWhenEditingStartedAndFinishesEditing()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Escape_RestoresValueFromWhenEditingStartedAndFinishesEditing(bool hideAfterEditing) => WinFormsTest.Run(() =>
     {
         using var form = new Form();
         var sound = new SoundDefinition { Memo = "変更前" };
@@ -106,19 +114,24 @@ public sealed class SoundCardTests
         var memoEditor = Descendants(card)
             .OfType<TextBox>()
             .Single(textBox => textBox.Text == "変更前");
-        memoEditor.Focus();
+        card.ActiveControl = memoEditor;
+        Assert.Same(memoEditor, card.ActiveControl);
         memoEditor.Text = "変更後";
 
         RaiseKeyDown(memoEditor, Keys.Escape);
+        if (hideAfterEditing) { form.Hide(); }
 
         Assert.False(memoEditor.ContainsFocus);
-        Assert.True(detailsButton.Focused);
+        Assert.Same(detailsButton, card.ActiveControl);
+        Assert.Same(card, form.ActiveControl);
         Assert.Equal("変更前", memoEditor.Text);
         Assert.Equal("変更前", sound.Memo);
-    }
+    });
 
-    [Fact]
-    public void ClickingDetailBackground_FinishesTextEditing()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ClickingDetailBackground_FinishesTextEditing(bool hideAfterEditing) => WinFormsTest.Run(() =>
     {
         using var form = new Form();
         using var card = new SoundCard(new SoundDefinition());
@@ -133,13 +146,16 @@ public sealed class SoundCardTests
         var memoLabel = Descendants(card)
             .OfType<Label>()
             .Single(label => label.Text == "メモ");
-        keyEditor.Focus();
+        card.ActiveControl = keyEditor;
+        Assert.Same(keyEditor, card.ActiveControl);
 
         RaiseMouseDown(memoLabel);
+        if (hideAfterEditing) { form.Hide(); }
 
         Assert.False(keyEditor.ContainsFocus);
-        Assert.True(detailsButton.Focused);
-    }
+        Assert.Same(detailsButton, card.ActiveControl);
+        Assert.Same(card, form.ActiveControl);
+    });
 
     [Fact]
     public void EnablingFadeWithZeroSeconds_SetsUsableOneSecondDefault()

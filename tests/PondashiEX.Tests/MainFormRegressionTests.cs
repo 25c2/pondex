@@ -1,6 +1,5 @@
 using System.Drawing;
 using System.Reflection;
-using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using NAudio.Wave;
 using PondashiEX.Audio;
@@ -12,7 +11,7 @@ using PondashiEX.Utility;
 
 namespace PondashiEX.Tests;
 
-[Collection("Application color mode")]
+[Collection(WinFormsTestGroup.Name)]
 public sealed class MainFormRegressionTests
 {
     [Fact]
@@ -628,27 +627,7 @@ public sealed class MainFormRegressionTests
         Assert.True(task.IsCompleted, "UI操作が完了しませんでした。");
     }
 
-    private static void RunOnSta(Action action)
-    {
-        Exception? failure = null;
-        var thread = new Thread(() =>
-        {
-            try
-            {
-                Application.EnableVisualStyles();
-                action();
-            }
-            catch (Exception exception) { failure = exception; }
-        })
-        { IsBackground = true };
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "UIテストがタイムアウトしました。");
-        if (failure is not null)
-        {
-            ExceptionDispatchInfo.Capture(failure).Throw();
-        }
-    }
+    private static void RunOnSta(Action action) => WinFormsTest.Run(action);
 
     [Fact]
     public void EmergencyMenu_StopsImmediatelyAndDiscardsPreviouslyQueuedBackgroundKey() => RunOnSta(() =>

@@ -4,6 +4,7 @@ using PondashiEX.UI;
 
 namespace PondashiEX.Tests;
 
+[Collection(WinFormsTestGroup.Name)]
 public sealed class TriggerPanelTests
 {
     [Fact]
