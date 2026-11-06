@@ -37,7 +37,7 @@ public sealed class MainForm : Form
     private readonly TrackBar _masterVolume;
     private readonly CheckBox _masterMute;
     private NumericUpDown _masterVolumeValue = null!;
-    private Button _resumeTriggersButton = null!;
+    private ToolStripButton _resumeTriggersButton = null!;
     private Button _stopAllButton = null!;
     private readonly ToolTip _headerToolTip = new();
     private bool _stopwatchMode;
@@ -91,7 +91,7 @@ public sealed class MainForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 104));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(menu, 0, 0);
 
         var header = BuildHeader(
@@ -158,7 +158,7 @@ public sealed class MainForm : Form
         var emergencyButton = new ToolStripButton("緊急停止（即時）") { ForeColor = Color.DarkRed };
         emergencyButton.Click += (_, _) => EmergencyStopAll();
         statusStrip.Items.Add(emergencyButton);
-        _resumeTriggersButton = new Button { Text = "自動イベント再開", AutoSize = true, Visible = false };
+        _resumeTriggersButton = new ToolStripButton("自動イベント再開") { DisplayStyle = ToolStripItemDisplayStyle.Text, Visible = false };
         _resumeTriggersButton.Click += (_, _) =>
         {
             if (_outputUnavailable) { SetStatus("設定で出力先を確認してから再開してください。", true); return; }
@@ -166,7 +166,7 @@ public sealed class MainForm : Form
             _resumeTriggersButton.Visible = false;
             SetStatus("自動イベントを再開しました。", false);
         };
-        statusStrip.Items.Add(new ToolStripControlHost(_resumeTriggersButton));
+        statusStrip.Items.Add(_resumeTriggersButton);
         root.Controls.Add(statusStrip, 0, 3);
         Controls.Add(root);
 
@@ -320,9 +320,10 @@ public sealed class MainForm : Form
             DecimalPlaces = 0,
             Increment = 1,
             Value = 100,
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.None,
+            Anchor = AnchorStyles.Left | AnchorStyles.Right,
             TextAlign = HorizontalAlignment.Right,
-            Margin = new Padding(3, 5, 0, 5)
+            Margin = new Padding(3)
         };
         _masterVolumeValue = masterVolumeValue;
         var masterMuteControl = new CheckBox
@@ -339,11 +340,11 @@ public sealed class MainForm : Form
             Margin = new Padding(8, 4, 8, 4)
         };
         masterMute = masterMuteControl;
-        var masterPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4 };
-        masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82));
+        var masterPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1, Margin = Padding.Empty };
+        masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58));
-        masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 18));
+        masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         var masterCaption = HeaderLabel("MASTER", 8.5F, FontStyle.Bold);
         masterCaption.AutoEllipsis = false;
         masterCaption.AutoSize = true;
@@ -353,7 +354,12 @@ public sealed class MainForm : Form
         masterPanel.Controls.Add(masterCaption, 0, 0);
         masterPanel.Controls.Add(masterVolumeControl, 1, 0);
         masterPanel.Controls.Add(masterVolumeValue, 2, 0);
-        masterPanel.Controls.Add(HeaderLabel("%", 9F, FontStyle.Bold), 3, 0);
+        var masterUnit = HeaderLabel("%", 9F, FontStyle.Bold);
+        masterUnit.AutoSize = true;
+        masterUnit.AutoEllipsis = false;
+        masterUnit.Dock = DockStyle.None;
+        masterUnit.Anchor = AnchorStyles.Left;
+        masterPanel.Controls.Add(masterUnit, 3, 0);
 
         header.Controls.Add(projectLabel, 0, 0);
         header.Controls.Add(deviceLabel, 0, 1);
@@ -390,86 +396,133 @@ public sealed class MainForm : Form
                 }
             });
         }
+        var arrangingHeader = false;
         void ArrangeHeader()
         {
-            var compact = header.ClientSize.Width < (int)(1250 * header.DeviceDpi / 96F);
-            var desiredHeight = (compact ? 236 : 104) * header.DeviceDpi / 96F;
-            if (header.Parent is TableLayoutPanel parent && parent.RowStyles[1].Height != desiredHeight)
+            if (arrangingHeader || header.IsDisposed || header.Disposing) { return; }
+            arrangingHeader = true;
+            try
             {
-                parent.RowStyles[1].Height = desiredHeight;
+                var scale = header.DeviceDpi / 96F;
+                // Nested absolute columns can keep their original pixel widths after DPI/font
+                // changes. Reserve the full text and the actual up/down button width instead.
+                var digits = new string('8', masterVolumeValue.Maximum.ToString("F0", CultureInfo.InvariantCulture).Length);
+                var textWidth = TextRenderer.MeasureText(digits, masterVolumeValue.Font, Size.Empty, TextFormatFlags.SingleLine).Width;
+                var spinnerWidth = masterVolumeValue.Controls.Cast<Control>()
+                    .Where(control => control is not TextBoxBase).Select(control => control.Width).DefaultIfEmpty(0).Max();
+                var numericWidth = textWidth + Math.Max(spinnerWidth, (int)Math.Ceiling(20 * scale)) + (int)Math.Ceiling(8 * scale);
+                masterVolumeValue.MinimumSize = new Size(numericWidth, 0);
+                masterVolumeValue.Width = numericWidth;
+                var sliderWidth = (int)Math.Ceiling(80 * scale);
+                masterPanel.MinimumSize = new Size(
+                    masterCaption.GetPreferredSize(Size.Empty).Width + masterCaption.Margin.Horizontal
+                    + numericWidth + masterVolumeValue.Margin.Horizontal
+                    + masterUnit.GetPreferredSize(Size.Empty).Width + masterUnit.Margin.Horizontal
+                    + sliderWidth + masterVolumeControl.Margin.Horizontal, 0);
+                var wideMasterWidth = Math.Max(300 * scale, masterPanel.MinimumSize.Width + masterPanel.Margin.Horizontal);
+                var wideMinimum = Math.Max(1250 * scale, wideMasterWidth + (190 + 130 + 120 + 160 + 280) * scale + header.Padding.Horizontal);
+                var compact = header.ClientSize.Width < (int)Math.Ceiling(wideMinimum);
+                static int RequiredHeight(Control control) => control.GetPreferredSize(Size.Empty).Height + control.Margin.Vertical;
+                compactClock.RowStyles[0].Height = Math.Max(22 * scale, RequiredHeight(clockModeLabelControl));
+                float[] compactHeights = [
+                    Math.Max(30 * scale, Math.Max(RequiredHeight(projectLabelControl), RequiredHeight(deviceLabelControl))),
+                    Math.Max(40 * scale, Math.Max(RequiredHeight(masterPanel), RequiredHeight(masterMuteControl))),
+                    Math.Max(66 * scale, Math.Max(RequiredHeight(clockModeLabelControl) + RequiredHeight(clockLabelControl), RequiredHeight(modeButton))),
+                    Math.Max(40 * scale, Math.Max(RequiredHeight(startButton), RequiredHeight(resetButton))),
+                    Math.Max(40 * scale, RequiredHeight(addButton))
+                ];
+                var wideRowHeight = Math.Max(52 * scale, new Control[] { masterPanel, masterMuteControl,
+                    clockLabelControl, clockModeLabelControl, modeButton, startButton, resetButton, addButton }.Max(RequiredHeight));
+                var desiredHeight = (compact ? compactHeights.Sum() : 2 * wideRowHeight) + header.Padding.Vertical + header.Margin.Vertical;
+                if (header.Parent is TableLayoutPanel parent && parent.RowStyles[1].Height != desiredHeight)
+                {
+                    parent.RowStyles[1].Height = desiredHeight;
+                    QueueHeaderLayout();
+                }
+                if (compactLayout == compact)
+                {
+                    if (compact)
+                    {
+                        for (var row = 0; row < compactHeights.Length; row++) { header.RowStyles[row].Height = compactHeights[row]; }
+                    }
+                    else { header.ColumnStyles[1].Width = wideMasterWidth; }
+                    return;
+                }
+
+                compactLayout = compact;
+                header.SuspendLayout();
+                header.Controls.Clear();
+                header.ColumnStyles.Clear();
+                header.RowStyles.Clear();
+                header.ColumnCount = compact ? 3 : 6;
+                header.RowCount = compact ? 5 : 2;
+                if (compact)
+                {
+                    header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+                    header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+                    header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+                    foreach (var height in compactHeights)
+                    {
+                        header.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+                    }
+
+                    header.Controls.Add(projectLabelControl, 0, 0);
+                    header.SetColumnSpan(projectLabelControl, 2);
+                    header.Controls.Add(deviceLabelControl, 2, 0);
+                    header.Controls.Add(masterPanel, 0, 1);
+                    header.SetColumnSpan(masterPanel, 2);
+                    header.Controls.Add(masterMuteControl, 2, 1);
+                    compactClock.Controls.Add(clockModeLabelControl, 0, 0);
+                    compactClock.Controls.Add(clockLabelControl, 0, 1);
+                    header.Controls.Add(compactClock, 0, 2);
+                    header.Controls.Add(modeButton, 1, 2);
+                    header.Controls.Add(startButton, 0, 3);
+                    header.Controls.Add(resetButton, 1, 3);
+                    header.Controls.Add(addButton, 0, 4);
+                    header.SetColumnSpan(addButton, 2);
+                    header.Controls.Add(stopAllButton, 2, 2);
+                    header.SetRowSpan(stopAllButton, 3);
+                }
+                else
+                {
+                    header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                    header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, wideMasterWidth));
+                    foreach (var width in new[] { 190, 130, 120, 160 })
+                    {
+                        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, width * header.DeviceDpi / 96F));
+                    }
+
+                    header.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+                    header.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+                    header.Controls.Add(projectLabelControl, 0, 0);
+                    header.SetColumnSpan(projectLabelControl, 1);
+                    header.Controls.Add(deviceLabelControl, 0, 1);
+                    header.Controls.Add(masterPanel, 1, 0);
+                    header.SetColumnSpan(masterPanel, 1);
+                    header.Controls.Add(masterMuteControl, 1, 1);
+                    header.Controls.Add(clockModeLabelControl, 2, 0);
+                    header.Controls.Add(clockLabelControl, 2, 1);
+                    header.Controls.Add(modeButton, 3, 0);
+                    header.Controls.Add(startButton, 3, 1);
+                    header.Controls.Add(addButton, 4, 0);
+                    header.SetColumnSpan(addButton, 1);
+                    header.Controls.Add(resetButton, 4, 1);
+                    header.Controls.Add(stopAllButton, 5, 0);
+                    header.SetRowSpan(stopAllButton, 2);
+                }
+
+                header.ResumeLayout(true);
                 QueueHeaderLayout();
             }
-            if (compactLayout == compact)
-            {
-                return;
-            }
-
-            compactLayout = compact;
-            header.SuspendLayout();
-            header.Controls.Clear();
-            header.ColumnStyles.Clear();
-            header.RowStyles.Clear();
-            header.ColumnCount = compact ? 3 : 6;
-            header.RowCount = compact ? 5 : 2;
-            if (compact)
-            {
-                header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-                header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-                header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-                foreach (var height in new[] { 30, 40, 66, 40, 40 })
-                {
-                    header.RowStyles.Add(new RowStyle(SizeType.Absolute, height * header.DeviceDpi / 96F));
-                }
-
-                header.Controls.Add(projectLabelControl, 0, 0);
-                header.SetColumnSpan(projectLabelControl, 2);
-                header.Controls.Add(deviceLabelControl, 2, 0);
-                header.Controls.Add(masterPanel, 0, 1);
-                header.SetColumnSpan(masterPanel, 2);
-                header.Controls.Add(masterMuteControl, 2, 1);
-                compactClock.Controls.Add(clockModeLabelControl, 0, 0);
-                compactClock.Controls.Add(clockLabelControl, 0, 1);
-                header.Controls.Add(compactClock, 0, 2);
-                header.Controls.Add(modeButton, 1, 2);
-                header.Controls.Add(startButton, 0, 3);
-                header.Controls.Add(resetButton, 1, 3);
-                header.Controls.Add(addButton, 0, 4);
-                header.SetColumnSpan(addButton, 2);
-                header.Controls.Add(stopAllButton, 2, 2);
-                header.SetRowSpan(stopAllButton, 3);
-            }
-            else
-            {
-                header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-                header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300 * header.DeviceDpi / 96F));
-                foreach (var width in new[] { 190, 130, 120, 160 })
-                {
-                    header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, width * header.DeviceDpi / 96F));
-                }
-
-                header.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-                header.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-                header.Controls.Add(projectLabelControl, 0, 0);
-                header.SetColumnSpan(projectLabelControl, 1);
-                header.Controls.Add(deviceLabelControl, 0, 1);
-                header.Controls.Add(masterPanel, 1, 0);
-                header.SetColumnSpan(masterPanel, 1);
-                header.Controls.Add(masterMuteControl, 1, 1);
-                header.Controls.Add(clockModeLabelControl, 2, 0);
-                header.Controls.Add(clockLabelControl, 2, 1);
-                header.Controls.Add(modeButton, 3, 0);
-                header.Controls.Add(startButton, 3, 1);
-                header.Controls.Add(addButton, 4, 0);
-                header.SetColumnSpan(addButton, 1);
-                header.Controls.Add(resetButton, 4, 1);
-                header.Controls.Add(stopAllButton, 5, 0);
-                header.SetRowSpan(stopAllButton, 2);
-            }
-
-            header.ResumeLayout(true);
-            QueueHeaderLayout();
+            finally { arrangingHeader = false; }
         }
 
+        masterCaption.FontChanged += (_, _) => ArrangeHeader();
+        masterVolumeValue.FontChanged += (_, _) => ArrangeHeader();
+        masterUnit.FontChanged += (_, _) => ArrangeHeader();
+        clockLabelControl.FontChanged += (_, _) => ArrangeHeader();
+        header.DpiChangedAfterParent += (_, _) => ArrangeHeader();
+        header.Layout += (_, _) => ArrangeHeader();
         header.SizeChanged += (_, _) => ArrangeHeader();
         header.ParentChanged += (_, _) => ArrangeHeader();
         header.HandleCreated += (_, _) => QueueHeaderLayout();

@@ -64,6 +64,100 @@ public sealed class MainFormRegressionTests
         form.CloseWithoutSavePromptForSmokeTest();
     });
 
+    [Theory]
+    [InlineData(1F, 900)]
+    [InlineData(1F, 1366)]
+    [InlineData(1.25F, 1366)]
+    [InlineData(1.5F, 1366)]
+    [InlineData(1.5F, 1920)]
+    [InlineData(2F, 1366)]
+    [InlineData(2F, 1920)]
+    public void HeaderMaster_FontScalingKeepsTextAndNumericEditorVisible(float fontScale, int width) => RunOnSta(() =>
+    {
+        using var directory = new TestDirectory();
+        using var manager = new ProjectManager(new ProjectSerializer());
+        using var engine = CreateEngine();
+        using var form = CreateForm(manager, engine, directory.Path);
+        form.Show();
+        var numeric = (NumericUpDown)typeof(MainForm).GetField("_masterVolumeValue", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
+        var panel = (TableLayoutPanel)numeric.Parent!;
+        var header = (TableLayoutPanel)panel.Parent!;
+        var root = (TableLayoutPanel)header.Parent!;
+        root.Dock = DockStyle.None;
+        var originalFonts = Descendants(header).Select(control => (Control: control, Font: control.Font)).ToArray();
+        var fonts = new List<Font>();
+        try
+        {
+            foreach (var entry in originalFonts)
+            {
+                var font = new Font(entry.Font.FontFamily, entry.Font.SizeInPoints * fontScale, entry.Font.Style);
+                fonts.Add(font);
+                entry.Control.Font = font;
+            }
+            root.Size = new Size(width, 900);
+            Application.DoEvents();
+            ReadOnlySpan<string> captions = ["MASTER", "%"];
+            foreach (var text in captions)
+            {
+                var label = Descendants(panel).OfType<Label>().Single(control => control.Text == text);
+                var singleLine = TextRenderer.MeasureText(text, label.Font, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+                Assert.True(label.ClientSize.Width >= singleLine.Width,
+                    $"{fontScale}x 幅{width}: {text} needs {singleLine}, actual {label.ClientSize}");
+                Assert.True(label.ClientSize.Height >= singleLine.Height);
+                Assert.True(panel.ClientRectangle.Contains(label.Bounds));
+            }
+            var edit = numeric.Controls.OfType<TextBoxBase>().Single();
+            var number = TextRenderer.MeasureText("100", edit.Font, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+            Assert.True(edit.ClientSize.Width >= number.Width + 4,
+                $"{fontScale}x 幅{width}: 100 needs {number.Width + 4}, actual editor width {edit.ClientSize.Width}");
+            Assert.True(panel.ClientRectangle.Contains(numeric.Bounds));
+            var slider = Descendants(panel).OfType<TrackBar>().Single();
+            Assert.True(slider.Width >= (int)(80 * slider.DeviceDpi / 96F));
+            Assert.True(panel.ClientRectangle.Contains(slider.Bounds));
+            Assert.True(header.ClientRectangle.Contains(panel.Bounds));
+            CaptureSnapshot(form, $"master-{fontScale}-{width}.png");
+        }
+        finally
+        {
+            form.CloseWithoutSavePromptForSmokeTest();
+            foreach (var font in fonts) { font.Dispose(); }
+        }
+    });
+
+    [Theory]
+    [InlineData(1F)]
+    [InlineData(1.5F)]
+    [InlineData(2F)]
+    public void EmergencyStatus_UsesFullHeightNativeButtonsAndHidesResumeUntilStopped(float fontScale) => RunOnSta(() =>
+    {
+        using var directory = new TestDirectory();
+        using var manager = new ProjectManager(new ProjectSerializer());
+        using var engine = CreateEngine();
+        using var form = CreateForm(manager, engine, directory.Path);
+        form.Show();
+        var status = Descendants(form).OfType<StatusStrip>().Single();
+        using var font = UiTheme.CreateFont(10F * fontScale);
+        status.Font = font;
+        var resume = status.Items.OfType<ToolStripButton>().Single(item => item.Text == "自動イベント再開");
+        Assert.False(resume.Visible);
+        Assert.DoesNotContain(status.Items.Cast<ToolStripItem>(), item => item is ToolStripControlHost);
+        Method("EmergencyStopAll").Invoke(form, null);
+        Application.DoEvents();
+        Assert.True(resume.Visible);
+        foreach (var button in status.Items.OfType<ToolStripButton>())
+        {
+            var preferred = button.GetPreferredSize(Size.Empty);
+            Assert.True(button.Height >= preferred.Height,
+                $"{fontScale}x: {button.Text} needs {preferred.Height}, actual {button.Height}");
+            Assert.True(status.ClientRectangle.Contains(button.Bounds));
+            var text = TextRenderer.MeasureText(button.Text, button.Font, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+            Assert.True(button.Width >= text.Width);
+        }
+        resume.PerformClick();
+        Assert.False(resume.Visible);
+        form.CloseWithoutSavePromptForSmokeTest();
+    });
+
     [Fact]
     public void SaveDuringEdits_DoesNotAuthorizeClosingOrReplacingProject() => RunOnSta(() =>
     {
