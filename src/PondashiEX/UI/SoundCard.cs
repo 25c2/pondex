@@ -42,6 +42,7 @@ public sealed class SoundCard : UserControl
     private bool _detailsCreated;
     private PlaybackSettingsDialog? _playbackDialog;
     private bool _updatingHeight;
+    private bool _editingLocked;
     private readonly Func<string> _resolveSoundPath;
     private string _loopDisplayText = string.Empty;
 
@@ -207,6 +208,11 @@ public sealed class SoundCard : UserControl
         };
         _volumeTrack.ValueChanged += (_, _) =>
         {
+            if (_editingLocked)
+            {
+                if (!_suppressVolumeChanged) { RestoreVolume(); }
+                return;
+            }
             if (_volumeValue.Value != _volumeTrack.Value)
             {
                 _volumeValue.Value = _volumeTrack.Value;
@@ -222,6 +228,11 @@ public sealed class SoundCard : UserControl
         };
         _volumeValue.ValueChanged += (_, _) =>
         {
+            if (_editingLocked)
+            {
+                if (!_suppressVolumeChanged) { RestoreVolume(); }
+                return;
+            }
             var value = decimal.ToInt32(_volumeValue.Value);
             if (_volumeTrack.Value != value)
             {
@@ -230,7 +241,7 @@ public sealed class SoundCard : UserControl
         };
         _volumeTrack.MouseUp += (_, eventArgs) =>
         {
-            if (eventArgs.Button != MouseButtons.Right)
+            if (_editingLocked || eventArgs.Button != MouseButtons.Right)
             {
                 return;
             }
@@ -269,6 +280,28 @@ public sealed class SoundCard : UserControl
         _toolTip.SetToolTip(_volumeTrack, "0～100%。ホイール、矢印キー、ドラッグで調整。右クリックで音量フェードを設定できます。");
         _pauseButton.SizeChanged += (_, _) => UpdateState(_state);
         UpdateState(PlaybackState.Stopped);
+    }
+
+    internal void SetEditingLocked(bool locked)
+    {
+        _editingLocked = locked;
+        _detailsContent.Enabled = !locked;
+        _volumeTrack.Enabled = !locked;
+        _volumeValue.Enabled = !locked;
+        if (locked) { _playbackDialog?.Dispose(); }
+    }
+
+    private void RestoreVolume()
+    {
+        var previous = _suppressVolumeChanged;
+        _suppressVolumeChanged = true;
+        try
+        {
+            var percent = (int)(Math.Clamp(Sound.Volume, 0, 1) * 100);
+            _volumeTrack.Value = percent;
+            _volumeValue.Value = percent;
+        }
+        finally { _suppressVolumeChanged = previous; }
     }
 
     internal void EnsureDetailsCreated()
@@ -365,8 +398,8 @@ public sealed class SoundCard : UserControl
             _toolTip.SetToolTip(_fadeOutCheck, "停止時に、指定秒数で音量を下げてから停止します。");
             _toolTip.SetToolTip(deleteButton, "音声ファイル自体は削除せず、このプロジェクトから登録だけを削除します。");
 
-            browseButton.Click += (_, _) => FileBrowseRequested?.Invoke(this, EventArgs.Empty);
-            deleteButton.Click += (_, _) => DeleteRequested?.Invoke(this, EventArgs.Empty);
+            browseButton.Click += (_, _) => { if (!_editingLocked) { FileBrowseRequested?.Invoke(this, EventArgs.Empty); } };
+            deleteButton.Click += (_, _) => { if (!_editingLocked) { DeleteRequested?.Invoke(this, EventArgs.Empty); } };
             _nameText.TextChanged += (_, _) => UpdateDefinition();
             _keyText.TextChanged += (_, _) => NormalizeKeyAndUpdate();
             _keyText.Validated += (_, _) => CommitKeyInput();
@@ -668,7 +701,7 @@ public sealed class SoundCard : UserControl
 
     private void UpdateDefinition()
     {
-        if (!_detailsCreated || _updatingPlaybackSettings)
+        if (_editingLocked || !_detailsCreated || _updatingPlaybackSettings)
         {
             return;
         }
@@ -697,6 +730,7 @@ public sealed class SoundCard : UserControl
 
     private void ShowPlaybackSettings()
     {
+        if (_editingLocked) { return; }
         if (_playbackDialog is { IsDisposed: false })
         {
             _playbackDialog.Activate();
@@ -708,6 +742,7 @@ public sealed class SoundCard : UserControl
         UiTheme.Apply(dialog, _darkMode);
         dialog.SettingsChanged += (_, _) =>
         {
+            if (_editingLocked) { return; }
             _updatingPlaybackSettings = true;
             try
             {
@@ -727,6 +762,7 @@ public sealed class SoundCard : UserControl
 
     private void NormalizeKeyAndUpdate()
     {
+        if (_editingLocked) { return; }
         if (_normalizingKey)
         {
             return;
@@ -753,6 +789,7 @@ public sealed class SoundCard : UserControl
 
     private void CommitKeyInput()
     {
+        if (_editingLocked) { return; }
         if (string.IsNullOrWhiteSpace(_keyText.Text))
         {
             return;
@@ -779,6 +816,7 @@ public sealed class SoundCard : UserControl
 
     private void CommitLoopStartInput()
     {
+        if (_editingLocked) { return; }
         if (!_detailsCreated || string.Equals(_loopStart.Text, _loopDisplayText, StringComparison.Ordinal))
         {
             return;
@@ -808,6 +846,7 @@ public sealed class SoundCard : UserControl
 
     private void CommitGroupChange()
     {
+        if (_editingLocked) { return; }
         var currentGroup = Sound.Group;
         if (string.Equals(_committedGroup, currentGroup, StringComparison.Ordinal))
         {

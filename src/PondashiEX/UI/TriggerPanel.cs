@@ -10,6 +10,8 @@ public sealed class TriggerPanel : UserControl
     private List<TriggerDefinition> _triggers = [];
     private bool _refreshing;
     private bool _darkMode;
+    private bool _editingLocked;
+    private readonly FlowLayoutPanel _toolbar;
 
     public TriggerPanel()
     {
@@ -48,6 +50,7 @@ public sealed class TriggerPanel : UserControl
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(4) };
+        _toolbar = toolbar;
         var addButton = new Button { Text = "＋ 追加", Width = 90, Height = 32 };
         _addButton = addButton;
         var editButton = new Button { Text = "編集", Width = 90, Height = 32 };
@@ -84,12 +87,32 @@ public sealed class TriggerPanel : UserControl
                 return;
             }
 
+            if (_editingLocked)
+            {
+                _refreshing = true;
+                try
+                {
+                    row.Enabled = row.Definition.Enabled;
+                    _grid.Rows[eventArgs.RowIndex].Cells[0].Value = row.Enabled;
+                }
+                finally { _refreshing = false; }
+                return;
+            }
             row.Definition.Enabled = row.Enabled;
             DefinitionsChanged?.Invoke(this, EventArgs.Empty);
         };
     }
 
     public event EventHandler? DefinitionsChanged;
+
+    internal void SetEditingLocked(bool locked)
+    {
+        _editingLocked = locked;
+        _grid.CancelEdit();
+        _grid.ReadOnly = locked;
+        _toolbar.Enabled = !locked;
+        _addButton.Enabled = !locked && _triggers.Count < ProjectLimits.MaxTriggers;
+    }
 
     internal void RefreshSoundNames()
     {
@@ -122,6 +145,7 @@ public sealed class TriggerPanel : UserControl
 
     private void AddTrigger()
     {
+        if (_editingLocked) { return; }
         if (_triggers.Count >= ProjectLimits.MaxTriggers)
         {
             return;
@@ -145,6 +169,7 @@ public sealed class TriggerPanel : UserControl
 
     private void EditSelectedTrigger()
     {
+        if (_editingLocked) { return; }
         var selected = SelectedTrigger;
         if (selected is null)
         {
@@ -161,6 +186,7 @@ public sealed class TriggerPanel : UserControl
 
     private void DeleteSelectedTrigger()
     {
+        if (_editingLocked) { return; }
         var selected = SelectedTrigger;
         if (selected is null)
         {
@@ -176,6 +202,7 @@ public sealed class TriggerPanel : UserControl
 
     private void ToggleSelectedTrigger()
     {
+        if (_editingLocked) { return; }
         var selected = SelectedTrigger;
         if (selected is null)
         {
@@ -194,7 +221,7 @@ public sealed class TriggerPanel : UserControl
 
     private void RefreshGrid()
     {
-        _addButton.Enabled = _triggers.Count < ProjectLimits.MaxTriggers;
+        _addButton.Enabled = !_editingLocked && _triggers.Count < ProjectLimits.MaxTriggers;
         _refreshing = true;
         try
         {

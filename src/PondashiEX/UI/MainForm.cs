@@ -50,6 +50,13 @@ public sealed class MainForm : Form
     private DateTimeOffset _nextDeviceAvailabilityCheck = DateTimeOffset.MinValue;
     private long _playbackGeneration;
     private bool _outputUnavailable;
+    private bool _editingLocked;
+    private readonly List<ToolStripItem> _editingCommands = [];
+    private ToolStripMenuItem _editLockMenuItem = null!;
+    private ToolStripDropDownButton _editLockButton = null!;
+    private ToolStripMenuItem _enableEditLockItem = null!;
+    private ToolStripMenuItem _disableEditLockItem = null!;
+    private Button _addSoundButton = null!;
     private string? _activeOutputId;
 
     public MainForm(
@@ -167,6 +174,11 @@ public sealed class MainForm : Form
             SetStatus("自動イベントを再開しました。", false);
         };
         statusStrip.Items.Add(_resumeTriggersButton);
+        _editLockButton = new ToolStripDropDownButton("編集ロック: OFF") { DisplayStyle = ToolStripItemDisplayStyle.Text };
+        _enableEditLockItem = new ToolStripMenuItem("設定と音量をロック", null, (_, _) => SetEditingLocked(true));
+        _disableEditLockItem = new ToolStripMenuItem("編集ロックを解除", null, (_, _) => SetEditingLocked(false)) { Enabled = false };
+        _editLockButton.DropDownItems.AddRange([_enableEditLockItem, _disableEditLockItem]);
+        statusStrip.Items.Add(_editLockButton);
         root.Controls.Add(statusStrip, 0, 3);
         Controls.Add(root);
 
@@ -256,6 +268,10 @@ public sealed class MainForm : Form
         var help = new ToolStripMenuItem("ヘルプ(&H)");
         var usage = new ToolStripMenuItem("使い方(&H)…", null, (_, _) => ShowHelp());
         help.DropDownItems.Add(usage);
+        _editLockMenuItem = new ToolStripMenuItem("編集ロック（設定・音量）", null, (_, _) => SetEditingLocked(!_editingLocked));
+        operations.DropDownItems.Add(new ToolStripSeparator());
+        operations.DropDownItems.Add(_editLockMenuItem);
+        _editingCommands.AddRange([newItem, openItem, addItem, recentMenu, soundOrder, groupShortcuts, settings, diagnostics, muteMenuItem]);
         menu.Items.AddRange([file, operations, settings, help]);
         return menu;
     }
@@ -293,6 +309,7 @@ public sealed class MainForm : Form
         clockLabel.AutoEllipsis = false;
 
         var addButton = HeaderButton("＋ 音源追加", Color.FromArgb(225, 235, 245));
+        _addSoundButton = addButton;
         var stopAllButton = HeaderButton("■ 全停止", Color.FromArgb(220, 65, 65));
         _stopAllButton = stopAllButton;
         addButton.Tag = UiTheme.AccentButtonRole;
@@ -560,6 +577,7 @@ public sealed class MainForm : Form
         };
         masterVolumeControl.ValueChanged += (_, _) =>
         {
+            if (_editingLocked && !_applyingProjectSettings) { RestoreMasterVolume(); return; }
             if (masterVolumeValue.Value != masterVolumeControl.Value)
             {
                 masterVolumeValue.Value = masterVolumeControl.Value;
@@ -577,6 +595,7 @@ public sealed class MainForm : Form
         };
         masterVolumeValue.ValueChanged += (_, _) =>
         {
+            if (_editingLocked && !_applyingProjectSettings) { RestoreMasterVolume(); return; }
             var value = decimal.ToInt32(masterVolumeValue.Value);
             if (masterVolumeControl.Value != value)
             {
@@ -585,6 +604,11 @@ public sealed class MainForm : Form
         };
         masterMuteControl.CheckedChanged += (_, _) =>
         {
+            if (_editingLocked && !_applyingProjectSettings)
+            {
+                masterMuteControl.Checked = _projectManager.Current.Settings.MasterMute;
+                return;
+            }
             UpdateMuteAppearance(masterMuteControl);
             _muteMenuItem.Checked = masterMuteControl.Checked;
             if (_applyingProjectSettings)
@@ -620,6 +644,59 @@ public sealed class MainForm : Form
         Font = UiTheme.CreateFont(10F, FontStyle.Bold)
     };
 
+    private bool CanEditProject()
+    {
+        if (_editingLocked)
+        {
+            SetStatus("編集ロック中です。変更するには画面下の編集ロックを解除してください。", true);
+            return false;
+        }
+        return !_projectOperationInProgress;
+    }
+
+    private void SetEditingLocked(bool locked)
+    {
+        if (_projectOperationInProgress || _editingLocked == locked) { return; }
+        if (locked)
+        {
+            EndTextEditing();
+            _ = _masterVolumeValue.Value;
+        }
+        _editingLocked = locked;
+        ApplyEditingLock();
+        UpdateProjectHeader();
+        SetStatus(locked ? "編集ロック中：設定と音量を保護しています。再生・停止は使用できます。" : "編集ロックを解除しました。", false);
+    }
+
+    private void ApplyEditingLock()
+    {
+        var editable = !_editingLocked && !_projectOperationInProgress;
+        foreach (var command in _editingCommands) { command.Enabled = editable; }
+        _addSoundButton.Enabled = editable;
+        _masterVolume.Enabled = editable;
+        _masterVolumeValue.Enabled = editable;
+        _masterMute.Enabled = editable;
+        _triggerPanel.SetEditingLocked(_editingLocked);
+        foreach (var card in _soundCards.Values) { card.SetEditingLocked(_editingLocked); }
+        _editLockButton.Enabled = !_projectOperationInProgress;
+        _editLockButton.Text = _editingLocked ? "編集ロック: ON" : "編集ロック: OFF";
+        _editLockMenuItem.Checked = _editingLocked;
+        _enableEditLockItem.Enabled = !_editingLocked;
+        _disableEditLockItem.Enabled = _editingLocked;
+    }
+
+    private void RestoreMasterVolume()
+    {
+        _applyingProjectSettings = true;
+        try
+        {
+            var percent = (int)(Math.Clamp(_projectManager.Current.Settings.MasterVolume, 0, 1) * 100);
+            _masterVolume.Value = percent;
+            _masterVolumeValue.Value = percent;
+        }
+        finally { _applyingProjectSettings = false; }
+    }
+
     private void ResetProjectRuntime()
     {
         Interlocked.Increment(ref _playbackGeneration);
@@ -634,6 +711,7 @@ public sealed class MainForm : Form
 
     private async Task NewProjectAsync()
     {
+        if (!CanEditProject()) { return; }
         if (!await EnsureCanReplaceProjectAsync())
         {
             return;
@@ -648,6 +726,7 @@ public sealed class MainForm : Form
 
     private async Task OpenWithDialogAsync()
     {
+        if (!CanEditProject()) { return; }
         using var dialog = new OpenFileDialog
         {
             Filter = "pondexプロジェクト (*.pondex)|*.pondex|すべてのファイル (*.*)|*.*",
@@ -661,9 +740,8 @@ public sealed class MainForm : Form
 
     private async Task OpenProjectAsync(string path)
     {
-        if (_projectOperationInProgress)
+        if (!CanEditProject())
         {
-            SetStatus("別のプロジェクト操作が完了するまで待ってください。", true);
             return;
         }
 
@@ -793,7 +871,7 @@ public sealed class MainForm : Form
 
     private void AddSoundsWithDialog()
     {
-        if (_projectOperationInProgress)
+        if (!CanEditProject())
         {
             return;
         }
@@ -812,7 +890,7 @@ public sealed class MainForm : Form
 
     private void AddSoundFiles(IEnumerable<string> paths)
     {
-        if (_projectOperationInProgress)
+        if (!CanEditProject())
         {
             return;
         }
@@ -956,6 +1034,7 @@ public sealed class MainForm : Form
             }
             _projectManager.MarkDirty();
         };
+        card.SetEditingLocked(_editingLocked);
         card.UpdateState(_audioEngine.GetState(sound.Id));
         _soundCards[sound.Id] = card;
         _soundList.Controls.Add(card);
@@ -963,7 +1042,7 @@ public sealed class MainForm : Form
 
     private void ShowSoundOrder()
     {
-        if (_projectOperationInProgress)
+        if (!CanEditProject())
         {
             return;
         }
@@ -1068,6 +1147,7 @@ public sealed class MainForm : Form
 
     private void DeleteSound(SoundDefinition sound, SoundCard card)
     {
+        if (!CanEditProject()) { return; }
         var relatedSettings = CountSoundRemovalReferences(_projectManager.Current, sound);
         var relatedMessage = relatedSettings == 0
             ? string.Empty
@@ -1163,6 +1243,7 @@ public sealed class MainForm : Form
 
     private void BrowseReplacementFile(SoundDefinition sound, SoundCard card)
     {
+        if (!CanEditProject()) { return; }
         using var dialog = new OpenFileDialog
         {
             Filter = AudioFileFormats.OpenFileFilter,
@@ -1237,6 +1318,7 @@ public sealed class MainForm : Form
 
     private void ToggleMasterMute()
     {
+        if (_editingLocked) { CanEditProject(); return; }
         _masterMute.Checked = !_masterMute.Checked;
         SetStatus(_masterMute.Checked ? "ミュートしました。" : "ミュートを解除しました。", false);
     }
@@ -1322,6 +1404,7 @@ public sealed class MainForm : Form
 
     private void ShowSettings()
     {
+        if (!CanEditProject()) { return; }
         var devices = _deviceManager.GetOutputDevices();
         using var dialog = new SettingsDialog(_projectManager.Current.Settings, devices);
         dialog.SetProjectMetadata(_projectManager.Current.Project);
@@ -1394,6 +1477,7 @@ public sealed class MainForm : Form
 
     private void ShowGroupShortcuts()
     {
+        if (!CanEditProject()) { return; }
         var groups = _projectManager.Current.Sounds
             .Select(sound => sound.Group)
             .Where(group => !string.IsNullOrWhiteSpace(group));
@@ -1425,6 +1509,7 @@ public sealed class MainForm : Form
 
     private void OnSoundGroupChangeCommitted(GroupChangedEventArgs eventArgs)
     {
+        if (_editingLocked) { return; }
         var previousGroup = eventArgs.PreviousGroup.Trim();
         var currentGroup = eventArgs.CurrentGroup.Trim();
         if (previousGroup.Length == 0
@@ -1492,6 +1577,7 @@ public sealed class MainForm : Form
 
     private async Task RunSelfTestAsync()
     {
+        if (!CanEditProject()) { return; }
         var confirmation = MessageBox.Show(
             this,
             "WAV / MP3 / Ogg Vorbis / Ogg Opusの短いテスト音を順番に再生し、出力・バックグラウンド入力・DPI設定を診断します。\n\n再生中の音源は停止します。実行しますか？",
@@ -1795,7 +1881,8 @@ public sealed class MainForm : Form
         _projectLabel.Text = $"プロジェクト: {_projectManager.Current.Project.Name}{dirty}";
         var path = _projectManager.CurrentPath;
         var fileName = path is null ? "未保存" : Path.GetFileName(path);
-        Text = $"pondex — {_projectManager.Current.Project.Name} [{fileName}]{dirty}";
+        var lockState = _editingLocked ? " [編集ロック]" : string.Empty;
+        Text = $"pondex — {_projectManager.Current.Project.Name} [{fileName}]{dirty}{lockState}";
         _headerToolTip.SetToolTip(_projectLabel, path ?? "まだ保存されていないプロジェクトです。");
         _stopAllButton.Text = _projectManager.Current.Settings.FadeOutOnStopAll
             ? "■ 全停止\n(フェード)" : "■ 全停止\n(即時)";
@@ -1896,6 +1983,7 @@ public sealed class MainForm : Form
         }
 
         _tabs.Enabled = !busy;
+        ApplyEditingLock();
         UseWaitCursor = busy;
     }
 
@@ -1995,7 +2083,7 @@ public sealed class MainForm : Form
 
     private void OnDragEnter(object? sender, DragEventArgs eventArgs)
     {
-        if (_projectOperationInProgress)
+        if (_editingLocked || _projectOperationInProgress)
         {
             eventArgs.Effect = DragDropEffects.None;
             return;
@@ -2009,7 +2097,7 @@ public sealed class MainForm : Form
 
     private void OnDragDrop(object? sender, DragEventArgs eventArgs)
     {
-        if (_projectOperationInProgress)
+        if (_editingLocked || _projectOperationInProgress)
         {
             return;
         }
