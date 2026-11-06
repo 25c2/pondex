@@ -185,7 +185,7 @@ internal sealed record SoakSelfTestResult(
     public string ToReport()
     {
         var builder = new StringBuilder();
-        builder.AppendLine("PondashiEX soak self-test");
+        builder.AppendLine("pondex soak self-test");
         builder.AppendLine(CultureInfo.InvariantCulture, $"Timestamp: {Timestamp:O}");
         builder.AppendLine(CultureInfo.InvariantCulture, $"Requested duration: {RequestedDuration}");
         builder.AppendLine(CultureInfo.InvariantCulture, $"Actual duration: {ActualDuration}");

@@ -339,7 +339,7 @@ internal sealed record AudioSelfTestResult(
     public string ToReport()
     {
         var builder = new StringBuilder();
-        builder.AppendLine("PondashiEX audio self-test");
+        builder.AppendLine("pondex audio self-test");
         builder.AppendLine(CultureInfo.InvariantCulture, $"Timestamp: {Timestamp:O}");
         builder.AppendLine(CultureInfo.InvariantCulture, $"OS: {OperatingSystem}");
         builder.AppendLine(CultureInfo.InvariantCulture, $"64-bit process: {Is64BitProcess}");

@@ -70,7 +70,7 @@ public sealed class MainForm : Form
         _logDirectory = Path.GetFullPath(logDirectory);
         _recentProjects = recentProjects ?? new RecentProjectStore(Path.Combine(_logDirectory, "recent-projects.json"));
 
-        Text = "効果音ポン出しくんEX";
+        Text = "pondex";
         MinimumSize = new Size(500, 320);
         ClientSize = new Size(1180, 760);
         StartPosition = FormStartPosition.CenterScreen;
@@ -597,7 +597,7 @@ public sealed class MainForm : Form
     {
         using var dialog = new OpenFileDialog
         {
-            Filter = "PondashiEXプロジェクト (*.pondex)|*.pondex|すべてのファイル (*.*)|*.*",
+            Filter = "pondexプロジェクト (*.pondex)|*.pondex|すべてのファイル (*.*)|*.*",
             CheckFileExists = true
         };
         if (dialog.ShowDialog(this) == DialogResult.OK)
@@ -686,7 +686,7 @@ public sealed class MainForm : Form
             {
                 using var dialog = new SaveFileDialog
                 {
-                    Filter = "PondashiEXプロジェクト (*.pondex)|*.pondex",
+                    Filter = "pondexプロジェクト (*.pondex)|*.pondex",
                     DefaultExt = "pondex",
                     AddExtension = true,
                     FileName = SanitizeFileName(_projectManager.Current.Project.Name) + ".pondex"
@@ -1742,7 +1742,7 @@ public sealed class MainForm : Form
         _projectLabel.Text = $"プロジェクト: {_projectManager.Current.Project.Name}{dirty}";
         var path = _projectManager.CurrentPath;
         var fileName = path is null ? "未保存" : Path.GetFileName(path);
-        Text = $"効果音ポン出しくんEX — {_projectManager.Current.Project.Name} [{fileName}]{dirty}";
+        Text = $"pondex — {_projectManager.Current.Project.Name} [{fileName}]{dirty}";
         _headerToolTip.SetToolTip(_projectLabel, path ?? "まだ保存されていないプロジェクトです。");
         _stopAllButton.Text = _projectManager.Current.Settings.FadeOutOnStopAll
             ? "■ 全停止\n(フェード)" : "■ 全停止\n(即時)";
@@ -1783,7 +1783,7 @@ public sealed class MainForm : Form
         var result = MessageBox.Show(
             this,
             "変更を保存しますか？",
-            "PondashiEX",
+            "pondex",
             MessageBoxButtons.YesNoCancel,
             MessageBoxIcon.Question);
         return result switch

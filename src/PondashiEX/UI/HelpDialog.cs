@@ -4,7 +4,7 @@ public sealed class HelpDialog : Form
 {
     public HelpDialog()
     {
-        Text = "PondashiEX ヘルプ";
+        Text = "pondex ヘルプ";
         AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterParent;
         FormBorderStyle = FormBorderStyle.Sizable;

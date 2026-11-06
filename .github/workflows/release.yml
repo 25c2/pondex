@@ -134,7 +134,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
-          $title = "効果音ポン出しくんEX $tag"
+          $title = "pondex $tag"
           $arguments = @(
             "release", "create", $tag,
             $env:RELEASE_ARCHIVE,

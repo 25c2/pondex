@@ -1,6 +1,6 @@
 # Third-party notices
 
-PondashiEX の配布物には、以下の第三者製ソフトウェアが含まれます。
+pondex の配布物には、以下の第三者製ソフトウェアが含まれます。
 
 | Package | Version | Purpose | License | Project |
 |---|---:|---|---|---|

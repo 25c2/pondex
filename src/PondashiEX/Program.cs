@@ -21,7 +21,7 @@ internal static class Program
         var userDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PondashiEX");
         var storage = AppStoragePaths.Resolve(AppContext.BaseDirectory, userDirectory, Path.GetTempPath());
         var (logger, logDirectory) = CreateLogger(storage);
-        logger.Info("PondashiEXを起動しました。");
+        logger.Info("pondexを起動しました。");
 
         Application.ThreadException += (_, eventArgs) =>
         {
@@ -30,7 +30,7 @@ internal static class Program
             {
                 MessageBox.Show(
                     $"予期しないエラーが発生しました。操作を続行できる場合があります。\n\n{eventArgs.Exception.Message}",
-                    "PondashiEX",
+                    "pondex",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
             }
@@ -86,8 +86,8 @@ internal static class Program
             if (!smokeTest)
             {
                 MessageBox.Show(
-                    $"PondashiEXを継続できません。\n\n{exception.Message}\n\n詳細は次のログフォルダを確認してください。\n{logDirectory}",
-                    "PondashiEX",
+                    $"pondexを継続できません。\n\n{exception.Message}\n\n詳細は次のログフォルダを確認してください。\n{logDirectory}",
+                    "pondex",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
             }
@@ -95,7 +95,7 @@ internal static class Program
         }
         finally
         {
-            logger.Info("PondashiEXを終了しました。");
+            logger.Info("pondexを終了しました。");
             logger.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
     }

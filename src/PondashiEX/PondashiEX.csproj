@@ -6,6 +6,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>PondashiEX</AssemblyName>
+    <AssemblyTitle>pondex</AssemblyTitle>
+    <Product>pondex</Product>
     <RootNamespace>PondashiEX</RootNamespace>
     <Description>学校演劇・舞台音響向けのオフラインWindowsポン出しアプリ</Description>
     <PackageLicenseExpression>AGPL-3.0-only</PackageLicenseExpression>

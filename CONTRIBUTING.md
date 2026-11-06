@@ -1,6 +1,6 @@
 # Contributing
 
-PondashiEXへの改善提案・不具合報告・Pull Requestを歓迎します。
+pondexへの改善提案・不具合報告・Pull Requestを歓迎します。
 
 ## 開発環境
 

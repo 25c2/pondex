@@ -1,4 +1,4 @@
-# Pondex
+# pondex
 
 [![CI](https://github.com/25c2/pondex/actions/workflows/ci.yml/badge.svg)](https://github.com/25c2/pondex/actions/workflows/ci.yml)
 
