@@ -164,12 +164,12 @@ public sealed class MainFormRegressionTests
         var header = (TableLayoutPanel)master.Parent!.Parent!;
         // Size the actual header directly: Windows can clamp top-level form sizes.
         header.Dock = DockStyle.None;
-        ReadOnlySpan<int> logicalWidths = [900, 1100, 1500, 1099, 900, 1500];
+        ReadOnlySpan<int> logicalWidths = [900, 1100, 1249, 1250, 1500, 1249, 900, 1500];
         foreach (var logicalWidth in logicalWidths)
         {
-            var compact = logicalWidth < 1100;
+            var compact = logicalWidth < 1250;
             var width = (int)(logicalWidth * header.DeviceDpi / 96F);
-            header.Size = new Size(width, (int)((compact ? 210 : 104) * header.DeviceDpi / 96F));
+            header.Size = new Size(width, (int)((compact ? 236 : 104) * header.DeviceDpi / 96F));
             Application.DoEvents();
             Assert.Equal(width, header.ClientSize.Width);
             Assert.Equal(compact ? 3 : 6, header.ColumnCount);
