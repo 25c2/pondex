@@ -3,6 +3,7 @@ namespace PondashiEX.Input;
 public enum ShortcutCommandType
 {
     Play,
+    PlayExclusive,
     Stop,
     StopAll
 }

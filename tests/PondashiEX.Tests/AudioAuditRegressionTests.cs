@@ -98,6 +98,51 @@ public sealed class AudioAuditRegressionTests
     }
 
     [Fact]
+    public async Task FadeEnd_WaitsForDeviceBufferAndRemainsManualStop()
+    {
+        using var directory = new TestDirectory();
+        var path = WriteTone(directory.GetPath("fade-tail.wav"));
+        var output = new BufferedOutput();
+        ISampleProvider? provider = null;
+        using var engine = new AudioEngine(new NullLogger(), (_, input) => { provider = input; return output; });
+        var ended = new TaskCompletionSource<PlaybackEndReason?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.PlaybackEnded += (_, args) => ended.TrySetResult(args.EndReason);
+        var sound = new SoundDefinition
+        {
+            Loop = new LoopSettings { Enabled = true },
+            FadeOut = new FadeSettings { Enabled = true, Value = 0.01F }
+        };
+        await engine.PlayAsync(sound, path);
+        engine.Stop(sound.Id);
+        provider!.Read(new float[4096], 0, 4096);
+        await Task.Delay(50);
+        Assert.False(ended.Task.IsCompleted);
+        Assert.Equal(PondashiEX.Audio.PlaybackState.Fading, engine.GetState(sound.Id));
+        output.ConsumedSamples = 4096;
+        Assert.Equal(PlaybackEndReason.Stopped, await ended.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.Empty(engine.GetActiveSoundIds());
+    }
+
+    [Fact]
+    public async Task StalledNaturalCompletion_StopsWithoutNaturalEventOrFallback()
+    {
+        using var directory = new TestDirectory();
+        var path = WriteTone(directory.GetPath("stalled.wav"));
+        var output = new BufferedOutput();
+        ISampleProvider? provider = null;
+        using var engine = new AudioEngine(new NullLogger(), (_, input) => { provider = input; return output; });
+        var failure = new TaskCompletionSource<OutputDeviceFallbackEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.OutputDeviceFallback += (_, args) => failure.TrySetResult(args);
+        var reasons = new List<PlaybackEndReason?>();
+        engine.PlaybackEnded += (_, args) => reasons.Add(args.EndReason);
+        await engine.PlayAsync(new SoundDefinition(), path);
+        provider!.Read(new float[4096], 0, 4096);
+        Assert.False((await failure.Task.WaitAsync(TimeSpan.FromSeconds(8))).Recovered);
+        Assert.Empty(engine.GetActiveSoundIds());
+        Assert.DoesNotContain(PlaybackEndReason.Natural, reasons);
+    }
+
+    [Fact]
     public async Task PendingNaturalEnd_CannotStopRetriggeredSoundOrUndoEmergencyStop()
     {
         using var directory = new TestDirectory();

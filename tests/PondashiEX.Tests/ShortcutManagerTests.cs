@@ -10,6 +10,20 @@ public sealed class ShortcutManagerTests
     private readonly SoundDefinition _second = new() { Id = Guid.NewGuid(), Key = "A" };
 
     [Fact]
+    public void AltAssignedKey_ResolvesExclusiveSoundWithoutChangingNormalGroupPlay()
+    {
+        var target = new SoundDefinition { Key = "A", Group = "BGM" };
+        var other = new SoundDefinition { Key = "B", Group = "BGM" };
+        var groups = new[] { new GroupShortcutDefinition { Group = "BGM", Key = "G" } };
+        var manager = new ShortcutManager();
+        var command = Assert.Single(manager.Resolve(Keys.Alt | Keys.A, [target, other], groups, false));
+        Assert.Equal(ShortcutCommandType.PlayExclusive, command.Type);
+        Assert.Equal(target.Id, command.SoundId);
+        Assert.Equal(2, manager.Resolve(Keys.G, [target, other], groups, false).Count);
+        Assert.Empty(manager.Resolve(Keys.Alt | Keys.G, [target, other], groups, false));
+    }
+
+    [Fact]
     public void PlainKey_PlaysAllSoundsAssignedToSameKey()
     {
         var commands = _manager.Resolve(Keys.A, [_first, _second], textEditing: false);

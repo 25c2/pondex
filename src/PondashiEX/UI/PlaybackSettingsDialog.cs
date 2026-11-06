@@ -41,7 +41,7 @@ public sealed class PlaybackSettingsDialog : Form
         _pan = AddValue(root, 2, "Pan（左 −100 ～ 右 +100）", -100, 100, (decimal)(sound.Pan * 100), 0, 0);
         root.Controls.Add(new Label
         {
-            Text = "スライダーと数値入力は連動し、再生中の音にも即時反映されます。右クリックで各項目を標準値へ戻せます。\n速度を変えると音程も変わります。Pitchは速度とは別の音程補正です。\n設定はプロジェクトに保存されます。Fade Inは次回再生時、Fade Outは次の停止操作で適用されます。",
+            Text = "再生中にも反映・保存されます。右クリックで標準値。速度とPitchは別々に調整できます。",
             Dock = DockStyle.Fill,
             AutoSize = true,
             Margin = new Padding(0, 8, 0, 8)
@@ -56,6 +56,7 @@ public sealed class PlaybackSettingsDialog : Form
         };
         var reset = new Button { Text = "標準に戻す", Width = 140, Height = 32 };
         var close = new Button { Text = "閉じる", DialogResult = DialogResult.OK, Width = 110, Height = 32 };
+        close.Click += (_, _) => Close();
         reset.Click += (_, _) => ResetValues();
         footer.Controls.Add(close);
         footer.Controls.Add(reset);
@@ -75,6 +76,18 @@ public sealed class PlaybackSettingsDialog : Form
     public float Pitch => (float)_pitch.Value;
 
     public float Pan => (float)_pan.Value / 100;
+
+    public void UpdateValues(SoundDefinition sound)
+    {
+        _resetting = true;
+        try
+        {
+            _speed.Value = (decimal)Math.Clamp(sound.Speed, 0.5f, 2f);
+            _pitch.Value = (decimal)Math.Clamp(sound.Pitch, 0.5f, 2f);
+            _pan.Value = (decimal)Math.Clamp(sound.Pan * 100, -100, 100);
+        }
+        finally { _resetting = false; }
+    }
 
     private void ResetValues()
     {

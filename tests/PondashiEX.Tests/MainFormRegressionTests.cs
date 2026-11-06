@@ -48,7 +48,7 @@ public sealed class MainFormRegressionTests
         var header = (TableLayoutPanel)master.Parent!.Parent!;
         var root = (TableLayoutPanel)header.Parent!;
         root.Dock = DockStyle.None;
-        ReadOnlySpan<int> widths = [900, 1180, 500, 1500, 900];
+        ReadOnlySpan<int> widths = [900, 1180, 1366, 500, 1500, 900];
         foreach (var width in widths)
         {
             root.Size = new Size(width, 700);
@@ -748,6 +748,79 @@ public sealed class MainFormRegressionTests
         {
             foreach (var card in cards) { card.Dispose(); }
         }
+    });
+
+    [Fact]
+    public void ProjectRuntimeReset_StopsStopwatchAndClearsPendingNaturalEvents() => RunOnSta(() =>
+    {
+        using var directory = new TestDirectory();
+        using var manager = new ProjectManager(new ProjectSerializer());
+        using var engine = CreateEngine();
+        using var form = CreateForm(manager, engine, directory.Path);
+        var triggerEngine = (TriggerEngine)typeof(MainForm).GetField("_triggerEngine", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
+        var stopwatch = (System.Diagnostics.Stopwatch)typeof(MainForm).GetField("_stopwatch", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
+        var source = Guid.NewGuid();
+        manager.Current.Triggers.Add(new TriggerDefinition
+        {
+            TriggerType = TriggerType.SoundEnded,
+            Parameters = new TriggerParameters { SourceSoundId = source }
+        });
+        triggerEngine.SetTriggers(manager.Current.Triggers);
+        triggerEngine.OnSoundEnded(source, true);
+        stopwatch.Start();
+        Method("ResetProjectRuntime").Invoke(form, null);
+        Assert.False(stopwatch.IsRunning);
+        Assert.Equal(TimeSpan.Zero, stopwatch.Elapsed);
+        Assert.Empty(triggerEngine.Tick(DateTimeOffset.Now, TimeSpan.Zero, false));
+        form.CloseWithoutSavePromptForSmokeTest();
+    });
+
+    [Fact]
+    public void PlaybackDialogs_AreModelessUniqueAndCloseWithCard() => RunOnSta(() =>
+    {
+        using var directory = new TestDirectory();
+        using var manager = new ProjectManager(new ProjectSerializer());
+        manager.Current.Sounds.Add(new SoundDefinition { Name = "one" });
+        manager.Current.Sounds.Add(new SoundDefinition { Name = "two" });
+        using var engine = CreateEngine();
+        using var form = CreateForm(manager, engine, directory.Path);
+        form.Show();
+        var cards = Descendants(form).OfType<SoundCard>().ToArray();
+        var open = typeof(SoundCard).GetMethod("ShowPlaybackSettings", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        foreach (var card in cards)
+        {
+            Descendants(card).OfType<Button>().Single(button => button.Text.StartsWith("詳細", StringComparison.Ordinal)).PerformClick();
+            open.Invoke(card, null);
+            open.Invoke(card, null);
+        }
+        Application.DoEvents();
+        Assert.Equal(2, form.OwnedForms.OfType<PlaybackSettingsDialog>().Count());
+        Assert.All(form.OwnedForms, dialog => Assert.False(dialog.Modal));
+        Assert.True(form.Enabled);
+        var dialogs = form.OwnedForms.ToArray();
+        foreach (var card in cards) { card.Dispose(); }
+        Assert.All(dialogs, dialog => Assert.True(dialog.IsDisposed));
+        form.CloseWithoutSavePromptForSmokeTest();
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ClockDisplay_UsesHeaderContrastInBothModes(bool dark) => RunOnSta(() =>
+    {
+        using var directory = new TestDirectory();
+        using var manager = new ProjectManager(new ProjectSerializer());
+        manager.Current.Settings.DarkMode = dark;
+        manager.Current.Project.ThemeColor = "#FFFFFF";
+        using var engine = CreateEngine();
+        using var form = CreateForm(manager, engine, directory.Path);
+        var clock = (Label)typeof(MainForm).GetField("_clockLabel", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
+        Method("UpdateClockDisplay").Invoke(form, null);
+        Assert.NotEqual(clock.BackColor.ToArgb(), clock.ForeColor.ToArgb());
+        typeof(MainForm).GetField("_stopwatchMode", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(form, true);
+        Method("UpdateClockDisplay").Invoke(form, null);
+        Assert.NotEqual(clock.BackColor.ToArgb(), clock.ForeColor.ToArgb());
+        form.CloseWithoutSavePromptForSmokeTest();
     });
 
     private static IEnumerable<Control> Descendants(Control parent)

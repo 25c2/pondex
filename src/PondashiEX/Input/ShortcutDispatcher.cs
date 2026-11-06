@@ -63,6 +63,12 @@ public sealed class ShortcutDispatcher
             return;
         }
 
+        if (modifiers == Keys.Alt)
+        {
+            _execute(_manager.Resolve(keyData, _sounds(), [], textEditing: false));
+            return;
+        }
+
         var stop = modifiers == Keys.Shift;
         if ((modifiers != Keys.None && !stop) || !_soundsByKey.TryGetValue(keyCode, out var soundIds))
         {

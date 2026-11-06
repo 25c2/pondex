@@ -127,12 +127,13 @@ public sealed class SettingsDialog : Form
         var buttons = new FlowLayoutPanel
         {
             Dock = DockStyle.Bottom,
-            Height = 52,
+            Height = 60,
+            WrapContents = false,
             Padding = new Padding(8),
             FlowDirection = FlowDirection.RightToLeft
         };
-        var okButton = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 90, Height = 32 };
-        var cancelButton = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, Width = 90, Height = 32 };
+        var okButton = new Button { Text = "OK", DialogResult = DialogResult.OK, AutoSize = true, MinimumSize = new Size(116, 36) };
+        var cancelButton = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, AutoSize = true, MinimumSize = new Size(116, 36) };
         buttons.Controls.Add(okButton);
         buttons.Controls.Add(cancelButton);
         var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true };

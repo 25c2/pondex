@@ -13,6 +13,37 @@ public sealed class TriggerEngine
     private DateTimeOffset? _lastTickNow;
     private TimeSpan _lastStopwatchElapsed;
 
+    private bool _suspended;
+
+    public bool IsSuspended { get { lock (_sync) { return _suspended; } } }
+
+    public void Suspend()
+    {
+        lock (_sync)
+        {
+            _suspended = true;
+            ClearPending();
+        }
+    }
+
+    public void Resume()
+    {
+        lock (_sync)
+        {
+            ClearPending();
+            _suspended = false;
+        }
+    }
+
+    private void ClearPending()
+    {
+        _soundStarted.Clear();
+        _soundEndedSinceTick.Clear();
+        _latchedTriggers.Clear();
+        _lastTickNow = null;
+        _lastStopwatchElapsed = TimeSpan.Zero;
+    }
+
     public void ResetStopwatch()
     {
         lock (_sync)
@@ -59,6 +90,7 @@ public sealed class TriggerEngine
     {
         lock (_sync)
         {
+            if (_suspended) { return; }
             _soundStarted[soundId] = new SoundClock(_timeProvider.GetTimestamp());
             _soundEndedSinceTick.Remove(soundId);
             foreach (var trigger in _triggers.Where(item =>
@@ -74,6 +106,7 @@ public sealed class TriggerEngine
     {
         lock (_sync)
         {
+            if (_suspended) { return; }
             _soundStarted.Remove(soundId);
             if (naturalEnd)
             {
@@ -106,20 +139,24 @@ public sealed class TriggerEngine
 
     public IReadOnlyList<TriggerDefinition> Tick(
         DateTimeOffset now,
-        TimeSpan stopwatchElapsed)
+        TimeSpan stopwatchElapsed,
+        bool stopwatchRunning = true)
     {
         List<TriggerDefinition> fired;
         lock (_sync)
         {
+            if (_suspended) { return []; }
             if (stopwatchElapsed < _lastStopwatchElapsed) { ResetStopwatch(); }
             _lastStopwatchElapsed = stopwatchElapsed;
             fired = [];
             foreach (var trigger in _triggers.Where(trigger => trigger.Enabled))
             {
-                var shouldFire = ShouldFire(trigger, now, stopwatchElapsed, _lastTickNow);
+                var shouldFire = (trigger.TriggerType != TriggerType.StopwatchElapsed || stopwatchRunning)
+                    && ShouldFire(trigger, now, stopwatchElapsed, _lastTickNow);
                 if (!shouldFire)
                 {
-                    if (trigger.TriggerType is TriggerType.ClockTime or TriggerType.StopwatchElapsed)
+                    if (trigger.TriggerType == TriggerType.ClockTime
+                        || (trigger.TriggerType == TriggerType.StopwatchElapsed && stopwatchRunning))
                     {
                         _latchedTriggers.Remove(trigger.Id);
                     }

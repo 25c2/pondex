@@ -6,6 +6,25 @@ namespace PondashiEX.Tests;
 public sealed class ShortcutDispatcherTests
 {
     [Fact]
+    public void AltKey_DispatchesOnlyDirectSoundAsExclusive()
+    {
+        var first = new SoundDefinition { Key = "A", Group = "BGM" };
+        var second = new SoundDefinition { Key = "B", Group = "BGM" };
+        IReadOnlyList<ShortcutCommand>? executed = null;
+        var dispatcher = new ShortcutDispatcher(new ShortcutManager(), () => [first, second],
+            () => [new GroupShortcutDefinition { Group = "BGM", Key = "G" }], () => false,
+            commands => executed = commands);
+        dispatcher.OnKeyChanged(Keys.Alt | Keys.A, true);
+        var command = Assert.Single(executed!);
+        Assert.Equal(ShortcutCommandType.PlayExclusive, command.Type);
+        Assert.Equal(first.Id, command.SoundId);
+        dispatcher.OnKeyChanged(Keys.A, false);
+        dispatcher.OnKeyChanged(Keys.G, true);
+        Assert.Equal(2, executed!.Count);
+        Assert.All(executed, item => Assert.Equal(ShortcutCommandType.Play, item.Type));
+    }
+
+    [Fact]
     public void OnKeyChanged_DeliversSameKeyCommandsAsOneBatch()
     {
         var first = new SoundDefinition { Id = Guid.NewGuid(), Key = "A", Group = "SE" };

@@ -16,6 +16,9 @@ internal sealed class SoundInstance : IDisposable
     private readonly PlaybackRateSampleProvider _rateProvider;
     private readonly LivePitchSampleProvider _pitchProvider;
     private bool _disposed;
+    private readonly FadeTailSampleProvider _fadeTail;
+
+    public PlaybackEndReason CompletionReason { get; set; } = PlaybackEndReason.Natural;
 
     private SoundInstance(
         SoundDefinition definition,
@@ -28,8 +31,10 @@ internal sealed class SoundInstance : IDisposable
         CompletionSampleProvider completionProvider,
         PlaybackRateSampleProvider rateProvider,
         LivePitchSampleProvider pitchProvider,
-        ISampleProvider output)
+        ISampleProvider output,
+        FadeTailSampleProvider fadeTail)
     {
+        _fadeTail = fadeTail;
         Definition = definition;
         _decoder = decoder;
         _loopProvider = loopProvider;
@@ -97,7 +102,8 @@ internal sealed class SoundInstance : IDisposable
             }
             provider = fadeProvider;
 
-            var pauseProvider = new PauseSampleProvider(provider);
+            var fadeTail = new FadeTailSampleProvider(provider);
+            var pauseProvider = new PauseSampleProvider(fadeTail);
             var completionProvider = new CompletionSampleProvider(pauseProvider, completed);
             return new SoundInstance(
                 definition,
@@ -110,7 +116,8 @@ internal sealed class SoundInstance : IDisposable
                 completionProvider,
                 rateProvider,
                 pitchProvider,
-                completionProvider);
+                completionProvider,
+                fadeTail);
         }
         catch
         {
@@ -146,6 +153,7 @@ internal sealed class SoundInstance : IDisposable
     public void BeginFadeOut(TimeSpan duration)
     {
         _fadeProvider.BeginFadeOut((int)Math.Clamp(duration.TotalMilliseconds, 1, 60_000));
+        _fadeTail.FinishAfter(duration);
         State = PlaybackState.Fading;
     }
 

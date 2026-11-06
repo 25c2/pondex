@@ -1,9 +1,13 @@
 using System.Text.Json.Serialization;
+using System.Text.Json;
 
 namespace PondashiEX.Project;
 
 public sealed class ProjectModel
 {
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
+
     public const int CurrentFormatVersion = 1;
 
     public int FormatVersion { get; set; } = CurrentFormatVersion;
@@ -20,10 +24,16 @@ public sealed class ProjectModel
 
     [JsonIgnore]
     public List<string> LoadWarnings { get; } = [];
+
+    [JsonIgnore]
+    public List<string> MissingFiles { get; } = [];
 }
 
 public sealed class ProjectMetadata
 {
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
+
     public string Name { get; set; } = "新しいプロジェクト";
 
     public string ThemeColor { get; set; } = "#202020";
@@ -31,6 +41,9 @@ public sealed class ProjectMetadata
 
 public sealed class ProjectSettings
 {
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
+
     public string OutputDevice { get; set; } = "default";
 
     public float MasterVolume { get; set; } = 1.0f;
@@ -52,6 +65,9 @@ public sealed class ProjectSettings
 
 public sealed class SoundDefinition
 {
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
+
     public Guid Id { get; set; } = Guid.NewGuid();
 
     public string Name { get; set; } = "新しい音源";
@@ -81,6 +97,9 @@ public sealed class SoundDefinition
 
 public sealed class GroupShortcutDefinition
 {
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
+
     public string Group { get; set; } = string.Empty;
 
     public string Key { get; set; } = string.Empty;
@@ -88,6 +107,9 @@ public sealed class GroupShortcutDefinition
 
 public sealed class LoopSettings
 {
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
+
     public bool Enabled { get; set; }
 
     public long StartSample { get; set; }
@@ -97,6 +119,9 @@ public sealed class LoopSettings
 
 public sealed class FadeSettings
 {
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
+
     public bool Enabled { get; set; }
 
     public float Value { get; set; }
@@ -121,6 +146,9 @@ public enum TriggerAction
 
 public sealed class TriggerDefinition
 {
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
+
     public Guid Id { get; set; } = Guid.NewGuid();
 
     public bool Enabled { get; set; } = true;
@@ -140,6 +168,9 @@ public sealed class TriggerDefinition
 
 public sealed class TriggerParameters
 {
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtensionData { get; set; }
+
     public TimeOnly? ClockTime { get; set; }
 
     public TimeSpan? Elapsed { get; set; }

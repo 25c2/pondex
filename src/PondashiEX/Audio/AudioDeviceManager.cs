@@ -12,11 +12,11 @@ public sealed class AudioDeviceManager
     public IReadOnlyList<AudioDeviceInfo> GetOutputDevices()
     {
         var devices = new List<AudioDeviceInfo> { AudioDeviceInfo.Default };
-        for (var index = 0; index < WaveOut.DeviceCount; index++)
+        for (var index = 0; index < WaveOutEvent.DeviceCount; index++)
         {
             try
             {
-                var capabilities = WaveOut.GetCapabilities(index);
+                var capabilities = WaveOutEvent.GetCapabilities(index);
                 devices.Add(new AudioDeviceInfo(
                     index,
                     capabilities.ProductName,
@@ -42,11 +42,12 @@ public sealed class AudioDeviceManager
             return devices.FirstOrDefault(device => device.DeviceNumber == -1) ?? AudioDeviceInfo.Default;
         }
 
-        var persistentMatch = devices.FirstOrDefault(
-            device => string.Equals(device.PersistentId, configuredId, StringComparison.OrdinalIgnoreCase));
-        if (persistentMatch is not null)
+        var matches = devices.Where(
+            device => string.Equals(device.PersistentId, configuredId, StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (matches.Length > 0)
         {
-            return persistentMatch;
+            // Identical legacy capabilities are not enough to select safely.
+            return matches.Length == 1 ? matches[0] : null;
         }
 
         // v1.0 preview builds stored the volatile WaveOut index. Keep those projects readable.

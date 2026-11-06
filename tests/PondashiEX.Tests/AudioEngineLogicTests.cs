@@ -173,79 +173,68 @@ public sealed class AudioEngineLogicTests
     }
 
     [Fact]
-    public void SelectOutputDevice_WhenRequestedDeviceFails_FallsBackToDefault()
+    public void SelectOutputDevice_WhenRequestedDeviceFails_DoesNotTryAnotherDevice()
     {
-        var requestedDevices = new List<int>();
-        OutputDeviceFallbackEventArgs? fallback = null;
-        using var engine = new AudioEngine(
-            new NullLogger(),
-            (deviceNumber, _) =>
-            {
-                requestedDevices.Add(deviceNumber);
-                return deviceNumber == 7
-                    ? throw new InvalidOperationException("selected device disappeared")
-                    : new FakeAudioOutput();
-            });
-        engine.OutputDeviceFallback += (_, eventArgs) => fallback = eventArgs;
-
-        engine.SelectOutputDevice(7);
-
-        Assert.Equal([7, -1], requestedDevices);
-        Assert.Equal(-1, engine.OutputDeviceNumber);
-        Assert.NotNull(fallback);
-        Assert.True(fallback.Recovered);
-        Assert.Equal(7, fallback.FailedDeviceNumber);
+        var requested = new List<int>();
+        using var engine = new AudioEngine(new NullLogger(), (number, _) =>
+        {
+            requested.Add(number);
+            throw new InvalidOperationException("disconnected");
+        });
+        Assert.Throws<InvalidOperationException>(() => engine.SelectOutputDevice(7));
+        Assert.Equal([7], requested);
+        Assert.Equal(7, engine.OutputDeviceNumber);
     }
 
     [Fact]
-    public void OutputStartFailure_OnSelectedDevice_FallsBackAndStartsDefault()
+    public async Task OutputStartFailure_DoesNotStartDefaultAndRequiresExplicitSelection()
     {
-        var defaultOutput = new FakeAudioOutput();
-        OutputDeviceFallbackEventArgs? fallback = null;
-        using var engine = new AudioEngine(
-            new NullLogger(),
-            (deviceNumber, _) => deviceNumber == 9 ? new FailingAudioOutput() : defaultOutput);
-        engine.OutputDeviceFallback += (_, eventArgs) => fallback = eventArgs;
+        var requested = new List<int>();
+        using var engine = new AudioEngine(new NullLogger(), (number, _) =>
+        {
+            requested.Add(number);
+            return new FailingAudioOutput();
+        });
+        var failure = new TaskCompletionSource<OutputDeviceFallbackEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.OutputDeviceFallback += (_, args) => failure.TrySetResult(args);
         engine.SelectOutputDevice(9);
-
-        engine.SilentLoopEnabled = true;
-
-        Assert.Equal(-1, engine.OutputDeviceNumber);
-        Assert.Equal(NAudio.Wave.PlaybackState.Playing, defaultOutput.PlaybackState);
-        Assert.NotNull(fallback);
-        Assert.True(fallback.Recovered);
-        Assert.Equal(9, fallback.FailedDeviceNumber);
+        Assert.Throws<InvalidOperationException>(() => engine.SilentLoopEnabled = true);
+        Assert.False((await failure.Task.WaitAsync(TimeSpan.FromSeconds(2))).Recovered);
+        Assert.Equal([9], requested);
+        Assert.Equal(9, engine.OutputDeviceNumber);
+        Assert.Empty(engine.GetActiveSoundIds());
     }
 
-    [Fact]
-    public async Task PlaybackDeviceFailure_StopsSoundsAndReinitializesDefaultOutput()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PlaybackDeviceFailure_StopsSoundsAndRequiresExplicitSelection(bool withoutException)
     {
         using var directory = new TestDirectory();
         var path = CreateWaveFile(directory.GetPath("device-failure.wav"));
         var outputs = new List<FakeAudioOutput>();
-        using var engine = new AudioEngine(
-            new NullLogger(),
-            (_, _) =>
-            {
-                var output = new FakeAudioOutput();
-                outputs.Add(output);
-                return output;
-            });
-        var recovered = new TaskCompletionSource<OutputDeviceFallbackEventArgs>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        engine.OutputDeviceFallback += (_, eventArgs) => recovered.TrySetResult(eventArgs);
+        using var engine = new AudioEngine(new NullLogger(), (_, _) =>
+        {
+            var output = new FakeAudioOutput();
+            outputs.Add(output);
+            return output;
+        });
+        var failure = new TaskCompletionSource<OutputDeviceFallbackEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.OutputDeviceFallback += (_, args) => failure.TrySetResult(args);
         engine.SelectOutputDevice(3);
-        var sound = new SoundDefinition { Id = Guid.NewGuid(), Name = "device failure" };
+        var sound = new SoundDefinition();
         await engine.PlayAsync(sound, path);
-
-        outputs[0].RaisePlaybackFailure(new InvalidOperationException("device unplugged"));
-        var result = await recovered.Task.WaitAsync(TimeSpan.FromSeconds(2));
-
-        Assert.True(result.Recovered);
-        Assert.Equal(3, result.FailedDeviceNumber);
-        Assert.Equal(-1, engine.OutputDeviceNumber);
+        outputs[0].RaisePlaybackFailure(withoutException ? null : new InvalidOperationException("device unplugged"));
+        Assert.False((await failure.Task.WaitAsync(TimeSpan.FromSeconds(2))).Recovered);
         Assert.Empty(engine.GetActiveSoundIds());
+        Assert.Equal(3, engine.OutputDeviceNumber);
+        await engine.PlayAsync(sound, path);
+        Assert.Empty(engine.GetActiveSoundIds());
+        Assert.Single(outputs);
+        engine.SelectOutputDevice(3);
+        await engine.PlayAsync(sound, path);
         Assert.Equal(2, outputs.Count);
+        Assert.Contains(sound.Id, engine.GetActiveSoundIds());
     }
 
     [Fact]
@@ -350,8 +339,11 @@ public sealed class AudioEngineLogicTests
         using var exclusive = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
     }
 
-    [Fact]
-    public async Task EmergencyStopAll_InvalidatesInFlightPreparationAndAllowsNewExplicitPlay()
+    [Theory]
+    [InlineData("emergency")]
+    [InlineData("exclusive-peer-stop")]
+    [InlineData("device-change")]
+    public async Task StopOrDeviceChange_InvalidatesInFlightPreparationAndAllowsNewExplicitPlay(string operation)
     {
         using var directory = new TestDirectory();
         var path = CreateWaveFile(directory.GetPath("pending.wav"));
@@ -376,7 +368,12 @@ public sealed class AudioEngineLogicTests
         try
         {
             await prepared.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            engine.EmergencyStopAll();
+            switch (operation)
+            {
+                case "emergency": engine.EmergencyStopAll(); break;
+                case "exclusive-peer-stop": engine.StopImmediately(sound.Id); break;
+                case "device-change": engine.SelectOutputDevice(4); break;
+            }
         }
         finally { release.Set(); }
         await pending;
@@ -425,8 +422,11 @@ public sealed class AudioEngineLogicTests
 
         public void Dispose() => PlaybackState = NAudio.Wave.PlaybackState.Stopped;
 
-        public void RaisePlaybackFailure(Exception exception) =>
+        public void RaisePlaybackFailure(Exception? exception)
+        {
+            PlaybackState = NAudio.Wave.PlaybackState.Stopped;
             PlaybackStopped?.Invoke(this, new StoppedEventArgs(exception));
+        }
     }
 
     private sealed class FailingAudioOutput : IAudioOutput

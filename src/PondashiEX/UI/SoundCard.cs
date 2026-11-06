@@ -40,6 +40,7 @@ public sealed class SoundCard : UserControl
     private string _committedGroup;
     private bool _updatingPlaybackSettings;
     private bool _detailsCreated;
+    private PlaybackSettingsDialog? _playbackDialog;
     private bool _updatingHeight;
     private readonly Func<string> _resolveSoundPath;
     private string _loopDisplayText = string.Empty;
@@ -188,6 +189,7 @@ public sealed class SoundCard : UserControl
                 PauseRequested?.Invoke(this, EventArgs.Empty);
             }
         };
+        Disposed += (_, _) => _playbackDialog?.Dispose();
         _detailsButton.Click += (_, _) =>
         {
             EnsureDetailsCreated();
@@ -337,7 +339,7 @@ public sealed class SoundCard : UserControl
                 WrapContents = false,
                 Margin = Padding.Empty
             };
-            var browseButton = new Button { Text = "参照…", Width = 76, Height = 28, Margin = new Padding(4, 0, 0, 0) };
+            var browseButton = new Button { Text = "参照…", AutoSize = true, MinimumSize = new Size(96, 32), Margin = new Padding(4, 0, 0, 0) };
             var deleteButton = new Button
             {
                 Text = "この音源を削除…",
@@ -450,6 +452,7 @@ public sealed class SoundCard : UserControl
     {
         _darkMode = darkMode;
         UiTheme.Apply(this, darkMode);
+        if (_playbackDialog is { IsDisposed: false }) { UiTheme.Apply(_playbackDialog, darkMode); }
         UpdateState(_state);
     }
 
@@ -688,12 +691,20 @@ public sealed class SoundCard : UserControl
         Sound.Memo = _memoText.Text;
         _nameLabel.Text = Sound.Name;
         _summaryLabel.Text = SummaryText();
+        _playbackDialog?.UpdateValues(Sound);
         DefinitionChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private void ShowPlaybackSettings()
     {
-        using var dialog = new PlaybackSettingsDialog(Sound);
+        if (_playbackDialog is { IsDisposed: false })
+        {
+            _playbackDialog.Activate();
+            return;
+        }
+        var dialog = new PlaybackSettingsDialog(Sound);
+        _playbackDialog = dialog;
+        dialog.FormClosed += (_, _) => _playbackDialog = null;
         UiTheme.Apply(dialog, _darkMode);
         dialog.SettingsChanged += (_, _) =>
         {
@@ -711,7 +722,7 @@ public sealed class SoundCard : UserControl
 
             UpdateDefinition();
         };
-        dialog.ShowDialog(this);
+        dialog.Show(FindForm());
     }
 
     private void NormalizeKeyAndUpdate()

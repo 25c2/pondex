@@ -12,6 +12,13 @@ public sealed class AudioDeviceManagerTests
     ];
 
     [Fact]
+    public void FindConfiguredDevice_RejectsAmbiguousPersistentIdentity()
+    {
+        var first = Devices[1];
+        Assert.Null(AudioDeviceManager.FindConfiguredDevice([first, first with { DeviceNumber = 2 }], first.PersistentId));
+    }
+
+    [Fact]
     public void FindConfiguredDevice_UsesPersistentIdAfterDeviceOrderChanges()
     {
         var result = AudioDeviceManager.FindConfiguredDevice(

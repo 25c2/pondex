@@ -30,8 +30,9 @@ public sealed class ShortcutManager
             return [];
         }
 
+        var exclusive = modifiers == Keys.Alt;
         var stop = modifiers == Keys.Shift;
-        if (modifiers != Keys.None && !stop)
+        if (modifiers != Keys.None && !stop && !exclusive)
         {
             return [];
         }
@@ -42,12 +43,19 @@ public sealed class ShortcutManager
             .Where(group => group.Length > 0)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        return sounds
+        var targets = sounds.ToArray();
+        if (exclusive && targets.Where(sound => Matches(sound.Key, keyCode) && !string.IsNullOrWhiteSpace(sound.Group))
+            .GroupBy(sound => sound.Group.Trim(), StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
+        {
+            return [];
+        }
+
+        return targets
             .Where(sound => Matches(sound.Key, keyCode)
-                || matchingGroups.Contains(sound.Group?.Trim() ?? string.Empty))
+                || (!exclusive && matchingGroups.Contains(sound.Group?.Trim() ?? string.Empty)))
             .DistinctBy(sound => sound.Id)
             .Select(sound => new ShortcutCommand(
-                stop ? ShortcutCommandType.Stop : ShortcutCommandType.Play,
+                stop ? ShortcutCommandType.Stop : exclusive ? ShortcutCommandType.PlayExclusive : ShortcutCommandType.Play,
                 sound.Id))
             .ToArray();
     }

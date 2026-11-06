@@ -102,6 +102,29 @@ public sealed class UiAuditRegressionTests
         Assert.Contains("新名", (string)row.Cells[4].Value!);
     });
 
+    [Fact]
+    public void CardExpansion_ReportsLazyAndCachedCostWithoutRecreatingEditors() => WinFormsTest.Run(() =>
+    {
+        using var form = new Form { ClientSize = new Size(900, 650), ShowInTaskbar = false, Opacity = 0 };
+        using var card = new SoundCard(new SoundDefinition()) { Width = 850 };
+        form.Controls.Add(card);
+        form.Show();
+        var button = Descendants(card).OfType<Button>().Single(control => control.Text.StartsWith("詳細", StringComparison.Ordinal));
+        var allocated = GC.GetAllocatedBytesForCurrentThread();
+        var start = System.Diagnostics.Stopwatch.GetTimestamp();
+        button.PerformClick();
+        Application.DoEvents();
+        Console.WriteLine($"first_expand ms={System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds:F3} allocated={GC.GetAllocatedBytesForCurrentThread() - allocated}");
+        var editors = Descendants(card).Where(control => control is TextBoxBase or NumericUpDown).ToArray();
+        button.PerformClick();
+        allocated = GC.GetAllocatedBytesForCurrentThread();
+        start = System.Diagnostics.Stopwatch.GetTimestamp();
+        for (var index = 0; index < 20; index++) { button.PerformClick(); }
+        Application.DoEvents();
+        Console.WriteLine($"cached_toggle_20 ms={System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds:F3} allocated={GC.GetAllocatedBytesForCurrentThread() - allocated}");
+        Assert.Equal(editors, Descendants(card).Where(control => control is TextBoxBase or NumericUpDown).ToArray());
+    });
+
     private static IEnumerable<Control> Descendants(Control parent)
     {
         foreach (Control child in parent.Controls)

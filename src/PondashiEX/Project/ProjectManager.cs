@@ -8,6 +8,7 @@ public sealed class ProjectManager : IDisposable
     private ProjectModel _current = new();
     private string? _currentPath;
     private bool _isDirty;
+    private string? _protectedSourcePath;
     private long _stateVersion;
     private long _replaceRequestId;
 
@@ -49,6 +50,18 @@ public sealed class ProjectManager : IDisposable
         }
     }
 
+    public bool RequiresSaveAs
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _protectedSourcePath is not null
+                    && string.Equals(_currentPath, _protectedSourcePath, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+    }
+
     public event EventHandler? ProjectChanged;
 
     public ProjectSaveResult? LastSaveResult { get; private set; }
@@ -60,6 +73,7 @@ public sealed class ProjectManager : IDisposable
         {
             _current = new ProjectModel();
             _currentPath = null;
+            _protectedSourcePath = null;
             _isDirty = false;
             _stateVersion++;
         }
@@ -77,7 +91,7 @@ public sealed class ProjectManager : IDisposable
         await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(true);
         try
         {
-            var candidate = await _serializer.LoadAsync(fullPath, cancellationToken).ConfigureAwait(true);
+            var candidate = await Task.Run(() => _serializer.LoadAsync(fullPath, cancellationToken), cancellationToken).ConfigureAwait(true);
             if (requestId != Interlocked.Read(ref _replaceRequestId)
                 || (authorize is not null && !authorize(candidate, fullPath)))
             {
@@ -91,6 +105,7 @@ public sealed class ProjectManager : IDisposable
                     return false;
                 }
 
+                _protectedSourcePath = candidate.LoadWarnings.Count > 0 ? fullPath : null;
                 _current = candidate;
                 _currentPath = fullPath;
                 _isDirty = false;
@@ -120,12 +135,13 @@ public sealed class ProjectManager : IDisposable
                 current = _current;
                 currentPath = _currentPath
                     ?? throw new InvalidOperationException("保存先が未設定です。Save Asを使用してください。");
+                EnsureSafeSavePath(currentPath);
                 stateVersion = _stateVersion;
                 snapshot = _serializer.CreateSnapshot(current);
             }
 
             LastSaveResult = null;
-            LastSaveResult = await _serializer.SaveAsync(currentPath, snapshot, cancellationToken).ConfigureAwait(true);
+            LastSaveResult = await Task.Run(() => _serializer.SaveAsync(currentPath, snapshot, cancellationToken), cancellationToken).ConfigureAwait(true);
 
             var changed = false;
             lock (_stateLock)
@@ -163,6 +179,7 @@ public sealed class ProjectManager : IDisposable
             lock (_stateLock)
             {
                 current = _current;
+                EnsureSafeSavePath(newPath);
                 oldPath = _currentPath;
                 stateVersion = _stateVersion;
                 snapshot = _serializer.CreateSnapshot(current);
@@ -175,7 +192,7 @@ public sealed class ProjectManager : IDisposable
             }
 
             LastSaveResult = null;
-            LastSaveResult = await _serializer.SaveAsync(newPath, snapshot, cancellationToken).ConfigureAwait(true);
+            LastSaveResult = await Task.Run(() => _serializer.SaveAsync(newPath, snapshot, cancellationToken), cancellationToken).ConfigureAwait(true);
 
             var changed = false;
             lock (_stateLock)
@@ -206,6 +223,14 @@ public sealed class ProjectManager : IDisposable
         finally
         {
             _operationGate.Release();
+        }
+    }
+
+    private void EnsureSafeSavePath(string path)
+    {
+        if (string.Equals(path, _protectedSourcePath, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("読込時に一部の設定を復元できなかったため、元ファイルには上書きできません。別の名前で保存してください。");
         }
     }
 

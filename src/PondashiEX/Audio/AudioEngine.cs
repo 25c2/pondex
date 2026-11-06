@@ -27,6 +27,7 @@ public sealed class AudioEngine : IAudioEngine
     private bool _fadeOutOnStopEnabled = true;
     private bool _silentLoopEnabled;
     private bool _disposed;
+    private bool _outputFaulted;
     private int _outputRecoveryQueued;
     private long _outputSamplesRead;
     private OutputActivitySampleProvider? _activityProvider;
@@ -362,11 +363,9 @@ public sealed class AudioEngine : IAudioEngine
         {
             // StopAll also invalidates every in-flight preparation before disposing active instances.
             StopAll(useFadeOut: false);
-            if (_silentLoopEnabled)
-            {
-                // Flush queued device buffers even when normal operation keeps the output warm.
-                _output?.Stop();
-            }
+            // Release the device handle as well as flushing its queued buffers.
+            // A later explicit play/selection must open a fresh handle.
+            DisposeOutput(stopFirst: true);
         }
     }
 
@@ -420,6 +419,7 @@ public sealed class AudioEngine : IAudioEngine
             }
 
             DisposeOutput();
+            _outputFaulted = false;
             _deviceNumber = deviceNumber;
             (_mixer, _masterVolumeProvider) = CreateMixer();
             EnsureOutputCreated();
@@ -465,13 +465,20 @@ public sealed class AudioEngine : IAudioEngine
             return;
         }
 
+        if (_outputFaulted)
+        {
+            throw new InvalidOperationException("出力デバイス異常のため停止中です。設定で出力先を確認して選び直してください。");
+        }
+
         try
         {
             _output = CreateOutput(_deviceNumber);
         }
-        catch (Exception exception) when (_deviceNumber != -1)
+        catch (Exception exception)
         {
-            FallbackToDefault(_deviceNumber, exception, startOutput: false);
+            _outputFaulted = true;
+            OutputDeviceFallback?.Invoke(this, new OutputDeviceFallbackEventArgs(_deviceNumber, false, exception));
+            throw;
         }
     }
 
@@ -485,9 +492,10 @@ public sealed class AudioEngine : IAudioEngine
                 _outputPositionBase = _activityProvider?.CompletionPosition ?? 0;
                 _output.Play();
             }
-            catch (Exception exception) when (_deviceNumber != -1)
+            catch (Exception exception)
             {
-                FallbackToDefault(_deviceNumber, exception, startOutput: true);
+                QueueOutputRecovery(exception);
+                throw;
             }
         }
     }
@@ -531,9 +539,9 @@ public sealed class AudioEngine : IAudioEngine
 
         if (_fadePolicy.GetFadeOutDuration(instance.Definition.FadeOut) is { } duration)
         {
+            instance.CompletionReason = reason;
             instance.BeginFadeOut(duration);
             StateChanged?.Invoke(this, new SoundStateChangedEventArgs(soundId, PlaybackState.Fading));
-            QueueFadeCompletion(soundId, instance, duration, reason);
             return;
         }
 
@@ -548,15 +556,21 @@ public sealed class AudioEngine : IAudioEngine
         var target = (_activityProvider?.CompletionPosition ?? 0) - _outputPositionBase;
         _ = Task.Run(async () =>
         {
+            var waitStarted = Stopwatch.GetTimestamp();
             while (true)
             {
                 lock (_sync)
                 {
                     if (_disposed || !ReferenceEquals(_output, expectedOutput)
                         || !_instances.TryGetValue(soundId, out var current)
-                        || !ReferenceEquals(current, expectedInstance)
-                        || current.State == PlaybackState.Fading)
+                        || !ReferenceEquals(current, expectedInstance))
                     {
+                        return;
+                    }
+
+                    if (Stopwatch.GetElapsedTime(waitStarted) > TimeSpan.FromSeconds(5))
+                    {
+                        QueueOutputRecovery(new TimeoutException("音声出力位置が進まないため安全停止しました。"));
                         return;
                     }
 
@@ -564,7 +578,7 @@ public sealed class AudioEngine : IAudioEngine
                     {
                         if (expectedOutput is null || expectedOutput.HasConsumedSamples(target))
                         {
-                            StopCore(soundId, PlaybackEndReason.Natural);
+                            StopCore(soundId, current.CompletionReason);
                             StopOutputWhenIdle();
                             return;
                         }
@@ -581,27 +595,6 @@ public sealed class AudioEngine : IAudioEngine
         });
     }
 
-    private void QueueFadeCompletion(
-        Guid soundId,
-        SoundInstance expectedInstance,
-        TimeSpan duration,
-        PlaybackEndReason reason)
-    {
-        _ = Task.Run(async () =>
-        {
-            await Task.Delay(duration).ConfigureAwait(false);
-            lock (_sync)
-            {
-                if (_instances.TryGetValue(soundId, out var current)
-                    && ReferenceEquals(current, expectedInstance))
-                {
-                    StopCore(soundId, reason);
-                    StopOutputWhenIdle();
-                }
-            }
-        });
-    }
-
     private void StopOutputWhenIdle()
     {
         if (!_silentLoopEnabled && _instances.Count == 0)
@@ -614,6 +607,19 @@ public sealed class AudioEngine : IAudioEngine
     {
         if (eventArgs.Exception is null)
         {
+            // An intentional Stop may notify while its caller holds _sync.
+            // Diagnose off the callback, checking the handle and current state.
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                lock (_sync)
+                {
+                    if (!_disposed && ReferenceEquals(sender, _output) && _instances.Count > 0
+                        && _output is { PlaybackState: NAudio.Wave.PlaybackState.Stopped })
+                    {
+                        QueueOutputRecovery(new InvalidOperationException("再生中に音声出力が停止しました。"));
+                    }
+                }
+            });
             return;
         }
 
@@ -636,35 +642,6 @@ public sealed class AudioEngine : IAudioEngine
         return output;
     }
 
-    private void FallbackToDefault(int failedDeviceNumber, Exception cause, bool startOutput)
-    {
-        DisposeOutput();
-        _deviceNumber = -1;
-        try
-        {
-            _output = CreateOutput(-1);
-            if (startOutput)
-            {
-                _output.Play();
-            }
-
-            _logger.Warning($"出力デバイス{failedDeviceNumber}を使用できないため、Windows既定へ切り替えました。");
-            OutputDeviceFallback?.Invoke(
-                this,
-                new OutputDeviceFallbackEventArgs(failedDeviceNumber, recovered: true, cause));
-        }
-        catch (Exception fallbackException)
-        {
-            DisposeOutput();
-            var combined = new AggregateException(cause, fallbackException);
-            _logger.Error("Windows既定の出力デバイスへの切替にも失敗しました。", combined);
-            OutputDeviceFallback?.Invoke(
-                this,
-                new OutputDeviceFallbackEventArgs(failedDeviceNumber, recovered: false, combined));
-            throw new InvalidOperationException("利用可能な音声出力デバイスがありません。", combined);
-        }
-    }
-
     private void QueueOutputRecovery(Exception cause)
     {
         if (Interlocked.Exchange(ref _outputRecoveryQueued, 1) != 0)
@@ -672,6 +649,7 @@ public sealed class AudioEngine : IAudioEngine
             return;
         }
 
+        var expectedOutput = _output;
         ThreadPool.QueueUserWorkItem(_ =>
         {
             OutputDeviceFallbackEventArgs? result = null;
@@ -679,7 +657,7 @@ public sealed class AudioEngine : IAudioEngine
             {
                 lock (_sync)
                 {
-                    if (_disposed)
+                    if (_disposed || !ReferenceEquals(_output, expectedOutput))
                     {
                         return;
                     }
@@ -696,26 +674,10 @@ public sealed class AudioEngine : IAudioEngine
                     }
 
                     DisposeOutput();
-                    _deviceNumber = -1;
+                    _outputFaulted = true;
                     (_mixer, _masterVolumeProvider) = CreateMixer();
-                    try
-                    {
-                        _output = CreateOutput(-1);
-                        if (_silentLoopEnabled)
-                        {
-                            _output.Play();
-                        }
-
-                        _logger.Warning("出力デバイス異常後、Windows既定の出力へ自動復旧しました。");
-                        result = new OutputDeviceFallbackEventArgs(failedDeviceNumber, recovered: true, cause);
-                    }
-                    catch (Exception fallbackException)
-                    {
-                        DisposeOutput();
-                        var combined = new AggregateException(cause, fallbackException);
-                        _logger.Error("出力デバイス異常後の自動復旧に失敗しました。", combined);
-                        result = new OutputDeviceFallbackEventArgs(failedDeviceNumber, recovered: false, combined);
-                    }
+                    _logger.Error("出力デバイス異常のため停止しました。設定で出力先を選び直してください。", cause);
+                    result = new OutputDeviceFallbackEventArgs(failedDeviceNumber, recovered: false, cause);
                 }
             }
             finally

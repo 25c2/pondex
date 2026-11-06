@@ -1,4 +1,3 @@
-using System.Text;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -7,7 +6,6 @@ namespace PondashiEX.Project;
 
 public sealed class ProjectSerializer
 {
-    private static readonly UTF8Encoding Utf8NoBom = new(false);
     private readonly JsonSerializerOptions _options;
 
     public ProjectSerializer()
@@ -55,6 +53,14 @@ public sealed class ProjectSerializer
                 cancellationToken);
             var model = DeserializeDocument(document.RootElement);
             ValidateAndNormalize(model);
+            foreach (var sound in model.Sounds)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                string resolved;
+                try { resolved = ProjectPath.Resolve(fullPath, sound.File); }
+                catch (ArgumentException) { resolved = sound.File; }
+                if (!File.Exists(resolved)) { model.MissingFiles.Add($"{sound.Name}: {resolved}"); }
+            }
             return model;
         }
         catch (JsonException exception)
@@ -80,8 +86,7 @@ public sealed class ProjectSerializer
         var temporaryBackupPath = tempPath + ".bak";
         var backupPath = fullPath + ".bak";
         var ownsTempFile = false;
-        var json = JsonSerializer.Serialize(model, _options);
-        var bytes = Utf8NoBom.GetBytes(json + Environment.NewLine);
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(model, _options);
         if (bytes.LongLength > ProjectLimits.MaxFileBytes)
         {
             throw new ProjectFormatException(
@@ -148,8 +153,8 @@ public sealed class ProjectSerializer
     public ProjectModel CreateSnapshot(ProjectModel model)
     {
         ArgumentNullException.ThrowIfNull(model);
-        var json = JsonSerializer.Serialize(model, _options);
-        var snapshot = JsonSerializer.Deserialize<ProjectModel>(json, _options)
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(model, _options);
+        var snapshot = JsonSerializer.Deserialize<ProjectModel>(bytes, _options)
             ?? throw new ProjectFormatException("プロジェクトのスナップショットを作成できませんでした。");
         ValidateAndNormalize(snapshot);
         return snapshot;
@@ -214,6 +219,9 @@ public sealed class ProjectSerializer
             "イベント",
             model.LoadWarnings,
             ProjectLimits.MaxTriggers);
+        var known = new HashSet<string>(["formatVersion", "project", "settings", "sounds", "groupShortcuts", "triggers"], StringComparer.OrdinalIgnoreCase);
+        model.ExtensionData = root.EnumerateObject().Where(property => !known.Contains(property.Name))
+            .ToDictionary(property => property.Name, property => property.Value.Clone());
         return model;
     }
 
