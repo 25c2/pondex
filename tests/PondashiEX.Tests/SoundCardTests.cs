@@ -217,6 +217,41 @@ public sealed class SoundCardTests
     }
 
     [Fact]
+    public void BoostedVolume_UpdatesSoundAndCanReturnToStandardWithoutCreatingDetails()
+    {
+        var sound = new SoundDefinition { Volume = 1.5F, AllowVolumeBoost = true };
+        using var card = new SoundCard(sound);
+        var slider = Descendants(card).OfType<TrackBar>().Single();
+        var numeric = Descendants(card).OfType<NumericUpDown>().Single();
+        Assert.Equal(150, slider.Value);
+        Assert.Equal(150m, numeric.Value);
+        numeric.Value = 200;
+        Assert.Equal(2F, sound.Volume);
+        Assert.Equal(200, slider.Value);
+        numeric.ContextMenuStrip!.Items[0].PerformClick();
+        Assert.Equal(1F, sound.Volume);
+        Assert.Equal(100, slider.Value);
+        Assert.False(card.DetailsCreated);
+    }
+
+    [Fact]
+    public void RightClickVolumeFade_CanTargetTwoHundredPercent()
+    {
+        var sound = new SoundDefinition { AllowVolumeBoost = true, FadeOut = new FadeSettings { Enabled = true, Value = 1 } };
+        using var card = new SoundCard(sound);
+        VolumeFadeRequestedEventArgs? fade = null;
+        card.VolumeFadeRequested += (_, args) => fade = args;
+        var slider = Descendants(card).OfType<TrackBar>().Single();
+        slider.Width = 201;
+        RaiseEvent(slider, "OnMouseUp", new MouseEventArgs(MouseButtons.Right, 1, 200, 0, 0));
+        Assert.NotNull(fade);
+        Assert.Equal(2F, fade.TargetVolume);
+        Assert.Equal(2F, sound.Volume);
+        Assert.Equal(200, slider.Value);
+        Assert.False(card.DetailsCreated);
+    }
+
+    [Fact]
     public void KeyEditor_RemovesWhitespaceThatCannotBeUsedAsShortcut()
     {
         var sound = new SoundDefinition();

@@ -90,7 +90,7 @@ internal sealed class SoundInstance : IDisposable
                 Pan = definition.Pan
             };
             provider = balanceProvider;
-            var volumeProvider = new RampedVolumeSampleProvider(provider, definition.Volume);
+            var volumeProvider = new RampedVolumeSampleProvider(provider, definition.Volume, ProjectLimits.GetMaxVolume(definition));
             provider = volumeProvider;
 
             var fadeProvider = new FadeInOutSampleProvider(
@@ -162,7 +162,8 @@ internal sealed class SoundInstance : IDisposable
 
     public void ApplyLiveSettings(SoundDefinition definition)
     {
-        _volumeProvider.Volume = Math.Clamp(definition.Volume, 0.0f, 1.0f);
+        _volumeProvider.SetMaximumVolume(ProjectLimits.GetMaxVolume(definition));
+        _volumeProvider.Volume = Math.Clamp(definition.Volume, 0.0f, ProjectLimits.GetMaxVolume(definition));
         _balanceProvider.Pan = definition.Pan;
         _rateProvider.Speed = definition.Speed;
         _pitchProvider.Factor = definition.Pitch;

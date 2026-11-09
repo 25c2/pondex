@@ -8,6 +8,88 @@ namespace PondashiEX.Tests;
 public sealed class AudioEngineLogicTests
 {
     [Fact]
+    public async Task RemovingBoostDuringPreparation_UsesLatestLimitAtPlaybackStart()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("pending-boost.wav");
+        using (var writer = new WaveFileWriter(path, WaveFormat.CreateIeeeFloatWaveFormat(44100, 1)))
+        {
+            for (var frame = 0; frame < 100; frame++) { writer.WriteSample(0.1F); }
+        }
+        using var release = new ManualResetEventSlim();
+        var prepared = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        ISampleProvider? mixed = null;
+        using var engine = new AudioEngine(new NullLogger(), (_, provider) =>
+        {
+            mixed = provider;
+            return new FakeAudioOutput();
+        }, prepareSound: (definition, file, format, completed) =>
+        {
+            var instance = SoundInstance.Create(definition, file, format, completed);
+            prepared.SetResult();
+            if (!release.Wait(TimeSpan.FromSeconds(10))) { instance.Dispose(); throw new TimeoutException(); }
+            return instance;
+        });
+        var sound = new SoundDefinition { Volume = 2F, AllowVolumeBoost = true };
+        var playing = engine.PlayAsync(sound, path);
+        try
+        {
+            await prepared.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            sound.AllowVolumeBoost = false;
+            sound.Volume = 1F;
+            engine.ApplyLiveSettings(sound);
+        }
+        finally { release.Set(); }
+        await playing;
+        var samples = new float[2];
+        mixed!.Read(samples, 0, samples.Length);
+        Assert.All(samples, sample => Assert.Equal(0.1F, sample, 4));
+    }
+
+    [Fact]
+    public async Task OptedInSourceBoost_AppliesLiveAndStopsWhenPermissionIsRemoved()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("quiet.wav");
+        using (var writer = new WaveFileWriter(path, WaveFormat.CreateIeeeFloatWaveFormat(44100, 1)))
+        {
+            for (var frame = 0; frame < 100; frame++) { writer.WriteSample(0.1F); }
+        }
+        ISampleProvider? mixed = null;
+        using var engine = new AudioEngine(new NullLogger(), (_, provider) =>
+        {
+            mixed = provider;
+            return new FakeAudioOutput();
+        });
+        var sound = new SoundDefinition { Volume = 1.5F, AllowVolumeBoost = true };
+        engine.MasterVolume = 1F;
+        await engine.PlayAsync(sound, path);
+        var samples = new float[2];
+        mixed!.Read(samples, 0, samples.Length);
+        Assert.All(samples, sample => Assert.Equal(0.15F, sample, 4));
+        sound.Volume = 2F;
+        engine.ApplyLiveSettings(sound);
+        engine.MasterVolume = 1F;
+        mixed.Read(samples, 0, samples.Length);
+        Assert.All(samples, sample => Assert.Equal(0.2F, sample, 4));
+        engine.MasterMute = true;
+        mixed.Read(samples, 0, samples.Length);
+        Assert.All(samples, sample => Assert.Equal(0F, sample));
+        Assert.Equal(1F, engine.MasterVolume);
+        engine.MasterMute = false;
+        mixed.Read(samples, 0, samples.Length);
+        Assert.All(samples, sample => Assert.Equal(0.2F, sample, 4));
+        engine.ApplyLiveSettings(new SoundDefinition { Id = sound.Id, Volume = 1F, AllowVolumeBoost = false });
+        mixed.Read(samples, 0, samples.Length);
+        Assert.All(samples, sample => Assert.Equal(0.1F, sample, 4));
+        engine.FadeVolume(sound.Id, 2F, TimeSpan.Zero);
+        mixed.Read(samples, 0, samples.Length);
+        Assert.All(samples, sample => Assert.Equal(0.1F, sample, 4));
+        engine.MasterVolume = 3F;
+        Assert.Equal(1F, engine.MasterVolume);
+    }
+
+    [Fact]
     public async Task StopAll_StopsEveryActiveSoundWithoutRealAudioDevice()
     {
         using var directory = new TestDirectory();

@@ -37,6 +37,56 @@ public sealed class RampedVolumeSampleProviderTests
         }
     }
 
+    [Theory]
+    [InlineData(0.5F)]
+    [InlineData(1F)]
+    [InlineData(1.5F)]
+    [InlineData(2F)]
+    public void Volume_MultipliesPcmWithoutClampingToUnity(float gain)
+    {
+        var source = new ConstantSampleProvider(WaveFormat.CreateIeeeFloatWaveFormat(100, 2));
+        var provider = new RampedVolumeSampleProvider(source, gain);
+        var samples = new float[2];
+        provider.Read(samples, 0, samples.Length);
+        Assert.All(samples, sample => Assert.Equal(gain, sample));
+        provider.Volume = 1.75F;
+        provider.Read(samples, 0, samples.Length);
+        Assert.All(samples, sample => Assert.Equal(1.75F, sample));
+    }
+
+    [Fact]
+    public void BeginRamp_CanCrossOneHundredPercentAndStopsAtTwoHundredPercent()
+    {
+        var provider = new RampedVolumeSampleProvider(
+            new ConstantSampleProvider(WaveFormat.CreateIeeeFloatWaveFormat(100, 1)), 1F);
+        var samples = new float[10];
+        provider.BeginRamp(3F, TimeSpan.FromMilliseconds(100));
+        provider.Read(samples, 0, samples.Length);
+        Assert.Equal(1.1F, samples[0], 3);
+        Assert.Equal(2F, samples[^1], 3);
+        Assert.Equal(2F, provider.Volume);
+        Assert.True(samples.Zip(samples.Skip(1), (first, second) => first <= second).All(value => value));
+    }
+
+    [Fact]
+    public void RemovingBoostPermission_ClampsEvenWhenFadeTargetAlreadyEqualsOne()
+    {
+        var provider = new RampedVolumeSampleProvider(
+            new ConstantSampleProvider(WaveFormat.CreateIeeeFloatWaveFormat(100, 1)), 2F);
+        provider.BeginRamp(1F, TimeSpan.FromSeconds(1));
+        var before = new float[10];
+        provider.Read(before, 0, before.Length);
+        Assert.True(before[^1] > 1F);
+        provider.SetMaximumVolume(1F);
+        provider.Volume = 1F;
+        var after = new float[10];
+        provider.Read(after, 0, after.Length);
+        Assert.All(after, sample => Assert.InRange(sample, 0F, 1F));
+        provider.BeginRamp(2F, TimeSpan.Zero);
+        provider.Read(after, 0, after.Length);
+        Assert.All(after, sample => Assert.Equal(1F, sample));
+    }
+
     private sealed class ConstantSampleProvider : ISampleProvider
     {
         public ConstantSampleProvider(WaveFormat waveFormat)

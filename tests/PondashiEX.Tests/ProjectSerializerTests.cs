@@ -5,6 +5,46 @@ namespace PondashiEX.Tests;
 
 public sealed class ProjectSerializerTests
 {
+    [Theory]
+    [InlineData(false, 1F)]
+    [InlineData(true, 1.75F)]
+    [InlineData(true, 2F)]
+    public async Task SaveLoad_PreservesBoostPermissionAndVolume(bool allowBoost, float soundVolume)
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("boost.pondex");
+        var model = new ProjectModel
+        {
+            Settings = new ProjectSettings { MasterVolume = 1F },
+            Sounds = [new SoundDefinition { File = "tone.wav", Volume = soundVolume, AllowVolumeBoost = allowBoost }]
+        };
+        var serializer = new ProjectSerializer();
+        await serializer.SaveAsync(path, serializer.CreateSnapshot(model));
+        var restored = await serializer.LoadAsync(path);
+        Assert.Equal(1, restored.FormatVersion);
+        Assert.Equal(1F, restored.Settings.MasterVolume);
+        Assert.Equal(allowBoost, Assert.Single(restored.Sounds).AllowVolumeBoost);
+        Assert.Equal(soundVolume, Assert.Single(restored.Sounds).Volume);
+    }
+
+    [Fact]
+    public async Task Load_WithoutExplicitBoostPermissionKeepsLegacyHundredPercentLimit()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("legacy.pondex");
+        await File.WriteAllTextAsync(path, """
+            {"formatVersion":1,"settings":{"masterVolume":2},"sounds":[
+              {"file":"tone.wav","volume":1.75},
+              {"file":"tone.wav","volume":3,"allowVolumeBoost":true}]}
+            """);
+        var model = await new ProjectSerializer().LoadAsync(path);
+        Assert.Equal(1F, model.Settings.MasterVolume);
+        Assert.False(model.Sounds[0].AllowVolumeBoost);
+        Assert.Equal(1F, model.Sounds[0].Volume);
+        Assert.True(model.Sounds[1].AllowVolumeBoost);
+        Assert.Equal(2F, model.Sounds[1].Volume);
+    }
+
     [Fact]
     public async Task SaveLoad_RoundTripsVersionIdsAndReferences()
     {

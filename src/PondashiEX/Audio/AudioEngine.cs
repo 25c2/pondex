@@ -223,6 +223,9 @@ public sealed class AudioEngine : IAudioEngine
                     return;
                 }
 
+                // Settings may have changed while the decoder was being prepared.
+                // In particular, never start with a stale volume-boost permission.
+                prepared.ApplyLiveSettings(sound);
                 EnsureOutputCreated();
 
                 StopCore(sound.Id, PlaybackEndReason.Replaced);

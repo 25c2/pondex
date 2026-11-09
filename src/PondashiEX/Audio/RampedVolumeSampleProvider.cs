@@ -1,4 +1,5 @@
 using NAudio.Wave;
+using PondashiEX.Project;
 
 namespace PondashiEX.Audio;
 
@@ -7,19 +8,35 @@ internal sealed class RampedVolumeSampleProvider : ISampleProvider
     private readonly object _sync = new();
     private readonly ISampleProvider _source;
     private float _currentVolume;
+    private float _maximumVolume;
     private float _targetVolume;
     private float _stepPerFrame;
     private long _framesRemaining;
     private int _samplesUntilNextStep;
 
-    public RampedVolumeSampleProvider(ISampleProvider source, float initialVolume)
+    public RampedVolumeSampleProvider(ISampleProvider source, float initialVolume, float maximumVolume = ProjectLimits.MaxVolume)
     {
         _source = source;
-        _currentVolume = Math.Clamp(initialVolume, 0.0f, 1.0f);
+        _maximumVolume = Math.Clamp(maximumVolume, 0.0f, ProjectLimits.MaxVolume);
+        _currentVolume = Math.Clamp(initialVolume, 0.0f, _maximumVolume);
         _targetVolume = _currentVolume;
     }
 
     public WaveFormat WaveFormat => _source.WaveFormat;
+
+    public void SetMaximumVolume(float maximumVolume)
+    {
+        lock (_sync)
+        {
+            _maximumVolume = Math.Clamp(maximumVolume, 0.0f, ProjectLimits.MaxVolume);
+            _currentVolume = Math.Min(_currentVolume, _maximumVolume);
+            _targetVolume = Math.Min(_targetVolume, _maximumVolume);
+            if (_framesRemaining > 0)
+            {
+                _stepPerFrame = (_targetVolume - _currentVolume) / _framesRemaining;
+            }
+        }
+    }
 
     public float Volume
     {
@@ -34,7 +51,7 @@ internal sealed class RampedVolumeSampleProvider : ISampleProvider
         {
             lock (_sync)
             {
-                var target = Math.Clamp(value, 0.0f, 1.0f);
+                var target = Math.Clamp(value, 0.0f, _maximumVolume);
                 if (target == _targetVolume) { return; }
                 _currentVolume = target;
                 _targetVolume = _currentVolume;
@@ -49,7 +66,7 @@ internal sealed class RampedVolumeSampleProvider : ISampleProvider
     {
         lock (_sync)
         {
-            _targetVolume = Math.Clamp(targetVolume, 0.0f, 1.0f);
+            _targetVolume = Math.Clamp(targetVolume, 0.0f, _maximumVolume);
             var frameCount = (long)Math.Round(
                 duration.TotalSeconds * WaveFormat.SampleRate,
                 MidpointRounding.AwayFromZero);

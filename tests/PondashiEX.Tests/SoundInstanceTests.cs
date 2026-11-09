@@ -6,6 +6,24 @@ namespace PondashiEX.Tests;
 
 public sealed class SoundInstanceTests
 {
+    [Theory]
+    [InlineData(false, 0.1F)]
+    [InlineData(true, 0.2F)]
+    public void InitialPlayback_RequiresExplicitBoostPermission(bool allowBoost, float expected)
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("gain.wav");
+        using (var writer = new WaveFileWriter(path, WaveFormat.CreateIeeeFloatWaveFormat(44100, 1)))
+        {
+            for (var frame = 0; frame < 100; frame++) { writer.WriteSample(0.1F); }
+        }
+        using var instance = SoundInstance.Create(new SoundDefinition { Volume = 2F, AllowVolumeBoost = allowBoost },
+            path, WaveFormat.CreateIeeeFloatWaveFormat(44100, 2), () => { });
+        var samples = new float[2];
+        instance.Output.Read(samples, 0, samples.Length);
+        Assert.All(samples, sample => Assert.Equal(expected, sample, 4));
+    }
+
     [Fact]
     public void Output_WhenFiniteSoundEnds_SignalsCompletionOnce()
     {

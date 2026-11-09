@@ -113,16 +113,16 @@ public sealed class SoundCard : UserControl
         _volumeTrack = new TrackBar
         {
             Minimum = 0,
-            Maximum = 100,
+            Maximum = ProjectLimits.GetMaxVolumePercent(sound),
             TickFrequency = 10,
             TickStyle = TickStyle.None,
-            Value = (int)(Math.Clamp(sound.Volume, 0, 1) * 100),
+            Value = (int)(Math.Clamp(sound.Volume, 0, ProjectLimits.GetMaxVolume(sound)) * 100),
             Dock = DockStyle.Fill
         };
         _volumeValue = new NumericUpDown
         {
             Minimum = 0,
-            Maximum = 100,
+            Maximum = ProjectLimits.GetMaxVolumePercent(sound),
             DecimalPlaces = 0,
             Increment = 1,
             Value = _volumeTrack.Value,
@@ -210,7 +210,7 @@ public sealed class SoundCard : UserControl
         {
             if (_editingLocked)
             {
-                if (!_suppressVolumeChanged) { RestoreVolume(); }
+                if (!_suppressVolumeChanged) { UpdateVolumeRange(); }
                 return;
             }
             if (_volumeValue.Value != _volumeTrack.Value)
@@ -230,7 +230,7 @@ public sealed class SoundCard : UserControl
         {
             if (_editingLocked)
             {
-                if (!_suppressVolumeChanged) { RestoreVolume(); }
+                if (!_suppressVolumeChanged) { UpdateVolumeRange(); }
                 return;
             }
             var value = decimal.ToInt32(_volumeValue.Value);
@@ -248,9 +248,9 @@ public sealed class SoundCard : UserControl
 
             var availableWidth = Math.Max(1, _volumeTrack.ClientSize.Width - 1);
             var targetPercent = Math.Clamp(
-                (int)Math.Round(eventArgs.X * 100.0 / availableWidth),
-                0,
-                100);
+                (int)Math.Round(eventArgs.X * (double)_volumeTrack.Maximum / availableWidth),
+                _volumeTrack.Minimum,
+                _volumeTrack.Maximum);
             _suppressVolumeChanged = true;
             try
             {
@@ -274,10 +274,12 @@ public sealed class SoundCard : UserControl
                 DefinitionChanged?.Invoke(this, EventArgs.Empty);
             }
         };
+        VolumeContextMenu.Attach(_volumeValue);
         RegisterEditor(_volumeValue);
         RegisterBackgroundFocusTargets(this);
 
-        _toolTip.SetToolTip(_volumeTrack, "0～100%。ホイール、矢印キー、ドラッグで調整。右クリックで音量フェードを設定できます。");
+        _toolTip.SetToolTip(_volumeTrack, "通常は0～100%。速度・音程の調整で限界突破を許可すると200%まで使えます。右クリックで音量フェード。");
+        _toolTip.SetToolTip(_volumeValue, "通常は0～100%。限界突破時は200%まで。右クリックで100%（標準）へ戻せます。");
         _pauseButton.SizeChanged += (_, _) => UpdateState(_state);
         UpdateState(PlaybackState.Stopped);
     }
@@ -291,13 +293,16 @@ public sealed class SoundCard : UserControl
         if (locked) { _playbackDialog?.Dispose(); }
     }
 
-    private void RestoreVolume()
+    private void UpdateVolumeRange()
     {
         var previous = _suppressVolumeChanged;
         _suppressVolumeChanged = true;
         try
         {
-            var percent = (int)(Math.Clamp(Sound.Volume, 0, 1) * 100);
+            var maximum = ProjectLimits.GetMaxVolumePercent(Sound);
+            _volumeTrack.Maximum = maximum;
+            _volumeValue.Maximum = maximum;
+            var percent = (int)(Math.Clamp(Sound.Volume, 0, ProjectLimits.GetMaxVolume(Sound)) * 100);
             _volumeTrack.Value = percent;
             _volumeValue.Value = percent;
         }
@@ -746,6 +751,9 @@ public sealed class SoundCard : UserControl
             _updatingPlaybackSettings = true;
             try
             {
+                Sound.AllowVolumeBoost = dialog.AllowVolumeBoost;
+                Sound.Volume = Math.Clamp(Sound.Volume, 0, ProjectLimits.GetMaxVolume(Sound));
+                UpdateVolumeRange();
                 Sound.Speed = dialog.Speed;
                 _pitchValue.Value = (decimal)dialog.Pitch;
                 _panValue.Value = (decimal)(dialog.Pan * 100);

@@ -36,6 +36,62 @@ public sealed class MainFormRegressionTests
     });
 
     [Fact]
+    public void PlaybackSettings_BoostIsOptInAndLimitsMainVolumeImmediately() => RunOnSta(() =>
+    {
+        using var directory = new TestDirectory();
+        using var manager = new ProjectManager(new ProjectSerializer());
+        var path = directory.GetPath("boost.pondex");
+        manager.Current.Sounds.Add(new SoundDefinition { File = directory.GetPath("quiet.wav") });
+        var initialSave = manager.SaveAsAsync(path);
+        PumpUntil(initialSave);
+        initialSave.GetAwaiter().GetResult();
+        using var engine = CreateEngine();
+        using var form = CreateForm(manager, engine, directory.Path);
+        form.Show();
+        var master = (NumericUpDown)typeof(MainForm).GetField("_masterVolumeValue", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
+        var card = Descendants(form).OfType<SoundCard>().Single();
+        var numeric = Descendants(card).OfType<NumericUpDown>().Single();
+        var slider = Descendants(card).OfType<TrackBar>().Single();
+        Assert.Equal(100m, master.Maximum);
+        Assert.Equal(100m, numeric.Maximum);
+        Assert.Equal(100, slider.Maximum);
+        card.EnsureDetailsCreated();
+        typeof(SoundCard).GetMethod("ShowPlaybackSettings", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(card, null);
+        var dialog = form.OwnedForms.OfType<PlaybackSettingsDialog>().Single();
+        var permission = Descendants(dialog).OfType<CheckBox>().Single();
+        Assert.False(permission.Checked);
+        permission.Checked = true;
+        Assert.True(card.Sound.AllowVolumeBoost);
+        Assert.Equal(200m, numeric.Maximum);
+        Assert.Equal(200, slider.Maximum);
+        Assert.Equal(100m, numeric.Value);
+        numeric.Value = 175;
+        var save = (Task<bool>)Method("SaveProjectAsync").Invoke(form, [false])!;
+        PumpUntil(save);
+        Assert.True(save.GetAwaiter().GetResult());
+        var load = Task.Run(() => new ProjectSerializer().LoadAsync(path));
+        PumpUntil(load);
+        var restored = load.GetAwaiter().GetResult();
+        Assert.True(Assert.Single(restored.Sounds).AllowVolumeBoost);
+        Assert.Equal(1.75F, restored.Sounds[0].Volume);
+        permission.Checked = false;
+        Assert.False(card.Sound.AllowVolumeBoost);
+        Assert.Equal(1F, card.Sound.Volume);
+        Assert.Equal(100m, numeric.Maximum);
+        Assert.Equal(100m, numeric.Value);
+        Assert.Equal(100, slider.Maximum);
+        permission.Checked = true;
+        numeric.Value = 75;
+        permission.Checked = false;
+        Assert.Equal(0.75F, card.Sound.Volume);
+        Assert.Equal(75m, numeric.Value);
+        numeric.ContextMenuStrip!.Items[0].PerformClick();
+        Assert.Equal(1F, card.Sound.Volume);
+        Assert.Equal(100m, numeric.Value);
+        form.CloseWithoutSavePromptForSmokeTest();
+    });
+
+    [Fact]
     public void HeaderResize_ActualControlRectanglesStayWithinParent() => RunOnSta(() =>
     {
         using var directory = new TestDirectory();

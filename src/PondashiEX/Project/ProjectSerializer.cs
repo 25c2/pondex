@@ -354,7 +354,7 @@ public sealed class ProjectSerializer
                 throw new ProjectFormatException("音源パスにUNCパスまたはデバイスパスは使用できません。");
             }
 
-            sound.Volume = Math.Clamp(sound.Volume, 0.0f, 1.0f);
+            sound.Volume = Math.Clamp(sound.Volume, 0.0f, ProjectLimits.GetMaxVolume(sound));
             sound.Pan = Math.Clamp(sound.Pan, -1.0f, 1.0f);
             sound.Pitch = Math.Clamp(sound.Pitch, 0.5f, 2.0f);
             sound.Speed = Math.Clamp(sound.Speed, 0.5f, 2.0f);

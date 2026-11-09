@@ -2,6 +2,8 @@ namespace PondashiEX.Project;
 
 public static class ProjectLimits
 {
+    public const float MaxVolume = 2.0f;
+    public const int MaxVolumePercent = 200;
     public const long MaxFileBytes = 8 * 1024 * 1024;
     public const int MaxJsonDepth = 64;
     public const int MaxSounds = 500;
@@ -14,4 +16,8 @@ public static class ProjectLimits
     public const int MaxMemoLength = 4_096;
     public const int MaxOutputDeviceLength = 1_024;
     public const int MaxThemeColorLength = 32;
+
+    public static float GetMaxVolume(SoundDefinition sound) => sound.AllowVolumeBoost ? MaxVolume : 1.0f;
+
+    public static int GetMaxVolumePercent(SoundDefinition sound) => sound.AllowVolumeBoost ? MaxVolumePercent : 100;
 }

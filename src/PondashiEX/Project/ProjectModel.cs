@@ -80,6 +80,8 @@ public sealed class SoundDefinition
 
     public float Volume { get; set; } = 1.0f;
 
+    public bool AllowVolumeBoost { get; set; }
+
     public float Pan { get; set; }
 
     public float Pitch { get; set; } = 1.0f;

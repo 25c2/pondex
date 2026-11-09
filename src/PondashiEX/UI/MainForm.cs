@@ -343,6 +343,9 @@ public sealed class MainForm : Form
             Margin = new Padding(3)
         };
         _masterVolumeValue = masterVolumeValue;
+        VolumeContextMenu.Attach(masterVolumeValue, masterVolumeControl);
+        _headerToolTip.SetToolTip(masterVolumeControl, "0～100%。マスター音量を調整します。");
+        _headerToolTip.SetToolTip(masterVolumeValue, "0～100%。右クリックで100%（標準）へ戻せます。");
         var masterMuteControl = new CheckBox
         {
             Text = "ミュート",

@@ -50,6 +50,29 @@ public sealed class PlaybackSettingsDialogTests
         Assert.Equal(1, changes);
     }
 
+    [Fact]
+    public void BoostPermission_DefaultsOffSynchronizesAndResetsWithOneNotification() => WinFormsTest.Run(() =>
+    {
+        using var dialog = new PlaybackSettingsDialog(new SoundDefinition()) { ShowInTaskbar = false, Opacity = 0 };
+        var permission = Descendants(dialog).OfType<CheckBox>().Single();
+        Assert.False(permission.Checked);
+        Assert.False(dialog.AllowVolumeBoost);
+        var changes = 0;
+        dialog.SettingsChanged += (_, _) => changes++;
+        permission.Checked = true;
+        Assert.True(dialog.AllowVolumeBoost);
+        Assert.Equal(1, changes);
+        dialog.UpdateValues(new SoundDefinition { AllowVolumeBoost = false });
+        Assert.False(permission.Checked);
+        dialog.UpdateValues(new SoundDefinition { AllowVolumeBoost = true });
+        Assert.True(permission.Checked);
+        Assert.Equal(1, changes);
+        dialog.Show();
+        Descendants(dialog).OfType<Button>().Single(button => button.Text == "標準に戻す").PerformClick();
+        Assert.False(dialog.AllowVolumeBoost);
+        Assert.Equal(2, changes);
+    });
+
     private static IEnumerable<Control> Descendants(Control parent)
     {
         foreach (Control child in parent.Controls)

@@ -13,12 +13,15 @@ namespace PondashiEX.Tests;
 [Collection(WinFormsTestGroup.Name)]
 public sealed class EditingLockTests
 {
-    [Fact]
-    public void Lock_BlocksSettingsVolumesProjectReplacementAndQueuedDrops() => WinFormsTest.Run(() =>
+    [Theory]
+    [InlineData(1F, 1F)]
+    [InlineData(1F, 1.75F)]
+    public void Lock_BlocksSettingsVolumesProjectReplacementAndQueuedDrops(float masterGain, float soundGain) => WinFormsTest.Run(() =>
     {
         using var directory = new TestDirectory();
         using var manager = new ProjectManager(new ProjectSerializer());
-        var sound = new SoundDefinition { Name = "cue", Group = "SE" };
+        var sound = new SoundDefinition { Name = "cue", Group = "SE", Volume = soundGain, AllowVolumeBoost = soundGain > 1 };
+        manager.Current.Settings.MasterVolume = masterGain;
         manager.Current.Sounds.Add(sound);
         using var engine = CreateEngine();
         using var form = CreateForm(manager, engine, directory.Path);
@@ -43,6 +46,8 @@ public sealed class EditingLockTests
         Assert.False(Field<Button>(form, "_addSoundButton").Enabled);
         Assert.False(Field<FlowLayoutPanel>(card, "_detailsContent").Enabled);
         Assert.False(Field<TrackBar>(card, "_volumeTrack").Enabled);
+        master.ContextMenuStrip!.Items[0].PerformClick();
+        Field<NumericUpDown>(card, "_volumeValue").ContextMenuStrip!.Items[0].PerformClick();
         master.Value = 37;
         Field<CheckBox>(form, "_masterMute").Checked = true;
         Field<NumericUpDown>(card, "_volumeValue").Value = 42;
@@ -61,9 +66,9 @@ public sealed class EditingLockTests
         Assert.Same(originalProject, manager.Current);
         Assert.Equal(before, JsonSerializer.Serialize(manager.Current));
         Assert.False(manager.IsDirty);
-        Assert.Equal(100m, master.Value);
-        Assert.Equal(100m, Field<NumericUpDown>(card, "_volumeValue").Value);
-        Assert.Equal(1F, engine.MasterVolume);
+        Assert.Equal((decimal)(int)(masterGain * 100), master.Value);
+        Assert.Equal((decimal)(int)(soundGain * 100), Field<NumericUpDown>(card, "_volumeValue").Value);
+        Assert.Equal(masterGain, engine.MasterVolume);
         Assert.False(engine.MasterMute);
         form.CloseWithoutSavePromptForSmokeTest();
     });
