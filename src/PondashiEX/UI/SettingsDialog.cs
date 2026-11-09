@@ -11,6 +11,7 @@ public sealed class SettingsDialog : Form
     private readonly CheckBox _fadeOutOnStopCheck;
     private readonly CheckBox _fadeOutOnStopAllCheck;
     private readonly CheckBox _darkModeCheck;
+    private readonly CheckBox _detailedLoggingCheck;
     private readonly TextBox _projectNameText;
     private readonly TextBox _themeColorText;
     private readonly NumericUpDown _soundListColumns;
@@ -23,7 +24,7 @@ public sealed class SettingsDialog : Form
         StartPosition = FormStartPosition.CenterParent;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(560, 472);
+        ClientSize = new Size(560, 514);
         MinimumSize = new Size(440, 300);
         DpiWindowHelper.Attach(this);
 
@@ -34,7 +35,7 @@ public sealed class SettingsDialog : Form
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Padding = new Padding(14),
             ColumnCount = 2,
-            RowCount = 9
+            RowCount = 10
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -47,6 +48,8 @@ public sealed class SettingsDialog : Form
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         _projectNameText = new TextBox { Text = string.Empty, Dock = DockStyle.Fill, MaxLength = ProjectLimits.MaxNameLength };
         _themeColorText = new TextBox { Text = "#202020", Width = 100, MaxLength = ProjectLimits.MaxThemeColorLength };
@@ -97,6 +100,12 @@ public sealed class SettingsDialog : Form
             Checked = settings.DarkMode,
             AutoSize = true
         };
+        _detailedLoggingCheck = new CheckBox
+        {
+            Text = "詳細ログを記録",
+            Checked = settings.DetailedLogging,
+            AutoSize = true
+        };
         _soundListColumns = new NumericUpDown
         {
             Minimum = 1,
@@ -123,6 +132,8 @@ public sealed class SettingsDialog : Form
         root.Controls.Add(_soundListColumns, 1, 7);
         root.Controls.Add(new Label { Text = "表示モード", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 8);
         root.Controls.Add(_darkModeCheck, 1, 8);
+        root.Controls.Add(new Label { Text = "診断ログ", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 9);
+        root.Controls.Add(_detailedLoggingCheck, 1, 9);
 
         var buttons = new FlowLayoutPanel
         {
@@ -155,6 +166,8 @@ public sealed class SettingsDialog : Form
     public bool FadeOutOnStopAll => _fadeOutOnStopAllCheck.Checked;
 
     public bool DarkMode => _darkModeCheck.Checked;
+
+    public bool DetailedLogging => _detailedLoggingCheck.Checked;
 
     public int SoundListColumns => (int)_soundListColumns.Value;
 

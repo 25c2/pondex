@@ -12,6 +12,7 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
     private readonly Task _writerTask;
     private int _disabled;
     private int _disposeStarted;
+    private int _detailedLoggingEnabled;
 
     public FileLogger(string logDirectory)
         : this(CreateWriter(logDirectory), DefaultQueueCapacity)
@@ -30,6 +31,23 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
             FullMode = BoundedChannelFullMode.DropOldest
         });
         _writerTask = Task.Run(WriteLoopAsync);
+    }
+
+    public bool DetailedLoggingEnabled
+    {
+        get => Volatile.Read(ref _detailedLoggingEnabled) != 0;
+        set
+        {
+            if (Interlocked.Exchange(ref _detailedLoggingEnabled, value ? 1 : 0) != (value ? 1 : 0))
+            {
+                Info($"詳細ログ: {(value ? "ON" : "OFF")}");
+            }
+        }
+    }
+
+    public void Debug(string message)
+    {
+        if (DetailedLoggingEnabled) { Enqueue("DEBUG", message); }
     }
 
     public void Info(string message) => Enqueue("INFO", message);
@@ -136,9 +154,15 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
     {
         try
         {
-            await foreach (var message in _messages.Reader.ReadAllAsync().ConfigureAwait(false))
+            while (await _messages.Reader.WaitToReadAsync().ConfigureAwait(false))
             {
-                await _writer.WriteLineAsync(message).ConfigureAwait(false);
+                // Bound each batch so a continuous stream cannot postpone flushing forever.
+                for (var count = 0; count < DefaultQueueCapacity && _messages.Reader.TryRead(out var message); count++)
+                {
+                    await _writer.WriteLineAsync(message).ConfigureAwait(false);
+                }
+
+                await _writer.FlushAsync().ConfigureAwait(false);
             }
 
             await _writer.FlushAsync().ConfigureAwait(false);

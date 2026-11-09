@@ -60,6 +60,8 @@ public sealed class ProjectSettings
 
     public bool BackgroundInput { get; set; }
 
+    public bool DetailedLogging { get; set; }
+
     public int SoundListColumns { get; set; } = 1;
 }
 

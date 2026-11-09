@@ -7,6 +7,42 @@ namespace PondashiEX.Tests;
 
 public sealed class AudioEngineLogicTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DetailedLogging_RecordsPlaybackLifecycleOnlyWhenEnabled(bool enabled)
+    {
+        using var directory = new TestDirectory();
+        var path = CreateWaveFile(directory.GetPath("diagnostic.wav"));
+        var writer = new StringWriter();
+        await using var logger = new FileLogger(writer, 64) { DetailedLoggingEnabled = enabled };
+        var sound = new SoundDefinition { Volume = 0.5F, Pitch = 1.25F };
+        using (var engine = new AudioEngine(logger, (_, _) => new FakeAudioOutput()))
+        {
+            engine.SelectOutputDevice(2);
+            await engine.PlayAsync(sound, path);
+            engine.Pause(sound.Id);
+            engine.Resume(sound.Id);
+            engine.StopImmediately(sound.Id);
+        }
+        await logger.DisposeAsync();
+
+        var output = writer.ToString();
+        Assert.Contains("再生開始", output);
+        if (enabled)
+        {
+            Assert.Contains($"play requested: sound={sound.Id}", output);
+            Assert.Contains($"path={path}", output);
+            Assert.Contains("prepare_ms=", output);
+            Assert.Contains("device=2", output);
+            Assert.Contains("pitch=1.25", output);
+            Assert.Contains($"pause: sound={sound.Id}", output);
+            Assert.Contains($"resume: sound={sound.Id}", output);
+            Assert.Contains("reason=Stopped", output);
+        }
+        else { Assert.DoesNotContain("[DEBUG]", output); }
+    }
+
     [Fact]
     public async Task RemovingBoostDuringPreparation_UsesLatestLimitAtPlaybackStart()
     {
@@ -432,7 +468,9 @@ public sealed class AudioEngineLogicTests
         var prepared = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var release = new ManualResetEventSlim();
         var requests = 0;
-        using var engine = new AudioEngine(new NullLogger(), (_, _) => new FakeAudioOutput(),
+        var logWriter = new StringWriter();
+        await using var logger = new FileLogger(logWriter, 64) { DetailedLoggingEnabled = true };
+        using var engine = new AudioEngine(logger, (_, _) => new FakeAudioOutput(),
             prepareSound: (sound, file, format, completed) =>
             {
                 var instance = SoundInstance.Create(sound, file, format, completed);
@@ -465,6 +503,9 @@ public sealed class AudioEngineLogicTests
         await engine.PlayAsync(sound, path);
         Assert.Equal(1, starts);
         Assert.Equal(PondashiEX.Audio.PlaybackState.Playing, engine.GetState(sound.Id));
+        await logger.DisposeAsync();
+        Assert.Contains($"play discarded: sound={sound.Id}", logWriter.ToString());
+        Assert.Contains("reason=superseded", logWriter.ToString());
     }
 
     [Fact]

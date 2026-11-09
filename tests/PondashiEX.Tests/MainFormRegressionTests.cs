@@ -15,6 +15,54 @@ namespace PondashiEX.Tests;
 public sealed class MainFormRegressionTests
 {
     [Fact]
+    public void DetailedLogging_SettingsApplyImmediatelyAndFollowProjectSwitches() => RunOnSta(() =>
+    {
+        using var directory = new TestDirectory();
+        using var manager = new ProjectManager(new ProjectSerializer());
+        var logger = new NullLogger();
+        using var engine = CreateEngine();
+        using var form = CreateForm(manager, engine, directory.Path, logger);
+        form.Show();
+        Assert.False(logger.DetailedLoggingEnabled);
+        Exception? callbackFailure = null;
+        using var timer = new System.Windows.Forms.Timer { Interval = 50 };
+        timer.Tick += (_, _) =>
+        {
+            var dialog = form.OwnedForms.OfType<SettingsDialog>().SingleOrDefault();
+            if (dialog is null) { return; }
+            timer.Stop();
+            try
+            {
+                Assert.False(dialog.DetailedLogging);
+                Descendants(dialog).OfType<CheckBox>().Single(check => check.Text == "詳細ログを記録").Checked = true;
+                Descendants(dialog).OfType<Button>().Single(button => button.Text == "OK").PerformClick();
+            }
+            catch (Exception exception)
+            {
+                callbackFailure = exception;
+                dialog.DialogResult = DialogResult.Cancel;
+                dialog.Close();
+            }
+        };
+        timer.Start();
+        Method("ShowSettings").Invoke(form, null);
+        Assert.Null(callbackFailure);
+        Assert.True(manager.Current.Settings.DetailedLogging);
+        Assert.True(manager.IsDirty);
+        Assert.True(logger.DetailedLoggingEnabled);
+
+        manager.New();
+        Method("ApplyProjectSettings").Invoke(form, null);
+        Assert.False(logger.DetailedLoggingEnabled);
+        manager.Current.Settings.DetailedLogging = true;
+        Method("ApplyProjectSettings").Invoke(form, null);
+        Assert.True(logger.DetailedLoggingEnabled);
+        using var restoredSettings = new SettingsDialog(manager.Current.Settings, [AudioDeviceInfo.Default]);
+        Assert.True(restoredSettings.DetailedLogging);
+        form.CloseWithoutSavePromptForSmokeTest();
+    });
+
+    [Fact]
     public void MasterTypedValue_IsCommittedBeforeDirectSave() => RunOnSta(() =>
     {
         using var directory = new TestDirectory();
@@ -756,7 +804,7 @@ public sealed class MainFormRegressionTests
             Application.DoEvents();
             var checks = Descendants(settings).OfType<CheckBox>().ToArray();
             Func<bool>[] values = [() => settings.BackgroundInput, () => settings.SilentLoop,
-                () => settings.FadeOutOnStop, () => settings.FadeOutOnStopAll, () => settings.DarkMode];
+                () => settings.FadeOutOnStop, () => settings.FadeOutOnStopAll, () => settings.DarkMode, () => settings.DetailedLogging];
             Assert.Equal(values.Length, checks.Length);
             for (var index = 0; index < checks.Length; index++)
             {
@@ -816,8 +864,8 @@ public sealed class MainFormRegressionTests
     [DllImport("dwmapi.dll", ExactSpelling = true)]
     private static extern int DwmGetWindowAttribute(IntPtr window, uint attribute, out int value, int size);
 
-    private static MainForm CreateForm(ProjectManager manager, AudioEngine engine, string logDirectory) =>
-        new(manager, engine, new AudioDeviceManager(), new TriggerEngine(), new NullLogger(), logDirectory)
+    private static MainForm CreateForm(ProjectManager manager, AudioEngine engine, string logDirectory, IAppLogger? logger = null) =>
+        new(manager, engine, new AudioDeviceManager(), new TriggerEngine(), logger ?? new NullLogger(), logDirectory)
         { ShowInTaskbar = false, Opacity = 0, Font = UiTheme.CreateFont(10F) };
 
     private static AudioEngine CreateEngine() => new(new NullLogger(), (_, _) => new FakeOutput());
@@ -993,6 +1041,8 @@ public sealed class MainFormRegressionTests
 
     private sealed class NullLogger : IAppLogger
     {
+        public bool DetailedLoggingEnabled { get; set; }
+
         public void Info(string message) { }
         public void Warning(string message) { }
         public void Error(string message, Exception? exception = null) { }

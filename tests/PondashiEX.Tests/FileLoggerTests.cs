@@ -5,6 +5,47 @@ namespace PondashiEX.Tests;
 public sealed class FileLoggerTests
 {
     [Fact]
+    public async Task DetailedLogging_IsOptInAndCanBeDisabledWithoutLosingNormalLogs()
+    {
+        var writer = new StringWriter();
+        await using (var logger = new FileLogger(writer, queueCapacity: 16))
+        {
+            Assert.False(logger.DetailedLoggingEnabled);
+            logger.Debug("hidden before");
+            logger.DetailedLoggingEnabled = true;
+            logger.Debug("visible\nsecond line");
+            logger.DetailedLoggingEnabled = false;
+            logger.Debug("hidden after");
+            logger.Info("normal information");
+            logger.Warning("normal warning");
+            logger.Error("normal error", new IOException("test exception"));
+        }
+
+        var output = writer.ToString();
+        Assert.DoesNotContain("hidden", output);
+        Assert.Contains("[DEBUG] visible\\nsecond line", output);
+        Assert.Contains("詳細ログ: ON", output);
+        Assert.Contains("詳細ログ: OFF", output);
+        Assert.Contains("[INFO] normal information", output);
+        Assert.Contains("[WARN] normal warning", output);
+        Assert.Contains("[ERROR] normal error", output);
+        Assert.Contains("test exception", output);
+    }
+
+    [Fact]
+    public async Task Messages_AreFlushedWhileApplicationIsStillRunning()
+    {
+        var writer = new FlushTrackingWriter();
+        await using var logger = new FileLogger(writer, queueCapacity: 8);
+        logger.DetailedLoggingEnabled = true;
+        logger.Debug("live diagnostic");
+
+        var output = await writer.DiagnosticFlushed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Contains("[DEBUG] live diagnostic", output);
+    }
+
+    [Fact]
     public async Task MessageControls_AreEscapedOntoOnePhysicalLine()
     {
         var writer = new StringWriter();
@@ -27,6 +68,18 @@ public sealed class FileLoggerTests
         var exception = await Record.ExceptionAsync(async () => await logger.DisposeAsync());
 
         Assert.Null(exception);
+    }
+
+    private sealed class FlushTrackingWriter : StringWriter
+    {
+        public TaskCompletionSource<string> DiagnosticFlushed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override Task FlushAsync()
+        {
+            var output = ToString();
+            if (output.Contains("[DEBUG] live diagnostic", StringComparison.Ordinal)) { DiagnosticFlushed.TrySetResult(output); }
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class ThrowingTextWriter : StringWriter

@@ -217,6 +217,24 @@ public sealed class SoundOrderingTests
     }
 
     [Fact]
+    public void HasProjectSettingsChanges_DetectsOnlyDetailedLoggingChange()
+    {
+        var settings = new ProjectSettings();
+        var project = new ProjectMetadata();
+
+        bool Changed(bool detailedLogging) => MainForm.HasProjectSettingsChanges(
+            settings, project, settings.OutputDevice, settings.BackgroundInput, settings.SilentLoop,
+            settings.FadeOutOnStop, settings.FadeOutOnStopAll, settings.DarkMode,
+            settings.SoundListColumns, project.Name, project.ThemeColor, detailedLogging);
+
+        Assert.False(Changed(false));
+        Assert.True(Changed(true));
+        settings.DetailedLogging = true;
+        Assert.False(Changed(true));
+        Assert.True(Changed(false));
+    }
+
+    [Fact]
     public void HasProjectSettingsChanges_DetectsChangedValue()
     {
         var settings = new ProjectSettings { SoundListColumns = 1 };

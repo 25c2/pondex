@@ -171,6 +171,7 @@ public sealed class MainForm : Form
             if (_outputUnavailable) { SetStatus("設定で出力先を確認してから再開してください。", true); return; }
             _triggerEngine.Resume();
             _resumeTriggersButton.Visible = false;
+            if (_logger.DetailedLoggingEnabled) { _logger.Debug("automatic triggers resumed"); }
             SetStatus("自動イベントを再開しました。", false);
         };
         statusStrip.Items.Add(_resumeTriggersButton);
@@ -666,6 +667,7 @@ public sealed class MainForm : Form
             _ = _masterVolumeValue.Value;
         }
         _editingLocked = locked;
+        if (_logger.DetailedLoggingEnabled) { _logger.Debug($"edit_lock changed: locked={locked}"); }
         ApplyEditingLock();
         UpdateProjectHeader();
         SetStatus(locked ? "編集ロック中：設定と音量を保護しています。再生・停止は使用できます。" : "編集ロックを解除しました。", false);
@@ -756,9 +758,11 @@ public sealed class MainForm : Form
         try
         {
             SetProjectOperationBusy(true);
+            if (_logger.DetailedLoggingEnabled) { _logger.Debug($"project open requested: path={path}"); }
             var opened = await _projectManager.OpenAsync(path, AuthorizeUntrustedProject);
             if (!opened)
             {
+                if (_logger.DetailedLoggingEnabled) { _logger.Debug($"project open cancelled: path={path}"); }
                 SetStatus("プロジェクトの読み込みをキャンセルしました。", false);
                 return;
             }
@@ -767,6 +771,10 @@ public sealed class MainForm : Form
             _recentProjects.Add(path);
             _logger.Info($"プロジェクトを開きました: {path}");
             ApplyProjectSettings();
+            if (_logger.DetailedLoggingEnabled)
+            {
+                _logger.Debug($"project opened: path={path} missing={_projectManager.Current.MissingFiles.Count} warnings={_projectManager.Current.LoadWarnings.Count} requires_save_as={_projectManager.RequiresSaveAs}");
+            }
             await RebuildSoundCardsAsync();
             if (_projectManager.Current.MissingFiles.Count > 0)
             {
@@ -830,15 +838,18 @@ public sealed class MainForm : Form
                     return false;
                 }
 
+                if (_logger.DetailedLoggingEnabled) { _logger.Debug($"project save_as requested: path={dialog.FileName}"); }
                 await _projectManager.SaveAsAsync(dialog.FileName);
             }
             else
             {
+                if (_logger.DetailedLoggingEnabled) { _logger.Debug($"project save requested: path={_projectManager.CurrentPath}"); }
                 await _projectManager.SaveAsync();
             }
 
             if (!ReferenceEquals(savingProject, _projectManager.Current) || _projectManager.IsDirty)
             {
+                if (_logger.DetailedLoggingEnabled) { _logger.Debug("project save incomplete: changes remain or project replaced"); }
                 SetStatus("保存中の変更が残っています。もう一度保存してください。終了・切替は中止しました。", true);
                 return false;
             }
@@ -1328,6 +1339,7 @@ public sealed class MainForm : Form
 
     private void EmergencyStopAll()
     {
+        if (_logger.DetailedLoggingEnabled) { _logger.Debug("automatic triggers suspended: emergency stop"); }
         _triggerEngine.Suspend();
         _resumeTriggersButton.Visible = true;
         Interlocked.Increment(ref _playbackGeneration);
@@ -1357,6 +1369,10 @@ public sealed class MainForm : Form
             return;
         }
 
+        if (_logger.DetailedLoggingEnabled)
+        {
+            foreach (var command in commands) { _logger.Debug($"shortcut dispatched: action={command.Type} sound={command.SoundId}"); }
+        }
         var playIds = commands
             .Where(command => command.Type == ShortcutCommandType.Play && command.SoundId is not null)
             .Select(command => command.SoundId!.Value)
@@ -1436,13 +1452,15 @@ public sealed class MainForm : Form
             dialog.DarkMode,
             dialog.SoundListColumns,
             projectName,
-            dialog.ThemeColor);
+            dialog.ThemeColor,
+            dialog.DetailedLogging);
         settings.OutputDevice = selectedDevice.PersistentId;
         settings.BackgroundInput = dialog.BackgroundInput;
         settings.SilentLoop = dialog.SilentLoop;
         settings.FadeOutOnStop = dialog.FadeOutOnStop;
         settings.FadeOutOnStopAll = dialog.FadeOutOnStopAll;
         settings.DarkMode = dialog.DarkMode;
+        settings.DetailedLogging = dialog.DetailedLogging;
         settings.SoundListColumns = dialog.SoundListColumns;
         project.Name = projectName;
         project.ThemeColor = dialog.ThemeColor;
@@ -1467,13 +1485,15 @@ public sealed class MainForm : Form
         bool darkMode,
         int soundListColumns,
         string projectName,
-        string themeColor) =>
+        string themeColor,
+        bool detailedLogging = false) =>
         !string.Equals(settings.OutputDevice, outputDevice, StringComparison.Ordinal)
         || settings.BackgroundInput != backgroundInput
         || settings.SilentLoop != silentLoop
         || settings.FadeOutOnStop != fadeOutOnStop
         || settings.FadeOutOnStopAll != fadeOutOnStopAll
         || settings.DarkMode != darkMode
+        || settings.DetailedLogging != detailedLogging
         || settings.SoundListColumns != soundListColumns
         || !string.Equals(project.Name, projectName, StringComparison.Ordinal)
         || !string.Equals(project.ThemeColor, themeColor, StringComparison.Ordinal);
@@ -1621,6 +1641,14 @@ public sealed class MainForm : Form
     private void ApplyProjectSettings()
     {
         var settings = _projectManager.Current.Settings;
+        _logger.DetailedLoggingEnabled = settings.DetailedLogging;
+        if (_logger.DetailedLoggingEnabled)
+        {
+            _logger.Debug($"settings applied: app={Application.ProductVersion} runtime={Environment.Version} os={Environment.OSVersion} dpi={DeviceDpi} "
+                + $"sounds={_projectManager.Current.Sounds.Count} triggers={_projectManager.Current.Triggers.Count} "
+                + $"output={settings.OutputDevice} master_volume={settings.MasterVolume} mute={settings.MasterMute} "
+                + $"silent_loop={settings.SilentLoop} fade_stop={settings.FadeOutOnStop} fade_all={settings.FadeOutOnStopAll} background_input={settings.BackgroundInput}");
+        }
         _applyingProjectSettings = true;
         try
         {
@@ -1775,6 +1803,10 @@ public sealed class MainForm : Form
                 .Where(sound => string.Equals(sound.Group, trigger.TargetGroup, StringComparison.OrdinalIgnoreCase))
                 .Select(sound => sound.Id)
                 .ToArray()).Where(id => id != Guid.Empty).ToArray();
+        if (_logger.DetailedLoggingEnabled)
+        {
+            _logger.Debug($"trigger fired: id={trigger.Id} type={trigger.TriggerType} action={trigger.Action} targets={string.Join(",", targetIds)}");
+        }
         if (targetIds.Length == 0)
         {
             SetStatus($"イベントの対象が見つかりません: {trigger.Memo}", true);

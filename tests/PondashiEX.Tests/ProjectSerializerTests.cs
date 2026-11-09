@@ -6,6 +6,34 @@ namespace PondashiEX.Tests;
 public sealed class ProjectSerializerTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SaveLoad_PreservesDetailedLoggingSetting(bool enabled)
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("logging.pondex");
+        var model = new ProjectModel { Settings = new ProjectSettings { DetailedLogging = enabled } };
+        var serializer = new ProjectSerializer();
+
+        await serializer.SaveAsync(path, serializer.CreateSnapshot(model));
+        var restored = await serializer.LoadAsync(path);
+
+        Assert.Equal(enabled, restored.Settings.DetailedLogging);
+    }
+
+    [Fact]
+    public async Task Load_LegacyProjectDefaultsToNormalLogging()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("legacy-logging.pondex");
+        await File.WriteAllTextAsync(path, """{"formatVersion":1,"settings":{}}""");
+
+        var restored = await new ProjectSerializer().LoadAsync(path);
+
+        Assert.False(restored.Settings.DetailedLogging);
+    }
+
+    [Theory]
     [InlineData(false, 1F)]
     [InlineData(true, 1.75F)]
     [InlineData(true, 2F)]

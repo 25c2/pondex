@@ -184,12 +184,18 @@ public sealed class AudioEngine : IAudioEngine
         ArgumentNullException.ThrowIfNull(sound);
         ArgumentException.ThrowIfNullOrWhiteSpace(resolvedPath);
         var timingRequest = _startDiagnostics.Begin(sound.Id);
+        var diagnosticStarted = _logger.DetailedLoggingEnabled ? Stopwatch.GetTimestamp() : 0;
         PlaybackStartTiming? timing = null;
 
         long requestVersion;
         lock (_sync)
         {
             requestVersion = NextOperationVersion(sound.Id);
+        }
+        if (_logger.DetailedLoggingEnabled)
+        {
+            _logger.Debug($"play requested: sound={sound.Id} request={requestVersion} path={resolvedPath}");
+            LogSoundSettings(sound);
         }
 
         SoundInstance? prepared = null;
@@ -205,11 +211,17 @@ public sealed class AudioEngine : IAudioEngine
                 cancellationToken).ConfigureAwait(false);
             completionInstance = prepared;
             var preparedAt = timingRequest.Attempt > 0 ? Stopwatch.GetTimestamp() : 0;
+            if (diagnosticStarted != 0 && _logger.DetailedLoggingEnabled)
+            {
+                _logger.Debug(string.Create(CultureInfo.InvariantCulture,
+                    $"play prepared: sound={sound.Id} request={requestVersion} prepare_ms={Stopwatch.GetElapsedTime(diagnosticStarted).TotalMilliseconds:F3}"));
+            }
 
             lock (_sync)
             {
                 if (_disposed)
                 {
+                    if (_logger.DetailedLoggingEnabled) { _logger.Debug($"play discarded: sound={sound.Id} request={requestVersion} reason=disposed"); }
                     prepared.Dispose();
                     prepared = null;
                     return;
@@ -218,6 +230,7 @@ public sealed class AudioEngine : IAudioEngine
                 if (!_soundOperationVersions.TryGetValue(sound.Id, out var currentVersion)
                     || currentVersion != requestVersion)
                 {
+                    if (_logger.DetailedLoggingEnabled) { _logger.Debug($"play discarded: sound={sound.Id} request={requestVersion} current_request={currentVersion} reason=superseded"); }
                     prepared.Dispose();
                     prepared = null;
                     return;
@@ -249,6 +262,10 @@ public sealed class AudioEngine : IAudioEngine
                 StateChanged?.Invoke(this, new SoundStateChangedEventArgs(sound.Id, PlaybackState.Playing));
                 PlaybackStarted?.Invoke(this, new SoundPlaybackEventArgs(sound.Id));
                 prepared = null;
+                if (_logger.DetailedLoggingEnabled)
+                {
+                    _logger.Debug($"play started: sound={sound.Id} request={requestVersion} device={_deviceNumber} active={_instances.Count}");
+                }
             }
 
             _logger.Info($"再生開始: {sound.Name} ({sound.Id})");
@@ -259,7 +276,12 @@ public sealed class AudioEngine : IAudioEngine
                     $"再生開始計測: {sound.Id} attempt={timing.Attempt} prepare_ms={timing.PreparationMilliseconds:F3} start_ms={timing.StartMilliseconds:F3}（内部処理時間。実際の出音遅延ではありません）"));
             }
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (OperationCanceledException)
+        {
+            if (_logger.DetailedLoggingEnabled) { _logger.Debug($"play cancelled: sound={sound.Id} request={requestVersion}"); }
+            throw;
+        }
+        catch (Exception exception)
         {
             prepared?.Dispose();
             var message = $"音源「{sound.Name}」を再生できません。";
@@ -272,6 +294,7 @@ public sealed class AudioEngine : IAudioEngine
     {
         lock (_sync)
         {
+            if (_logger.DetailedLoggingEnabled) { _logger.Debug($"stop requested: sound={soundId} fade={_fadeOutOnStopEnabled}"); }
             NextOperationVersion(soundId);
             if (_fadeOutOnStopEnabled)
             {
@@ -290,6 +313,7 @@ public sealed class AudioEngine : IAudioEngine
     {
         lock (_sync)
         {
+            if (_logger.DetailedLoggingEnabled) { _logger.Debug($"stop requested: sound={soundId} fade=False immediate=True"); }
             NextOperationVersion(soundId);
             StopCore(soundId, PlaybackEndReason.Stopped);
             StopOutputWhenIdle();
@@ -306,6 +330,7 @@ public sealed class AudioEngine : IAudioEngine
             }
 
             instance.Pause();
+            if (_logger.DetailedLoggingEnabled) { _logger.Debug($"pause: sound={soundId} state={instance.State}"); }
             StateChanged?.Invoke(this, new SoundStateChangedEventArgs(soundId, instance.State));
         }
     }
@@ -320,6 +345,7 @@ public sealed class AudioEngine : IAudioEngine
             }
 
             instance.Resume();
+            if (_logger.DetailedLoggingEnabled) { _logger.Debug($"resume: sound={soundId} state={instance.State}"); }
             StateChanged?.Invoke(this, new SoundStateChangedEventArgs(soundId, instance.State));
         }
     }
@@ -331,6 +357,7 @@ public sealed class AudioEngine : IAudioEngine
             if (_instances.TryGetValue(soundId, out var instance))
             {
                 instance.BeginVolumeFade(targetVolume, duration);
+                if (_logger.DetailedLoggingEnabled) { _logger.Debug($"volume fade: sound={soundId} target={targetVolume} duration_ms={duration.TotalMilliseconds}"); }
             }
         }
     }
@@ -339,6 +366,7 @@ public sealed class AudioEngine : IAudioEngine
     {
         lock (_sync)
         {
+            if (_logger.DetailedLoggingEnabled) { _logger.Debug($"stop_all requested: fade={useFadeOut} active={_instances.Count}"); }
             foreach (var soundId in _soundOperationVersions.Keys.ToArray())
             {
                 NextOperationVersion(soundId);
@@ -364,6 +392,7 @@ public sealed class AudioEngine : IAudioEngine
     {
         lock (_sync)
         {
+            if (_logger.DetailedLoggingEnabled) { _logger.Debug($"emergency_stop requested: device={_deviceNumber} active={_instances.Count}"); }
             // StopAll also invalidates every in-flight preparation before disposing active instances.
             StopAll(useFadeOut: false);
             // Release the device handle as well as flushing its queued buffers.
@@ -393,6 +422,7 @@ public sealed class AudioEngine : IAudioEngine
     public void ApplyLiveSettings(SoundDefinition sound)
     {
         ArgumentNullException.ThrowIfNull(sound);
+        if (_logger.DetailedLoggingEnabled) { LogSoundSettings(sound); }
         lock (_sync)
         {
             if (_instances.TryGetValue(sound.Id, out var instance))
@@ -406,6 +436,7 @@ public sealed class AudioEngine : IAudioEngine
     {
         lock (_sync)
         {
+            if (_logger.DetailedLoggingEnabled) { _logger.Debug($"output selection: previous={_deviceNumber} requested={deviceNumber} faulted={_outputFaulted}"); }
             if (_deviceNumber == deviceNumber && _output is not null)
             {
                 return;
@@ -506,7 +537,13 @@ public sealed class AudioEngine : IAudioEngine
     private void ApplyMasterVolume()
     {
         _masterVolumeProvider.Volume = _masterMute ? 0 : _masterVolume;
+        if (_logger.DetailedLoggingEnabled) { _logger.Debug($"master changed: volume={_masterVolume} mute={_masterMute}"); }
     }
+
+    private void LogSoundSettings(SoundDefinition sound) => _logger.Debug(string.Create(CultureInfo.InvariantCulture,
+        $"sound settings: sound={sound.Id} volume={sound.Volume} boost={sound.AllowVolumeBoost} pan={sound.Pan} pitch={sound.Pitch} speed={sound.Speed} "
+        + $"loop={sound.Loop.Enabled} loop_sample={sound.Loop.StartSample} loop_seconds={sound.Loop.StartSeconds} "
+        + $"fade_in={sound.FadeIn.Enabled}/{sound.FadeIn.Value} fade_out={sound.FadeOut.Enabled}/{sound.FadeOut.Value}"));
 
     private void StopCore(Guid soundId, PlaybackEndReason reason)
     {
@@ -516,6 +553,10 @@ public sealed class AudioEngine : IAudioEngine
         }
 
         _mixer.RemoveMixerInput(instance.Output);
+        if (_logger.DetailedLoggingEnabled)
+        {
+            _logger.Debug($"play ended: sound={soundId} reason={reason} previous_state={instance.State} samples_read={instance.SamplesRead} active={_instances.Count}");
+        }
         instance.MarkStopped();
         instance.Dispose();
         StateChanged?.Invoke(this, new SoundStateChangedEventArgs(soundId, PlaybackState.Stopped));
@@ -544,6 +585,7 @@ public sealed class AudioEngine : IAudioEngine
         {
             instance.CompletionReason = reason;
             instance.BeginFadeOut(duration);
+            if (_logger.DetailedLoggingEnabled) { _logger.Debug($"stop fade started: sound={soundId} reason={reason} duration_ms={duration.TotalMilliseconds}"); }
             StateChanged?.Invoke(this, new SoundStateChangedEventArgs(soundId, PlaybackState.Fading));
             return;
         }
