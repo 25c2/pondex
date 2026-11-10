@@ -32,19 +32,19 @@ jobs:
           dotnet-version: 10.0.402
 
       - name: Restore
-        run: dotnet restore PondashiEX.sln --configfile NuGet.Config --locked-mode
+        run: dotnet restore pondex.sln --configfile NuGet.Config --locked-mode
 
       - name: Audit dependencies
-        run: dotnet list PondashiEX.sln package --vulnerable --include-transitive --configfile NuGet.Config
+        run: dotnet list pondex.sln package --vulnerable --include-transitive --configfile NuGet.Config
 
       - name: Verify formatting
-        run: dotnet format PondashiEX.sln --verify-no-changes --no-restore
+        run: dotnet format pondex.sln --verify-no-changes --no-restore
 
       - name: Build
-        run: dotnet build PondashiEX.sln --configuration Release --no-restore
+        run: dotnet build pondex.sln --configuration Release --no-restore
 
       - name: Test
-        run: dotnet test PondashiEX.sln --configuration Release --no-build --no-restore --logger "trx;LogFileName=tests.trx" --results-directory artifacts/TestResults
+        run: dotnet test pondex.sln --configuration Release --no-build --no-restore --logger "trx;LogFileName=tests.trx" --results-directory artifacts/TestResults
 
       - name: Summarize test failures
         if: failure()

@@ -12,10 +12,10 @@ CIでの検証とは別に、使用するPC・音声デバイスでself-containe
 ## ビルドとテスト
 
 ```powershell
-dotnet restore PondashiEX.sln --configfile NuGet.Config --locked-mode
-dotnet format PondashiEX.sln --verify-no-changes --no-restore
-dotnet build PondashiEX.sln --configuration Release --no-restore
-dotnet test PondashiEX.sln --configuration Release --no-build --no-restore
+dotnet restore pondex.sln --configfile NuGet.Config --locked-mode
+dotnet format pondex.sln --verify-no-changes --no-restore
+dotnet build pondex.sln --configuration Release --no-restore
+dotnet test pondex.sln --configuration Release --no-build --no-restore
 ```
 
 CIでは`main`へのpushとPull Requestごとに、依存関係の復元、NuGet脆弱性監査、フォーマット検査、Releaseビルド、テストを実行します。監査フィードを取得できない場合や、低重要度以上の既知の脆弱性が検出された場合も失敗します。
@@ -23,10 +23,10 @@ CIでは`main`へのpushとPull Requestごとに、依存関係の復元、NuGet
 ## Windows x64配布物
 
 ```powershell
-dotnet publish src/PondashiEX/PondashiEX.csproj --configuration Release --runtime win-x64 --self-contained true --output publish/win-x64
+dotnet publish src/pondex/pondex.csproj --configuration Release --runtime win-x64 --self-contained true --output publish/win-x64
 ```
 
-`publish/win-x64/`をフォルダごと対象PCへコピーして`PondashiEX.exe`を起動します。`publish/`はGit管理対象外です。
+`publish/win-x64/`をフォルダごと対象PCへコピーして`pondex.exe`を起動します。`publish/`はGit管理対象外です。
 
 ## GitHub Release
 
@@ -54,7 +54,7 @@ Releaseワークフローは次を実行します。
 publicリポジトリで発行された来歴はGitHub CLIで検証できます。
 
 ```powershell
-gh attestation verify PondashiEX-v1.0-win-x64.zip --repo 25c2/pondex
+gh attestation verify pondex-v1.0-win-x64.zip --repo 25c2/pondex
 ```
 
 ワークフローは`release` Environmentを使用します。GitHubのリポジトリ設定でRequired reviewersを設定すると、公開前の承認ゲートになります。

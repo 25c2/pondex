@@ -1,0 +1,196 @@
+using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
+using pondex.Project;
+
+namespace pondex.Audio;
+
+internal sealed class SoundInstance : IDisposable
+{
+    private readonly WaveStream _decoder;
+    private readonly LoopProvider _loopProvider;
+    private readonly PauseSampleProvider _pauseProvider;
+    private readonly StereoBalanceSampleProvider _balanceProvider;
+    private readonly RampedVolumeSampleProvider _volumeProvider;
+    private readonly FadeInOutSampleProvider _fadeProvider;
+    private readonly CompletionSampleProvider _completionProvider;
+    private readonly PlaybackRateSampleProvider _rateProvider;
+    private readonly LivePitchSampleProvider _pitchProvider;
+    private bool _disposed;
+    private readonly FadeTailSampleProvider _fadeTail;
+
+    public PlaybackEndReason CompletionReason { get; set; } = PlaybackEndReason.Natural;
+
+    private SoundInstance(
+        SoundDefinition definition,
+        WaveStream decoder,
+        LoopProvider loopProvider,
+        PauseSampleProvider pauseProvider,
+        StereoBalanceSampleProvider balanceProvider,
+        RampedVolumeSampleProvider volumeProvider,
+        FadeInOutSampleProvider fadeProvider,
+        CompletionSampleProvider completionProvider,
+        PlaybackRateSampleProvider rateProvider,
+        LivePitchSampleProvider pitchProvider,
+        ISampleProvider output,
+        FadeTailSampleProvider fadeTail)
+    {
+        _fadeTail = fadeTail;
+        Definition = definition;
+        _decoder = decoder;
+        _loopProvider = loopProvider;
+        _pauseProvider = pauseProvider;
+        _balanceProvider = balanceProvider;
+        _volumeProvider = volumeProvider;
+        _fadeProvider = fadeProvider;
+        _completionProvider = completionProvider;
+        _rateProvider = rateProvider;
+        _pitchProvider = pitchProvider;
+        Output = output;
+        State = PlaybackState.Playing;
+        StartedAt = DateTimeOffset.Now;
+    }
+
+    public SoundDefinition Definition { get; }
+
+    public ISampleProvider Output { get; }
+
+    public PlaybackState State { get; private set; }
+
+    public DateTimeOffset StartedAt { get; }
+
+    public long SamplesRead => _completionProvider.SamplesRead;
+
+    public static SoundInstance Create(
+        SoundDefinition definition,
+        string path,
+        WaveFormat mixerFormat,
+        Action completed)
+    {
+        var decoder = AudioDecoderFactory.Open(path);
+        try
+        {
+            var loopStartSample = definition.Loop.StartSeconds > 0
+                ? (long)Math.Round(definition.Loop.StartSeconds * decoder.WaveFormat.SampleRate)
+                : definition.Loop.StartSample;
+            var loopProvider = new LoopProvider(decoder, definition.Loop.Enabled, loopStartSample);
+            ISampleProvider provider = loopProvider;
+            provider = NormalizeChannels(provider);
+
+            if (provider.WaveFormat.SampleRate != mixerFormat.SampleRate)
+            {
+                provider = new WdlResamplingSampleProvider(provider, mixerFormat.SampleRate);
+            }
+
+            var rateProvider = new PlaybackRateSampleProvider(provider) { Speed = definition.Speed };
+            var pitchProvider = new LivePitchSampleProvider(rateProvider) { Factor = definition.Pitch };
+            provider = pitchProvider;
+
+            var balanceProvider = new StereoBalanceSampleProvider(provider)
+            {
+                Pan = definition.Pan
+            };
+            provider = balanceProvider;
+            var volumeProvider = new RampedVolumeSampleProvider(provider, definition.Volume, ProjectLimits.GetMaxVolume(definition));
+            provider = volumeProvider;
+
+            var fadeProvider = new FadeInOutSampleProvider(
+                provider,
+                initiallySilent: definition.FadeIn.Enabled && definition.FadeIn.Value > 0);
+            if (definition.FadeIn.Enabled && definition.FadeIn.Value > 0)
+            {
+                fadeProvider.BeginFadeIn((int)Math.Clamp(definition.FadeIn.Value * 1000, 1, 60_000));
+            }
+            provider = fadeProvider;
+
+            var fadeTail = new FadeTailSampleProvider(provider);
+            var pauseProvider = new PauseSampleProvider(fadeTail);
+            var completionProvider = new CompletionSampleProvider(pauseProvider, completed);
+            return new SoundInstance(
+                definition,
+                decoder,
+                loopProvider,
+                pauseProvider,
+                balanceProvider,
+                volumeProvider,
+                fadeProvider,
+                completionProvider,
+                rateProvider,
+                pitchProvider,
+                completionProvider,
+                fadeTail);
+        }
+        catch
+        {
+            decoder.Dispose();
+            throw;
+        }
+    }
+
+    public void Pause()
+    {
+        if (State != PlaybackState.Playing)
+        {
+            return;
+        }
+
+        _pauseProvider.IsPaused = true;
+        State = PlaybackState.Paused;
+    }
+
+    public void Resume()
+    {
+        if (State != PlaybackState.Paused)
+        {
+            return;
+        }
+
+        _pauseProvider.IsPaused = false;
+        State = PlaybackState.Playing;
+    }
+
+    public void MarkStopped() => State = PlaybackState.Stopped;
+
+    public void BeginFadeOut(TimeSpan duration)
+    {
+        _fadeProvider.BeginFadeOut((int)Math.Clamp(duration.TotalMilliseconds, 1, 60_000));
+        _fadeTail.FinishAfter(duration);
+        State = PlaybackState.Fading;
+    }
+
+    public void BeginVolumeFade(float targetVolume, TimeSpan duration) =>
+        _volumeProvider.BeginRamp(targetVolume, duration);
+
+    public void ApplyLiveSettings(SoundDefinition definition)
+    {
+        _volumeProvider.SetMaximumVolume(ProjectLimits.GetMaxVolume(definition));
+        _volumeProvider.Volume = Math.Clamp(definition.Volume, 0.0f, ProjectLimits.GetMaxVolume(definition));
+        _balanceProvider.Pan = definition.Pan;
+        _rateProvider.Speed = definition.Speed;
+        _pitchProvider.Factor = definition.Pitch;
+        var loopStartSample = definition.Loop.StartSeconds > 0
+            ? (long)Math.Round(definition.Loop.StartSeconds * _decoder.WaveFormat.SampleRate)
+            : definition.Loop.StartSample;
+        _loopProvider.Configure(definition.Loop.Enabled, loopStartSample);
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _decoder.Dispose();
+    }
+
+    private static ISampleProvider NormalizeChannels(ISampleProvider provider)
+    {
+        return provider.WaveFormat.Channels switch
+        {
+            1 => new MonoToStereoSampleProvider(provider),
+            2 => provider,
+            _ => throw new NotSupportedException($"{provider.WaveFormat.Channels}チャンネル音源には未対応です。")
+        };
+    }
+}

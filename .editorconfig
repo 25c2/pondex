@@ -19,15 +19,15 @@ end_of_line = crlf
 
 # These names are established stage-control domain commands and match the
 # public API used throughout the specification.
-[src/PondashiEX/Audio/IAudioEngine.cs]
+[src/pondex/Audio/IAudioEngine.cs]
 dotnet_diagnostic.CA1716.severity = none
 
-[src/PondashiEX/Utility/IAppLogger.cs]
+[src/pondex/Utility/IAppLogger.cs]
 dotnet_diagnostic.CA1716.severity = none
 
 # Keep device discovery injectable as a service even though its current
 # implementation does not need instance state.
-[src/PondashiEX/Audio/AudioDeviceManager.cs]
+[src/pondex/Audio/AudioDeviceManager.cs]
 dotnet_diagnostic.CA1822.severity = none
 
 # xUnit test names intentionally use Method_Scenario_ExpectedResult for
