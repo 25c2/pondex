@@ -13,6 +13,12 @@ public sealed class AudioEngine : IAudioEngine
     private readonly object _sync = new();
     private readonly Dictionary<Guid, SoundInstance> _instances = [];
     private readonly Dictionary<Guid, long> _soundOperationVersions = [];
+    private readonly Dictionary<Guid, CancellationTokenSource> _preparationCancellations = [];
+    private readonly Dictionary<Guid, SemaphoreSlim> _preparationLanes = [];
+    private readonly SemaphoreSlim _preparationSlots = new(4, 4);
+    private long _preparationRequests, _preparationCompleted, _preparationDiscarded, _preparationFailed;
+    private long _preparationTicks;
+    private int _preparationsActive, _preparationsPeak;
     private readonly IAppLogger _logger;
     private readonly Func<int, ISampleProvider, IAudioOutput> _outputFactory;
     private readonly IFadePolicy _fadePolicy;
@@ -159,6 +165,12 @@ public sealed class AudioEngine : IAudioEngine
 
     internal long OutputSamplesRead => Interlocked.Read(ref _outputSamplesRead);
 
+    internal AudioPreparationStatistics PreparationStatistics => new(
+        Interlocked.Read(ref _preparationRequests), Interlocked.Read(ref _preparationCompleted),
+        Interlocked.Read(ref _preparationDiscarded), Interlocked.Read(ref _preparationFailed),
+        Volatile.Read(ref _preparationsActive), Volatile.Read(ref _preparationsPeak),
+        TimeSpan.FromTicks(Interlocked.Read(ref _preparationTicks)));
+
     public bool PlaybackTimingEnabled
     {
         get => _startDiagnostics.Enabled;
@@ -188,10 +200,21 @@ public sealed class AudioEngine : IAudioEngine
         PlaybackStartTiming? timing = null;
 
         long requestVersion;
+        CancellationTokenSource preparationCancellation;
+        SemaphoreSlim lane;
         lock (_sync)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             requestVersion = NextOperationVersion(sound.Id);
+            preparationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            _preparationCancellations[sound.Id] = preparationCancellation;
+            if (!_preparationLanes.TryGetValue(sound.Id, out lane!))
+            {
+                lane = new SemaphoreSlim(1, 1);
+                _preparationLanes.Add(sound.Id, lane);
+            }
         }
+        Interlocked.Increment(ref _preparationRequests);
         if (_logger.DetailedLoggingEnabled)
         {
             _logger.Debug($"play requested: sound={sound.Id} request={requestVersion} path={resolvedPath}");
@@ -200,16 +223,43 @@ public sealed class AudioEngine : IAudioEngine
 
         SoundInstance? prepared = null;
         SoundInstance? completionInstance = null;
+        var laneAcquired = false;
+        var slotAcquired = false;
         try
         {
+            var token = preparationCancellation.Token;
+            // One decoder per sound, up to four different sounds concurrently.
+            // Cancellation removes obsolete waiters before they open any file.
+            await lane.WaitAsync(token).ConfigureAwait(false);
+            laneAcquired = true;
+            await _preparationSlots.WaitAsync(token).ConfigureAwait(false);
+            slotAcquired = true;
             prepared = await Task.Run(
-                () => _prepareSound(
-                    sound,
-                    resolvedPath,
-                    MixerFormat,
-                    () => QueueNaturalCompletion(sound.Id, completionInstance)),
-                cancellationToken).ConfigureAwait(false);
+                () =>
+                {
+                    token.ThrowIfCancellationRequested();
+                    var started = Stopwatch.GetTimestamp();
+                    var active = Interlocked.Increment(ref _preparationsActive);
+                    int peak;
+                    do { peak = Volatile.Read(ref _preparationsPeak); }
+                    while (active > peak && Interlocked.CompareExchange(ref _preparationsPeak, active, peak) != peak);
+                    try
+                    {
+                        var result = _prepareSound(sound, resolvedPath, MixerFormat,
+                            () => QueueNaturalCompletion(sound.Id, completionInstance));
+                        Interlocked.Increment(ref _preparationCompleted);
+                        return result;
+                    }
+                    finally
+                    {
+                        Interlocked.Decrement(ref _preparationsActive);
+                        Interlocked.Add(ref _preparationTicks, Stopwatch.GetElapsedTime(started).Ticks);
+                    }
+                }, token).ConfigureAwait(false);
             completionInstance = prepared;
+            // Stop/device changes are accounted for as superseded requests below;
+            // explicit caller cancellation must also dispose a decoder already in flight.
+            cancellationToken.ThrowIfCancellationRequested();
             var preparedAt = timingRequest.Attempt > 0 ? Stopwatch.GetTimestamp() : 0;
             if (diagnosticStarted != 0 && _logger.DetailedLoggingEnabled)
             {
@@ -221,6 +271,7 @@ public sealed class AudioEngine : IAudioEngine
             {
                 if (_disposed)
                 {
+                    Interlocked.Increment(ref _preparationDiscarded);
                     if (_logger.DetailedLoggingEnabled) { _logger.Debug($"play discarded: sound={sound.Id} request={requestVersion} reason=disposed"); }
                     prepared.Dispose();
                     prepared = null;
@@ -230,6 +281,7 @@ public sealed class AudioEngine : IAudioEngine
                 if (!_soundOperationVersions.TryGetValue(sound.Id, out var currentVersion)
                     || currentVersion != requestVersion)
                 {
+                    Interlocked.Increment(ref _preparationDiscarded);
                     if (_logger.DetailedLoggingEnabled) { _logger.Debug($"play discarded: sound={sound.Id} request={requestVersion} current_request={currentVersion} reason=superseded"); }
                     prepared.Dispose();
                     prepared = null;
@@ -278,15 +330,44 @@ public sealed class AudioEngine : IAudioEngine
         }
         catch (OperationCanceledException)
         {
+            prepared?.Dispose();
+            Interlocked.Increment(ref _preparationDiscarded);
             if (_logger.DetailedLoggingEnabled) { _logger.Debug($"play cancelled: sound={sound.Id} request={requestVersion}"); }
-            throw;
+            if (cancellationToken.IsCancellationRequested) { throw; }
         }
         catch (Exception exception)
         {
             prepared?.Dispose();
+            Interlocked.Increment(ref _preparationFailed);
+            lock (_sync)
+            {
+                if (_disposed || _soundOperationVersions.GetValueOrDefault(sound.Id) != requestVersion)
+                {
+                    Interlocked.Increment(ref _preparationDiscarded);
+                    if (_logger.DetailedLoggingEnabled) { _logger.Debug($"play discarded: sound={sound.Id} request={requestVersion} reason=obsolete_prepare_failure"); }
+                    return;
+                }
+            }
             var message = $"音源「{sound.Name}」を再生できません。";
             _logger.Error(message, exception);
             PlaybackFailed?.Invoke(this, new SoundErrorEventArgs(sound.Id, message, exception));
+        }
+        finally
+        {
+            if (slotAcquired) { _preparationSlots.Release(); }
+            if (laneAcquired) { lane.Release(); }
+            lock (_sync)
+            {
+                if (_preparationCancellations.GetValueOrDefault(sound.Id) == preparationCancellation)
+                {
+                    _preparationCancellations.Remove(sound.Id);
+                }
+                if (!_preparationCancellations.ContainsKey(sound.Id) && lane.CurrentCount == 1)
+                {
+                    _preparationLanes.Remove(sound.Id);
+                }
+            }
+            preparationCancellation.Dispose();
         }
     }
 
@@ -474,6 +555,7 @@ public sealed class AudioEngine : IAudioEngine
             }
 
             _disposed = true;
+            foreach (var cancellation in _preparationCancellations.Values) { cancellation.Cancel(); }
             foreach (var soundId in _instances.Keys.ToArray())
             {
                 StopCore(soundId, PlaybackEndReason.StopAll);
@@ -762,6 +844,7 @@ public sealed class AudioEngine : IAudioEngine
 
     private long NextOperationVersion(Guid soundId)
     {
+        if (_preparationCancellations.TryGetValue(soundId, out var cancellation)) { cancellation.Cancel(); }
         var next = _soundOperationVersions.TryGetValue(soundId, out var current)
             ? unchecked(current + 1)
             : 1;
@@ -769,3 +852,6 @@ public sealed class AudioEngine : IAudioEngine
         return next;
     }
 }
+
+internal readonly record struct AudioPreparationStatistics(long Requested, long Completed, long Discarded,
+    long Failed, int Active, int Peak, TimeSpan PreparationTime);

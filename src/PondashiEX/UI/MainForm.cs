@@ -57,7 +57,12 @@ public sealed class MainForm : Form
     private ToolStripMenuItem _enableEditLockItem = null!;
     private ToolStripMenuItem _disableEditLockItem = null!;
     private Button _addSoundButton = null!;
-    private string? _activeOutputId;
+    private AudioOutputBinding? _outputBinding;
+    private Task _outputConfigurationTask = Task.CompletedTask;
+    private Task _deviceCheckTask = Task.CompletedTask;
+    private long _outputConfigurationVersion;
+    private readonly Dictionary<Guid, long> _uiPlayVersions = [];
+    private bool _settingsDialogOpening;
 
     public MainForm(
         ProjectManager projectManager,
@@ -169,7 +174,7 @@ public sealed class MainForm : Form
         _resumeTriggersButton.Click += (_, _) =>
         {
             if (_outputUnavailable) { SetStatus("設定で出力先を確認してから再開してください。", true); return; }
-            _triggerEngine.Resume();
+            _triggerEngine.Resume(DateTimeOffset.Now, _stopwatch.Elapsed, _stopwatch.IsRunning);
             _resumeTriggersButton.Visible = false;
             if (_logger.DetailedLoggingEnabled) { _logger.Debug("automatic triggers resumed"); }
             SetStatus("自動イベントを再開しました。", false);
@@ -265,7 +270,7 @@ public sealed class MainForm : Form
             [stopAllItem, muteMenuItem, new ToolStripSeparator(), soundOrder, groupShortcuts,
                 new ToolStripSeparator(), diagnostics, timings, new ToolStripSeparator(), emergencyStop]);
 
-        var settings = new ToolStripMenuItem("設定(&S)", null, (_, _) => ShowSettings());
+        var settings = new ToolStripMenuItem("設定(&S)", null, async (_, _) => await ShowSettings());
         var help = new ToolStripMenuItem("ヘルプ(&H)");
         var usage = new ToolStripMenuItem("使い方(&H)…", null, (_, _) => ShowHelp());
         help.DropDownItems.Add(usage);
@@ -709,7 +714,7 @@ public sealed class MainForm : Form
         _audioEngine.StopAll();
         _stopwatch.Reset();
         _triggerEngine.SetTriggers(_projectManager.Current.Triggers);
-        _triggerEngine.Resume();
+        _triggerEngine.Resume(DateTimeOffset.Now, _stopwatch.Elapsed, _stopwatch.IsRunning);
         _resumeTriggersButton.Visible = false;
         UpdateClockDisplay();
     }
@@ -1024,7 +1029,7 @@ public sealed class MainForm : Form
         var card = new SoundCard(sound, () => _projectManager.ResolveSoundPath(sound));
         card.ApplyDarkMode(_projectManager.Current.Settings.DarkMode);
         card.PlayRequested += async (_, _) => await PlaySoundAsync(sound.Id);
-        card.StopRequested += (_, _) => _audioEngine.Stop(sound.Id);
+        card.StopRequested += (_, _) => StopSound(sound.Id);
         card.PauseRequested += (_, _) => _audioEngine.Pause(sound.Id);
         card.ResumeRequested += (_, _) => _audioEngine.Resume(sound.Id);
         card.FileBrowseRequested += (_, _) => BrowseReplacementFile(sound, card);
@@ -1178,7 +1183,7 @@ public sealed class MainForm : Form
             return;
         }
 
-        _audioEngine.StopImmediately(sound.Id);
+        StopSound(sound.Id, immediately: true);
         var result = RemoveSoundDefinition(_projectManager.Current, sound.Id);
         if (!result.Removed)
         {
@@ -1249,10 +1254,15 @@ public sealed class MainForm : Form
         var columnsThatFit = Math.Max(1, availableWidth / (minimumCardWidth + gap));
         var columns = Math.Min(requestedColumns, columnsThatFit);
         var width = Math.Max(minimumCardWidth, (availableWidth - (columns * gap)) / columns);
-        foreach (var card in _soundCards.Values)
+        _soundList.SuspendLayout();
+        try
         {
-            card.Width = width;
+            foreach (var card in _soundCards.Values)
+            {
+                if (card.Width != width) { card.Width = width; }
+            }
         }
+        finally { _soundList.ResumeLayout(performLayout: true); }
     }
 
     private void BrowseReplacementFile(SoundDefinition sound, SoundCard card)
@@ -1283,7 +1293,7 @@ public sealed class MainForm : Form
 
         try
         {
-            _audioEngine.Stop(sound.Id);
+            StopSound(sound.Id);
             _projectManager.ReplaceSoundFile(sound, dialog.FileName);
             card.UpdateFilePath(sound.File);
             SetStatus($"音声ファイルを差し替えました: {sound.Name}", false);
@@ -1297,7 +1307,13 @@ public sealed class MainForm : Form
 
     private async Task PlaySoundAsync(Guid soundId)
     {
-        CheckSelectedDeviceAvailability(force: true);
+        var generation = Interlocked.Read(ref _playbackGeneration);
+        var version = _uiPlayVersions.GetValueOrDefault(soundId) + 1;
+        _uiPlayVersions[soundId] = version;
+        await _outputConfigurationTask;
+        await CheckSelectedDeviceAvailability(force: true);
+        if (IsDisposed || Disposing || generation != Interlocked.Read(ref _playbackGeneration)
+            || _uiPlayVersions.GetValueOrDefault(soundId) != version) { return; }
         if (_outputUnavailable) { SetStatus("出力先を設定で選び直してください。", true); return; }
         var sound = _projectManager.Current.Sounds.FirstOrDefault(item => item.Id == soundId);
         if (sound is null)
@@ -1319,8 +1335,16 @@ public sealed class MainForm : Form
         await _audioEngine.PlayAsync(sound, path);
     }
 
+    private void StopSound(Guid soundId, bool immediately = false)
+    {
+        _uiPlayVersions[soundId] = _uiPlayVersions.GetValueOrDefault(soundId) + 1;
+        if (immediately) { _audioEngine.StopImmediately(soundId); }
+        else { _audioEngine.Stop(soundId); }
+    }
+
     private void StopAll(bool useConfiguredFade = true)
     {
+        Interlocked.Increment(ref _playbackGeneration);
         var useFadeOut = useConfiguredFade && _projectManager.Current.Settings.FadeOutOnStopAll;
         _audioEngine.StopAll(useFadeOut);
         SetStatus(
@@ -1339,6 +1363,12 @@ public sealed class MainForm : Form
 
     private void EmergencyStopAll()
     {
+        StopForEmergency(invalidateConfiguration: true);
+    }
+
+    private void StopForEmergency(bool invalidateConfiguration)
+    {
+        if (invalidateConfiguration) { _outputConfigurationVersion++; }
         if (_logger.DetailedLoggingEnabled) { _logger.Debug("automatic triggers suspended: emergency stop"); }
         _triggerEngine.Suspend();
         _resumeTriggersButton.Visible = true;
@@ -1398,13 +1428,13 @@ public sealed class MainForm : Form
                         foreach (var peer in _projectManager.Current.Sounds.Where(sound => sound.Id != exclusiveId
                             && string.Equals(sound.Group.Trim(), target.Group.Trim(), StringComparison.OrdinalIgnoreCase)))
                         {
-                            _audioEngine.StopImmediately(peer.Id);
+                            StopSound(peer.Id, immediately: true);
                         }
                     }
                     _ = PlaySoundAsync(exclusiveId);
                     break;
                 case ShortcutCommandType.Stop when command.SoundId is { } stopId:
-                    _audioEngine.Stop(stopId);
+                    StopSound(stopId);
                     break;
                 case ShortcutCommandType.StopAll:
                     StopAll();
@@ -1421,10 +1451,28 @@ public sealed class MainForm : Form
         }
     }
 
-    private void ShowSettings()
+    private async Task ShowSettings()
+    {
+        if (_settingsDialogOpening || !CanEditProject()) { return; }
+        _settingsDialogOpening = true;
+        try { await ShowSettingsCoreAsync(); }
+        finally { _settingsDialogOpening = false; }
+    }
+
+    private async Task ShowSettingsCoreAsync()
     {
         if (!CanEditProject()) { return; }
-        var devices = _deviceManager.GetOutputDevices();
+        var openingProject = _projectManager.Current;
+        IReadOnlyList<AudioDeviceInfo> devices;
+        try { devices = (await _deviceManager.CaptureSnapshotAsync().WaitAsync(TimeSpan.FromSeconds(2))).Devices; }
+        catch (Exception exception)
+        {
+            if (IsDisposed || Disposing) { return; }
+            _logger.Error("出力デバイスの一覧を確認できません。", exception);
+            SetStatus("出力デバイスの確認に失敗しました。接続を確認してから設定を開き直してください。", true);
+            return;
+        }
+        if (IsDisposed || Disposing || !ReferenceEquals(openingProject, _projectManager.Current) || !CanEditProject()) { return; }
         using var dialog = new SettingsDialog(_projectManager.Current.Settings, devices);
         dialog.SetProjectMetadata(_projectManager.Current.Project);
         UiTheme.Apply(dialog, _projectManager.Current.Settings.DarkMode);
@@ -1664,38 +1712,7 @@ public sealed class MainForm : Form
         _audioEngine.MasterMute = settings.MasterMute;
         _audioEngine.FadeOutOnStopEnabled = settings.FadeOutOnStop;
 
-        var devices = _deviceManager.GetOutputDevices();
-        var selected = AudioDeviceManager.FindConfiguredDevice(devices, settings.OutputDevice);
-        try
-        {
-            if (selected is null)
-            {
-                EmergencyStopAll();
-                throw new InvalidOperationException("設定された出力デバイスがありません。出力先を選び直してください。");
-            }
-
-            _outputUnavailable = true;
-            _audioEngine.SelectOutputDevice(selected.DeviceNumber);
-            _audioEngine.SilentLoopEnabled = settings.SilentLoop;
-            var activeDevice = devices.FirstOrDefault(
-                device => device.DeviceNumber == _audioEngine.OutputDeviceNumber)
-                ?? AudioDeviceInfo.Default;
-            if (activeDevice.DeviceNumber != selected.DeviceNumber)
-            {
-                settings.OutputDevice = "default";
-            }
-
-            _activeOutputId = selected.PersistentId;
-            _outputUnavailable = false;
-            _deviceLabel.Text = $"出力: {activeDevice.Name}";
-        }
-        catch (Exception exception)
-        {
-            _outputUnavailable = true;
-            _logger.Error("出力デバイスを使用できません。", exception);
-            _deviceLabel.Text = "出力: エラー（設定を確認）";
-            SetStatus("出力デバイスを使用できません。", true);
-        }
+        _outputConfigurationTask = ConfigureOutputAsync(settings, ++_outputConfigurationVersion);
 
         try
         {
@@ -1744,37 +1761,61 @@ public sealed class MainForm : Form
     private void UpdateClockAndTriggers()
     {
         UpdateClockDisplay();
-        CheckSelectedDeviceAvailability();
+        _ = CheckSelectedDeviceAvailability();
         if (_projectOperationInProgress) { return; }
         _triggerEngine.Tick(DateTimeOffset.Now, _stopwatch.Elapsed, _stopwatch.IsRunning);
     }
 
-    private void CheckSelectedDeviceAvailability(bool force = false)
+    private async Task ConfigureOutputAsync(ProjectSettings settings, long version)
     {
+        _outputUnavailable = true;
+        try
+        {
+            var snapshot = await _deviceManager.CaptureSnapshotAsync().WaitAsync(TimeSpan.FromSeconds(2));
+            if (IsDisposed || Disposing || version != _outputConfigurationVersion
+                || !ReferenceEquals(settings, _projectManager.Current.Settings)) { return; }
+            var binding = AudioOutputBinding.Create(settings.OutputDevice, snapshot)
+                ?? throw new InvalidOperationException("出力先を安全に識別できません。設定で特定の出力デバイスを選び直してください。");
+            if (_outputBinding is not null && _outputBinding != binding) { StopForEmergency(invalidateConfiguration: false); }
+            _audioEngine.SelectOutputDevice(binding.Device.DeviceNumber);
+            _audioEngine.SilentLoopEnabled = settings.SilentLoop;
+            _outputBinding = binding;
+            _outputUnavailable = false;
+            _deviceLabel.Text = settings.OutputDevice == "default"
+                ? $"出力: Windows既定 → {binding.Device.Name}" : $"出力: {binding.Device.Name}";
+        }
+        catch (Exception exception)
+        {
+            if (IsDisposed || Disposing || version != _outputConfigurationVersion) { return; }
+            EmergencyStopAll();
+            _outputUnavailable = true;
+            _logger.Error("出力デバイスを使用できません。", exception);
+            _deviceLabel.Text = "出力: エラー（設定を確認）";
+            SetStatus(exception.Message, true);
+        }
+    }
+
+    private Task CheckSelectedDeviceAvailability(bool force = false)
+    {
+        if (!_deviceCheckTask.IsCompleted) { return _deviceCheckTask; }
         var now = DateTimeOffset.Now;
-        if (!force && now < _nextDeviceAvailabilityCheck)
-        {
-            return;
-        }
-
+        if (_outputUnavailable || _outputBinding is not { } binding
+            || (!force && now < _nextDeviceAvailabilityCheck)) { return Task.CompletedTask; }
         _nextDeviceAvailabilityCheck = now.AddSeconds(2);
-        var selectedDeviceNumber = _audioEngine.OutputDeviceNumber;
-        var configuredId = _activeOutputId ?? _projectManager.Current.Settings.OutputDevice;
-        if (selectedDeviceNumber < 0 || _outputUnavailable) { return; }
-        var devices = _deviceManager.GetOutputDevices();
-        var selected = AudioDeviceManager.FindConfiguredDevice(devices, configuredId);
-        if (selected is not null && selected.DeviceNumber == selectedDeviceNumber
-            && devices.Any(device => device.DeviceNumber == selectedDeviceNumber
-                && string.Equals(device.PersistentId, selected.PersistentId, StringComparison.OrdinalIgnoreCase)))
-        {
-            return;
-        }
+        return _deviceCheckTask = CheckBoundOutputAsync(binding);
+    }
 
+    private async Task CheckBoundOutputAsync(AudioOutputBinding binding)
+    {
+        bool available;
+        try { available = binding.Matches(await _deviceManager.CaptureSnapshotAsync().WaitAsync(TimeSpan.FromSeconds(2))); }
+        catch { available = false; }
+        if (IsDisposed || Disposing || !ReferenceEquals(binding, _outputBinding) || _outputUnavailable || available) { return; }
         EmergencyStopAll();
         _outputUnavailable = true;
         _deviceLabel.Text = "出力: 切断・変更検出（設定で選び直す）";
-        _logger.Warning("出力デバイスの切断または番号変更を検出し、安全停止しました。");
-        SetStatus("出力先が変化しました。自動切替は行いません。設定で出力先を確認してください。", true);
+        _logger.Warning("出力デバイスまたはWindows既定出力の変更を検出し、安全停止しました。");
+        SetStatus("出力先が変化しました。設定で出力先を確認して選び直してください。", true);
     }
 
     private void UpdateClockDisplay()
@@ -1795,7 +1836,7 @@ public sealed class MainForm : Form
 
     private void OnTriggerFired(object? sender, TriggerFiredEventArgs eventArgs)
     {
-        if (_triggerEngine.IsSuspended || _projectOperationInProgress) { return; }
+        if (!eventArgs.IsCurrent || _triggerEngine.IsSuspended || _projectOperationInProgress) { return; }
         var trigger = eventArgs.Trigger;
         var targetIds = (string.IsNullOrWhiteSpace(trigger.TargetGroup)
             ? [trigger.TargetSoundId]
@@ -1821,7 +1862,7 @@ public sealed class MainForm : Form
                     _ = PlaySoundAsync(targetId);
                     break;
                 case TriggerAction.Stop:
-                    _audioEngine.Stop(targetId);
+                    StopSound(targetId);
                     break;
                 case TriggerAction.Pause:
                     _audioEngine.Pause(targetId);
@@ -1894,20 +1935,11 @@ public sealed class MainForm : Form
             return;
         }
 
-        if (eventArgs.Recovered)
-        {
-            _projectManager.Current.Settings.OutputDevice = "default";
-            _projectManager.MarkDirty();
-            _deviceLabel.Text = "出力: Windows 既定の出力（自動復旧）";
-            SetStatus("出力デバイス異常を検出し、Windows既定の出力へ切り替えました。再生中の音源は安全のため停止しました。", true);
-        }
-        else
-        {
-            EmergencyStopAll();
-            _outputUnavailable = true;
-            _deviceLabel.Text = "出力: エラー（設定で選び直す）";
-            SetStatus("音声出力デバイスを復旧できません。接続とWindowsの音声設定を確認してください。", true);
-        }
+        // Even a legacy/recovered notification must never authorize automatic rerouting.
+        EmergencyStopAll();
+        _outputUnavailable = true;
+        _deviceLabel.Text = "出力: エラー（設定で選び直す）";
+        SetStatus("音声出力デバイス異常を検出しました。接続とWindowsの設定を確認し、出力先を選び直してください。", true);
     }
 
     private void UpdateProjectHeader()

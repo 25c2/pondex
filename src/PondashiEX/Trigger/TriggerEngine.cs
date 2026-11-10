@@ -12,6 +12,10 @@ public sealed class TriggerEngine
     private IReadOnlyList<TriggerDefinition> _triggers = [];
     private DateTimeOffset? _lastTickNow;
     private TimeSpan _lastStopwatchElapsed;
+    private bool _stopwatchHasStarted;
+    private bool _resumeNeedsBaseline;
+    private long _dispatchGeneration;
+    private bool _requireFreshSoundStart;
 
     private bool _suspended;
 
@@ -22,26 +26,49 @@ public sealed class TriggerEngine
         lock (_sync)
         {
             _suspended = true;
-            ClearPending();
+            _requireFreshSoundStart = true;
+            ClearSoundNotifications();
+            _dispatchGeneration++;
         }
     }
 
-    public void Resume()
+    public void Resume(DateTimeOffset? now = null, TimeSpan? stopwatchElapsed = null, bool stopwatchRunning = false)
     {
         lock (_sync)
         {
-            ClearPending();
+            if (!_suspended) { return; }
+            ClearSoundNotifications();
             _suspended = false;
+            _resumeNeedsBaseline = true;
+            if (now is { } baselineNow && stopwatchElapsed is { } elapsed)
+            {
+                EstablishResumeBaseline(baselineNow, elapsed, stopwatchRunning);
+            }
         }
     }
 
-    private void ClearPending()
+    private void ClearSoundNotifications()
     {
         _soundStarted.Clear();
         _soundEndedSinceTick.Clear();
-        _latchedTriggers.Clear();
-        _lastTickNow = null;
-        _lastStopwatchElapsed = TimeSpan.Zero;
+    }
+
+    private void EstablishResumeBaseline(DateTimeOffset now, TimeSpan elapsed, bool running)
+    {
+        if (elapsed < _lastStopwatchElapsed) { ResetStopwatch(); }
+        _stopwatchHasStarted |= running || elapsed > TimeSpan.Zero;
+        if (_stopwatchHasStarted)
+        {
+            foreach (var trigger in _triggers.Where(trigger => trigger.Enabled
+                && trigger.TriggerType == TriggerType.StopwatchElapsed
+                && trigger.Parameters.Elapsed is { } target && target <= elapsed))
+            {
+                _latchedTriggers.Add(trigger.Id);
+            }
+        }
+        _lastTickNow = now;
+        _lastStopwatchElapsed = elapsed;
+        _resumeNeedsBaseline = false;
     }
 
     public void ResetStopwatch()
@@ -53,6 +80,8 @@ public sealed class TriggerEngine
                 _latchedTriggers.Remove(trigger.Id);
             }
             _lastStopwatchElapsed = TimeSpan.Zero;
+            _stopwatchHasStarted = false;
+            _dispatchGeneration++;
         }
     }
 
@@ -68,6 +97,7 @@ public sealed class TriggerEngine
         lock (_sync)
         {
             _triggers = triggers;
+            _dispatchGeneration++;
             if (!preserveRuntimeState)
             {
                 _soundStarted.Clear();
@@ -75,6 +105,9 @@ public sealed class TriggerEngine
                 _latchedTriggers.Clear();
                 _lastTickNow = null;
                 _lastStopwatchElapsed = TimeSpan.Zero;
+                _stopwatchHasStarted = false;
+                _resumeNeedsBaseline = false;
+                _requireFreshSoundStart = false;
                 return;
             }
 
@@ -107,7 +140,8 @@ public sealed class TriggerEngine
         lock (_sync)
         {
             if (_suspended) { return; }
-            _soundStarted.Remove(soundId);
+            var wasStarted = _soundStarted.Remove(soundId);
+            if (_requireFreshSoundStart && !wasStarted) { return; }
             if (naturalEnd)
             {
                 _soundEndedSinceTick.Add(soundId);
@@ -143,11 +177,15 @@ public sealed class TriggerEngine
         bool stopwatchRunning = true)
     {
         List<TriggerDefinition> fired;
+        long generation;
         lock (_sync)
         {
             if (_suspended) { return []; }
+            if (_resumeNeedsBaseline) { EstablishResumeBaseline(now, stopwatchElapsed, stopwatchRunning); }
             if (stopwatchElapsed < _lastStopwatchElapsed) { ResetStopwatch(); }
+            _stopwatchHasStarted |= stopwatchRunning;
             _lastStopwatchElapsed = stopwatchElapsed;
+            generation = _dispatchGeneration;
             fired = [];
             foreach (var trigger in _triggers.Where(trigger => trigger.Enabled))
             {
@@ -177,10 +215,17 @@ public sealed class TriggerEngine
 
         foreach (var trigger in fired)
         {
-            TriggerFired?.Invoke(this, new TriggerFiredEventArgs(trigger));
+            var args = new TriggerFiredEventArgs(trigger, () => IsDispatchCurrent(generation));
+            if (!args.IsCurrent) { break; }
+            TriggerFired?.Invoke(this, args);
         }
 
         return fired;
+    }
+
+    private bool IsDispatchCurrent(long generation)
+    {
+        lock (_sync) { return !_suspended && generation == _dispatchGeneration; }
     }
 
     private bool ShouldFire(
@@ -218,15 +263,7 @@ public sealed class TriggerEngine
         }
 
         var previousAtCurrentOffset = previous.ToOffset(now.Offset);
-        var candidate = new DateTimeOffset(
-            previousAtCurrentOffset.Year,
-            previousAtCurrentOffset.Month,
-            previousAtCurrentOffset.Day,
-            target.Hour,
-            target.Minute,
-            target.Second,
-            target.Millisecond,
-            now.Offset);
+        var candidate = new DateTimeOffset(previousAtCurrentOffset.Date.AddTicks(target.Ticks), now.Offset);
         if (candidate <= previousAtCurrentOffset)
         {
             candidate = candidate.AddDays(1);
@@ -247,10 +284,16 @@ public sealed class TriggerEngine
 
 public sealed class TriggerFiredEventArgs : EventArgs
 {
+    private readonly Func<bool>? _isCurrent;
+
     public TriggerFiredEventArgs(TriggerDefinition trigger)
     {
         Trigger = trigger;
     }
+
+    internal TriggerFiredEventArgs(TriggerDefinition trigger, Func<bool> isCurrent) : this(trigger) => _isCurrent = isCurrent;
+
+    public bool IsCurrent => _isCurrent?.Invoke() ?? true;
 
     public TriggerDefinition Trigger { get; }
 }

@@ -1,4 +1,5 @@
 using NAudio.Wave;
+using System.Runtime.InteropServices;
 
 namespace PondashiEX.Audio;
 
@@ -9,8 +10,31 @@ public sealed record AudioDeviceInfo(int DeviceNumber, string Name, string Persi
 
 public sealed class AudioDeviceManager
 {
+    private readonly Func<AudioDeviceSnapshot>? _captureSnapshot;
+    private readonly object _captureSync = new();
+    private Task<AudioDeviceSnapshot>? _captureTask;
+
+    public AudioDeviceManager() { }
+
+    internal AudioDeviceManager(Func<AudioDeviceSnapshot> captureSnapshot) => _captureSnapshot = captureSnapshot;
+
+    public AudioDeviceSnapshot CaptureSnapshot() => _captureSnapshot?.Invoke()
+        ?? new AudioDeviceSnapshot(GetOutputDevices(), QueryDefaultOutput());
+
+    public Task<AudioDeviceSnapshot> CaptureSnapshotAsync()
+    {
+        lock (_captureSync)
+        {
+            // A driver call cannot be forcibly cancelled. Reuse it while pending,
+            // including after a caller timeout, instead of accumulating blocked workers.
+            if (_captureTask is null || _captureTask.IsCompleted) { _captureTask = Task.Run(CaptureSnapshot); }
+            return _captureTask;
+        }
+    }
+
     public IReadOnlyList<AudioDeviceInfo> GetOutputDevices()
     {
+        if (_captureSnapshot is not null) { return _captureSnapshot().Devices; }
         var devices = new List<AudioDeviceInfo> { AudioDeviceInfo.Default };
         for (var index = 0; index < WaveOutEvent.DeviceCount; index++)
         {
@@ -69,4 +93,42 @@ public sealed class AudioDeviceManager
 
         return $"waveout-product:{capabilities.ManufacturerGuid:D}:{capabilities.ProductGuid:D}:{capabilities.ProductName}";
     }
+
+    private static DefaultOutputIdentity? QueryDefaultOutput()
+    {
+        if (!OperatingSystem.IsWindows()) { return null; }
+        // Microsoft mmddk.h: DRVM_MAPPER_PREFERRED_GET, DRV_QUERYFUNCTIONINSTANCEIDSIZE / ID.
+        const uint preferredGet = 0x2015, querySize = 0x0812, queryId = 0x0811;
+        try
+        {
+            if (WaveOutMessagePair(new IntPtr(-1), preferredGet, out var number, out _) != 0
+                || number >= WaveOutEvent.DeviceCount) { return null; }
+            var device = new IntPtr(number);
+            if (WaveOutMessageSize(device, querySize, out var size, UIntPtr.Zero) != 0
+                || size < 2 || size > 64 * 1024) { return null; }
+            // Reserve UTF-16 storage even for drivers reporting a character count.
+            // Standard drivers report bytes; passing their reported size remains unchanged.
+            var bufferBytes = checked((int)size * 2);
+            var buffer = Marshal.AllocHGlobal(bufferBytes);
+            try
+            {
+                // Zero initialization bounds PtrToStringUni even on a faulty driver response.
+                Marshal.Copy(new byte[bufferBytes], 0, buffer, bufferBytes);
+                if (WaveOutMessageBuffer(device, queryId, buffer, new UIntPtr(size)) != 0) { return null; }
+                var id = Marshal.PtrToStringUni(buffer, (int)size)?.TrimEnd('\0');
+                return string.IsNullOrWhiteSpace(id) ? null : new((int)number, id);
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+        catch { return null; } // Unsupported/removed drivers fail closed; explicit selection remains possible.
+    }
+
+    [DllImport("winmm.dll", EntryPoint = "waveOutMessage", ExactSpelling = true)]
+    private static extern uint WaveOutMessagePair(IntPtr device, uint message, out uint first, out uint second);
+
+    [DllImport("winmm.dll", EntryPoint = "waveOutMessage", ExactSpelling = true)]
+    private static extern uint WaveOutMessageSize(IntPtr device, uint message, out uint size, UIntPtr unused);
+
+    [DllImport("winmm.dll", EntryPoint = "waveOutMessage", ExactSpelling = true)]
+    private static extern uint WaveOutMessageBuffer(IntPtr device, uint message, IntPtr buffer, UIntPtr size);
 }

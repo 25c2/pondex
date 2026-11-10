@@ -2,6 +2,7 @@ namespace PondashiEX.Utility;
 
 public interface IAppLogger
 {
+    LoggerDiagnostics Diagnostics => default;
     bool DetailedLoggingEnabled { get => false; set { } }
 
     void Debug(string message) { }

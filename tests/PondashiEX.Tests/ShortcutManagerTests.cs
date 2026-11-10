@@ -24,6 +24,28 @@ public sealed class ShortcutManagerTests
     }
 
     [Fact]
+    public void ExclusiveCollision_IsRejectedWhilePlainAndShiftRemainBatched()
+    {
+        var first = new SoundDefinition { Key = "A", Group = " BGM " };
+        var second = new SoundDefinition { Key = "A", Group = "bgm" };
+        var group = new[] { new GroupShortcutDefinition { Key = "A", Group = "BGM" } };
+        Assert.Empty(_manager.Resolve(Keys.Alt | Keys.A, [first, second], group, false));
+        Assert.Equal(2, _manager.Resolve(Keys.A, [first, second], group, false).Count);
+        Assert.Equal(2, _manager.Resolve(Keys.Shift | Keys.A, [first, second], group, false).Count);
+        second.Key = "B";
+        Assert.Equal(first.Id, Assert.Single(_manager.Resolve(Keys.Alt | Keys.A, [first, second], group, false)).SoundId);
+    }
+
+    [Fact]
+    public void UngroupedExclusiveCollision_IsRejectedWithoutChangingPlainMultiPlay()
+    {
+        var first = new SoundDefinition { Key = "A" };
+        var second = new SoundDefinition { Key = "A", Group = " " };
+        Assert.Empty(_manager.Resolve(Keys.Alt | Keys.A, [first, second], false));
+        Assert.Equal(2, _manager.Resolve(Keys.A, [first, second], false).Count);
+    }
+
+    [Fact]
     public void PlainKey_PlaysAllSoundsAssignedToSameKey()
     {
         var commands = _manager.Resolve(Keys.A, [_first, _second], textEditing: false);

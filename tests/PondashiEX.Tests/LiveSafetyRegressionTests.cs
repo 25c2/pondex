@@ -27,6 +27,9 @@ public sealed class LiveSafetyRegressionTests
         engine.Resume();
         Assert.Empty(engine.Tick(DateTimeOffset.Now, TimeSpan.Zero));
         engine.OnSoundEnded(source, true);
+        Assert.Empty(engine.Tick(DateTimeOffset.Now, TimeSpan.Zero));
+        engine.OnSoundStarted(source);
+        engine.OnSoundEnded(source, true);
         Assert.Single(engine.Tick(DateTimeOffset.Now, TimeSpan.Zero));
     }
 
@@ -45,8 +48,8 @@ public sealed class LiveSafetyRegressionTests
         engine.Suspend();
         Assert.Empty(engine.Tick(now.AddSeconds(2), TimeSpan.FromSeconds(2)));
         engine.Resume();
-        // Missed clock events are not replayed; the stopwatch resumes explicitly.
-        Assert.Single(engine.Tick(now.AddSeconds(3), TimeSpan.FromSeconds(3)));
+        // Neither missed clock nor past stopwatch events may replay on resume.
+        Assert.Empty(engine.Tick(now.AddSeconds(3), TimeSpan.FromSeconds(3)));
     }
 
     [Fact]

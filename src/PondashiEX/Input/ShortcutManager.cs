@@ -44,8 +44,8 @@ public sealed class ShortcutManager
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var targets = sounds.ToArray();
-        if (exclusive && targets.Where(sound => Matches(sound.Key, keyCode) && !string.IsNullOrWhiteSpace(sound.Group))
-            .GroupBy(sound => sound.Group.Trim(), StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
+        if (exclusive && targets.Where(sound => Matches(sound.Key, keyCode))
+            .GroupBy(sound => sound.Group?.Trim() ?? string.Empty, StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
         {
             return [];
         }

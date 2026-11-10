@@ -51,11 +51,11 @@ public sealed class FileLoggerTests
         var writer = new StringWriter();
         var logger = new FileLogger(writer, queueCapacity: 8);
 
-        logger.Info("音源\r\n2026-01-01 [ERROR] 偽装\t\u0001");
+        logger.Info("音源\r\n2026-01-01 [ERROR] 偽装\t\u0001\u2028\u2029\u202E");
         await logger.DisposeAsync();
 
         var output = writer.ToString();
-        Assert.Contains("音源\\r\\n2026-01-01 [ERROR] 偽装\\t\\u0001", output);
+        Assert.Contains("音源\\r\\n2026-01-01 [ERROR] 偽装\\t\\u0001\\u2028\\u2029\\u202E", output);
         Assert.Single(output.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries));
     }
 
@@ -68,6 +68,8 @@ public sealed class FileLoggerTests
         var exception = await Record.ExceptionAsync(async () => await logger.DisposeAsync());
 
         Assert.Null(exception);
+        Assert.True(logger.Diagnostics.IsDisabled);
+        Assert.Equal(1, logger.Diagnostics.WriteFailures);
     }
 
     private sealed class FlushTrackingWriter : StringWriter

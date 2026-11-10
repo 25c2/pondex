@@ -45,7 +45,7 @@ public sealed class MainFormRegressionTests
             }
         };
         timer.Start();
-        Method("ShowSettings").Invoke(form, null);
+        PumpUntil((Task)Method("ShowSettings").Invoke(form, null)!);
         Assert.Null(callbackFailure);
         Assert.True(manager.Current.Settings.DetailedLogging);
         Assert.True(manager.IsDirty);
@@ -865,7 +865,8 @@ public sealed class MainFormRegressionTests
     private static extern int DwmGetWindowAttribute(IntPtr window, uint attribute, out int value, int size);
 
     private static MainForm CreateForm(ProjectManager manager, AudioEngine engine, string logDirectory, IAppLogger? logger = null) =>
-        new(manager, engine, new AudioDeviceManager(), new TriggerEngine(), logger ?? new NullLogger(), logDirectory)
+        new(manager, engine, new AudioDeviceManager(() => new AudioDeviceSnapshot(
+            [AudioDeviceInfo.Default, new AudioDeviceInfo(0, "Test output", "test-output")], new DefaultOutputIdentity(0, "test-endpoint"))), new TriggerEngine(), logger ?? new NullLogger(), logDirectory)
         { ShowInTaskbar = false, Opacity = 0, Font = UiTheme.CreateFont(10F) };
 
     private static AudioEngine CreateEngine() => new(new NullLogger(), (_, _) => new FakeOutput());
