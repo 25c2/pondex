@@ -33,7 +33,7 @@ internal static class WinFormsTest
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetKeyboardState(byte[] keyState);
 
-    public static void Run(Action action)
+    public static void Run(Action action, TimeSpan? timeout = null)
     {
         Exception? failure = null;
         var thread = new Thread(() =>
@@ -53,7 +53,7 @@ internal static class WinFormsTest
         { IsBackground = true };
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "UIテストがタイムアウトしました。");
+        Assert.True(thread.Join(timeout ?? TimeSpan.FromSeconds(30)), "UIテストがタイムアウトしました。");
         if (failure is not null)
         {
             ExceptionDispatchInfo.Capture(failure).Throw();

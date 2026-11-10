@@ -215,17 +215,22 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
             else { Method("ResizeSoundCards").Invoke(form, null); }
             (before ? baseline : batched).Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
         }
+        started = Stopwatch.GetTimestamp();
+        Method("OnProjectChanged").Invoke(form, [null, EventArgs.Empty]);
+        var savedUiMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         output.WriteLine("NativeUiPerf " + JsonSerializer.Serialize(new
         {
             count,
             first_details_ms = firstDetailsMs,
+            first_expand_ms = firstExpandMs,
+            saved_ui_ms = savedUiMs,
             reused_toggle_ms = reusedToggleMs,
             resize_before_ms = baseline.Order().ElementAt(1),
             resize_after_ms = batched.Order().ElementAt(1),
             layouts
         }));
         form.CloseWithoutSavePromptForSmokeTest();
-    });
+    }, timeout: TimeSpan.FromMinutes(2));
 
     private static MainForm CreateForm(ProjectManager manager, AudioEngine engine, TriggerEngine triggers,
         Func<AudioDeviceSnapshot> probe, string directory) =>

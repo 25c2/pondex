@@ -106,7 +106,14 @@ public sealed class EditingLockTests
         card.EndEditing();
         Application.DoEvents();
         dispatcher.OnKeyChanged(Keys.A, true);
-        Assert.True(SpinWait.SpinUntil(() => engine.GetState(sound.Id) == PondashiEX.Audio.PlaybackState.Playing, TimeSpan.FromSeconds(5)));
+        var playDeadline = Environment.TickCount64 + 5000;
+        while (engine.GetState(sound.Id) != PondashiEX.Audio.PlaybackState.Playing && Environment.TickCount64 < playDeadline)
+        {
+            // Device preflight now resumes on the UI thread, as in the real message loop.
+            Application.DoEvents();
+            Thread.Yield();
+        }
+        Assert.Equal(PondashiEX.Audio.PlaybackState.Playing, engine.GetState(sound.Id));
         dispatcher.OnKeyChanged(Keys.A, false);
         Call(form, "EmergencyStopAll");
         Assert.Empty(engine.GetActiveSoundIds());
