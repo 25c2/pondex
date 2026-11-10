@@ -234,7 +234,9 @@ public sealed class AudioEngine : IAudioEngine
             laneAcquired = true;
             await _preparationSlots.WaitAsync(token).ConfigureAwait(false);
             slotAcquired = true;
-            prepared = await Task.Run(
+            // Decoder opens can block in a driver/file system. Keep those bounded
+            // workers off the shared pool used by completion and logging tasks.
+            prepared = await Task.Factory.StartNew(
                 () =>
                 {
                     token.ThrowIfCancellationRequested();
@@ -255,7 +257,7 @@ public sealed class AudioEngine : IAudioEngine
                         Interlocked.Decrement(ref _preparationsActive);
                         Interlocked.Add(ref _preparationTicks, Stopwatch.GetElapsedTime(started).Ticks);
                     }
-                }, token).ConfigureAwait(false);
+                }, token, TaskCreationOptions.LongRunning, TaskScheduler.Default).ConfigureAwait(false);
             completionInstance = prepared;
             // Stop/device changes are accounted for as superseded requests below;
             // explicit caller cancellation must also dispose a decoder already in flight.

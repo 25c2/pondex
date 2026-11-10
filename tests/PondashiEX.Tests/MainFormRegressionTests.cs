@@ -240,6 +240,7 @@ public sealed class MainFormRegressionTests
         using var form = CreateForm(manager, engine, directory.Path);
         form.Show();
         var status = Descendants(form).OfType<StatusStrip>().Single();
+        PumpUntil((Task)typeof(MainForm).GetField("_outputConfigurationTask", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!);
         using var font = UiTheme.CreateFont(10F * fontScale);
         status.Font = font;
         var resume = status.Items.OfType<ToolStripButton>().Single(item => item.Text == "自動イベント再開");
