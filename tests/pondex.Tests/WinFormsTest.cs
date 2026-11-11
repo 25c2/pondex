@@ -13,6 +13,11 @@ public sealed class WinFormsTestGroup
 
 internal static class WinFormsTest
 {
+    [ThreadStatic]
+    private static Action<string>? _note;
+
+    internal static void Note(string phase) => _note?.Invoke(phase);
+
     internal static void WithNeutralKeyboard(Action action)
     {
         // Synthetic WM_KEY*/WM_MOUSEWHEEL messages otherwise inherit physical
@@ -36,24 +41,31 @@ internal static class WinFormsTest
     public static void Run(Action action, TimeSpan? timeout = null)
     {
         Exception? failure = null;
+        var phase = "start thread";
         var thread = new Thread(() =>
         {
             try
             {
+                _note = value => Volatile.Write(ref phase, value);
+                Note("enable visual styles");
                 Application.EnableVisualStyles();
+                Note("initialize application colors");
                 UiTheme.ConfigureApplicationColors(false);
+                Note("test action");
                 action();
             }
             catch (Exception exception) { failure = exception; }
             finally
             {
+                Note("restore application colors");
                 UiTheme.ConfigureApplicationColors(false);
+                _note = null;
             }
         })
         { IsBackground = true };
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        Assert.True(thread.Join(timeout ?? TimeSpan.FromSeconds(30)), "UIテストがタイムアウトしました。");
+        Assert.True(thread.Join(timeout ?? TimeSpan.FromSeconds(30)), $"UIテストがタイムアウトしました: {Volatile.Read(ref phase)}");
         if (failure is not null)
         {
             ExceptionDispatchInfo.Capture(failure).Throw();

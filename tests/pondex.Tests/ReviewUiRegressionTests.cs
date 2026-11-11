@@ -16,6 +16,7 @@ namespace pondex.Tests;
 public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
 {
     private static readonly bool[] ResizeMeasurementOrder = [true, false, false, true, true, false];
+    private static readonly bool[] LargeResizeMeasurementOrder = [true, false];
     private static readonly AudioDeviceSnapshot Initial = new(
         [AudioDeviceInfo.Default, new AudioDeviceInfo(0, "Console", "console"), new AudioDeviceInfo(1, "Speakers", "speakers")], new(0, "console-endpoint"));
 
@@ -177,11 +178,13 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
     [InlineData(500)]
     public void CardResize_BatchesParentLayoutsAndDetailsReuseControls(int count) => WinFormsTest.Run(() =>
     {
+        WinFormsTest.Note($"card measurement: construct {count} cards");
         using var directory = new TestDirectory();
         using var manager = new ProjectManager(new ProjectSerializer());
         manager.Current.Sounds.AddRange(Enumerable.Range(0, count).Select(i => new SoundDefinition { Name = $"Sound {i}" }));
         using var engine = new AudioEngine(new Logger(), (_, _) => new Output());
         using var form = CreateForm(manager, engine, new TriggerEngine(), () => Initial, directory.Path);
+        WinFormsTest.Note($"card measurement: show {count} cards");
         Initialize(form);
         var list = Descendants(form).OfType<ThemedFlowLayoutPanel>().Single();
         var layouts = 0;
@@ -190,6 +193,7 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
         Assert.InRange(layouts, 0, 12);
         var cards = list.Controls.OfType<SoundCard>().ToArray();
         var card = cards[0];
+        WinFormsTest.Note("card measurement: create details");
         var started = Stopwatch.GetTimestamp();
         card.EnsureDetailsCreated();
         var firstDetailsMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
@@ -199,14 +203,19 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
         button.PerformClick();
         var firstExpandMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         started = Stopwatch.GetTimestamp();
+        WinFormsTest.Note("card measurement: reuse details");
         for (var i = 0; i < 10; i++) { button.PerformClick(); }
         var reusedToggleMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds / 10;
         Assert.Equal(controls, Descendants(card).ToArray());
         var targetWidth = card.Width;
         var baseline = new List<double>();
         var batched = new List<double>();
-        foreach (var before in ResizeMeasurementOrder)
+        // Keep the intentionally quadratic legacy comparison bounded at 500 cards.
+        // All functional assertions still run for every size; report sample count.
+        var measurementOrder = count >= 500 ? LargeResizeMeasurementOrder : ResizeMeasurementOrder;
+        foreach (var before in measurementOrder)
         {
+            WinFormsTest.Note($"card measurement: resize {count}, legacy={before}");
             list.SuspendLayout();
             foreach (var item in cards) { item.Width = targetWidth + 10; }
             list.ResumeLayout(true);
@@ -221,12 +230,13 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
         output.WriteLine("NativeUiPerf " + JsonSerializer.Serialize(new
         {
             count,
+            resize_samples = baseline.Count,
             first_details_ms = firstDetailsMs,
             first_expand_ms = firstExpandMs,
             saved_ui_ms = savedUiMs,
             reused_toggle_ms = reusedToggleMs,
-            resize_before_ms = baseline.Order().ElementAt(1),
-            resize_after_ms = batched.Order().ElementAt(1),
+            resize_before_ms = baseline.Order().ElementAt(baseline.Count / 2),
+            resize_after_ms = batched.Order().ElementAt(batched.Count / 2),
             layouts
         }));
         form.CloseWithoutSavePromptForSmokeTest();

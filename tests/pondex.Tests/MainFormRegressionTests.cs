@@ -944,7 +944,7 @@ public sealed class MainFormRegressionTests
         Method("OnGlobalKeyChanged").Invoke(form, [null, new GlobalKeyEventArgs(Keys.A, true)]);
         var emergency = form.MainMenuStrip!.Items.OfType<ToolStripMenuItem>()
             .SelectMany(item => item.DropDownItems.OfType<ToolStripMenuItem>())
-            .Single(item => item.Text?.StartsWith("緊急強制停止", StringComparison.Ordinal) == true);
+            .Single(item => item.Name == "emergencyStopMenuItem");
         Assert.Equal(Keys.None, emergency.ShortcutKeys);
         emergency.PerformClick();
         Application.DoEvents();
@@ -1042,13 +1042,17 @@ public sealed class MainFormRegressionTests
         manager.Current.Settings.DarkMode = dark;
         manager.Current.Project.ThemeColor = "#FFFFFF";
         using var engine = CreateEngine();
+        WinFormsTest.Note("clock contrast: create form");
         using var form = CreateForm(manager, engine, directory.Path);
         var clock = (Label)typeof(MainForm).GetField("_clockLabel", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
+        WinFormsTest.Note("clock contrast: update clock");
         Method("UpdateClockDisplay").Invoke(form, null);
         Assert.NotEqual(clock.BackColor.ToArgb(), clock.ForeColor.ToArgb());
         typeof(MainForm).GetField("_stopwatchMode", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(form, true);
+        WinFormsTest.Note("clock contrast: update stopwatch");
         Method("UpdateClockDisplay").Invoke(form, null);
         Assert.NotEqual(clock.BackColor.ToArgb(), clock.ForeColor.ToArgb());
+        WinFormsTest.Note("clock contrast: close form");
         form.CloseWithoutSavePromptForSmokeTest();
     });
 

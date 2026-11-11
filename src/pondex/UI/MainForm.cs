@@ -277,7 +277,7 @@ public sealed class MainForm : Form
                 ? "再生開始の内部処理時間を計測します。実際の出音遅延ではありません。"
                 : "再生開始の計測を終了しました。", false);
         };
-        var emergencyStop = new ToolStripMenuItem("緊急停止", null, (_, _) => EmergencyStopAll());
+        var emergencyStop = new ToolStripMenuItem("緊急停止", null, (_, _) => EmergencyStopAll()) { Name = "emergencyStopMenuItem" };
         operations.DropDownItems.AddRange(
             [stopAllItem, muteMenuItem, new ToolStripSeparator(), soundOrder, groupShortcuts,
                 new ToolStripSeparator(), diagnostics, timings, new ToolStripSeparator(), emergencyStop]);

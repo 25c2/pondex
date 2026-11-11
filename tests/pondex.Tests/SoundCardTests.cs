@@ -317,7 +317,7 @@ public sealed class SoundCardTests
             .Single(numeric => numeric.DecimalPlaces == 2 && numeric.Maximum == 24 * 60 * 60);
         var playButton = Descendants(card)
             .OfType<Button>()
-            .Single(button => button.Text.Contains("再生", StringComparison.Ordinal));
+            .Single(button => button.Name == "playSoundButton");
         loopStart.Text = "2.50";
         double? secondsWhenRequested = null;
         card.PlayRequested += (_, _) => secondsWhenRequested = sound.Loop.StartSeconds;

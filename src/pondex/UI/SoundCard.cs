@@ -103,6 +103,7 @@ public sealed class SoundCard : UserControl
             AutoEllipsis = true
         };
         var playButton = CreateButton("▶ 再生", Color.FromArgb(215, 245, 215));
+        playButton.Name = "playSoundButton";
         var stopButton = CreateButton("■ 停止", Color.FromArgb(255, 225, 225));
         _pauseButton = CreateButton("Ⅱ 一時停止", Color.FromArgb(255, 245, 205));
         _detailsButton = CreateButton("詳細 ▼", SystemColors.Control);
