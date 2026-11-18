@@ -353,8 +353,8 @@ public sealed class MainFormRegressionTests
             Assert.True(panel.ClientRectangle.Contains(numeric.Bounds));
             var slider = Descendants(panel).OfType<TrackBar>().Single();
             Assert.True(slider.Width >= (int)(80 * slider.DeviceDpi / 96F));
-            Assert.True(panel.ClientRectangle.Contains(slider.Bounds));
-            Assert.True(header.ClientRectangle.Contains(panel.Bounds));
+            Assert.True(panel.ClientRectangle.Contains(slider.Bounds), $"幅{width}: slider={slider.Bounds}, panel={panel.ClientRectangle}");
+            Assert.True(header.ClientRectangle.Contains(panel.Bounds), $"幅{width}: panel={panel.Bounds}, header={header.ClientRectangle}");
             CaptureSnapshot(form, $"master-{fontScale}-{width}.png");
         }
         finally
@@ -568,7 +568,7 @@ public sealed class MainFormRegressionTests
             Assert.Equal(compact ? 3 : 6, header.ColumnCount);
             Assert.Equal(compact ? 4 : 2, header.RowCount);
             var mute = Assert.Single(master.Parent.Controls.OfType<CheckBox>());
-            Assert.True(master.Parent.ClientRectangle.Contains(mute.Bounds));
+            Assert.True(master.Parent.ClientRectangle.Contains(mute.Bounds), $"幅{logicalWidth}: mute={mute.Bounds}, panel={master.Parent.ClientRectangle}");
             Assert.All(master.Parent.Controls.Cast<Control>(), control => Assert.True(master.Parent.ClientRectangle.Contains(control.Bounds)));
             Assert.True(master.Width >= 80, $"幅{logicalWidth}のMASTERスライダー幅: {master.Width}");
         }
@@ -586,7 +586,7 @@ public sealed class MainFormRegressionTests
         var dispatcher = (ShortcutDispatcher)typeof(MainForm).GetField("_shortcutDispatcher", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
         dispatcher.OnKeyChanged(Keys.A, true);
         typeof(Form).GetMethod("OnDeactivate", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(form, [EventArgs.Empty]);
-        var pressed = (HashSet<Keys>)typeof(ShortcutDispatcher).GetField("_pressed", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(dispatcher)!;
+        var pressed = (Dictionary<Keys, bool>)typeof(ShortcutDispatcher).GetField("_pressed", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(dispatcher)!;
         Assert.Empty(pressed);
         form.CloseWithoutSavePromptForSmokeTest();
     });

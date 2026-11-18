@@ -419,6 +419,7 @@ public sealed class MainForm : Form
         masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
+        masterPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         var masterCaption = HeaderLabel("MASTER", 8.5F, FontStyle.Bold);
         masterCaption.AutoEllipsis = false;
         masterCaption.AutoSize = true;
@@ -504,7 +505,7 @@ public sealed class MainForm : Form
                     + sliderWidth + masterVolumeControl.Margin.Horizontal
                     + muteColumnWidth + (int)Math.Ceiling(8 * scale), 0);
                 static int RequiredWidth(Control control) => control.GetPreferredSize(Size.Empty).Width + control.Margin.Horizontal;
-                var wideMasterWidth = masterPanel.MinimumSize.Width + masterPanel.Margin.Horizontal;
+                var wideMasterWidth = Math.Max(360 * scale, masterPanel.MinimumSize.Width + masterPanel.Margin.Horizontal);
                 var wideColumns = new float[] {
                     wideMasterWidth,
                     Math.Max(105 * scale, RequiredWidth(clockLabelControl)),
