@@ -504,7 +504,11 @@ public sealed class MainForm : Form
                     + masterUnit.GetPreferredSize(Size.Empty).Width + masterUnit.Margin.Horizontal
                     + sliderWidth + masterVolumeControl.Margin.Horizontal
                     + muteColumnWidth + (int)Math.Ceiling(8 * scale), 0);
-                static int RequiredWidth(Control control) => control.GetPreferredSize(Size.Empty).Width + control.Margin.Horizontal;
+                // Measure text independently of the current cell width so switching
+                // from a wide compact cell cannot increase its own breakpoint.
+                static int RequiredWidth(Control control) => control.Text.Split('\n').Max(line =>
+                    TextRenderer.MeasureText(line, control.Font, Size.Empty, TextFormatFlags.SingleLine).Width)
+                    + control.Padding.Horizontal + control.Margin.Horizontal;
                 var wideMasterWidth = Math.Max(360 * scale, masterPanel.MinimumSize.Width + masterPanel.Margin.Horizontal);
                 var wideColumns = new float[] {
                     wideMasterWidth,
@@ -513,8 +517,9 @@ public sealed class MainForm : Form
                     Math.Max(85 * scale, Math.Max(RequiredWidth(resetButton), RequiredWidth(addButton))),
                     Math.Max(100 * scale, RequiredWidth(stopAllButton))
                 };
-                var wideMinimum = Math.Max(1250 * scale, wideColumns.Sum() + 125 * scale + header.Padding.Horizontal);
-                var compact = header.ClientSize.Width < (int)Math.Ceiling(wideMinimum);
+                var wideMinimum = Math.Max((int)(1250 * scale),
+                    (int)Math.Ceiling(wideColumns.Sum() + 125 * scale + header.Padding.Horizontal));
+                var compact = header.ClientSize.Width < wideMinimum;
                 static int RequiredHeight(Control control) => control.GetPreferredSize(Size.Empty).Height + control.Margin.Vertical;
                 compactClock.RowStyles[0].Height = Math.Max(22 * scale, RequiredHeight(clockModeLabelControl));
                 float[] compactHeights = [
