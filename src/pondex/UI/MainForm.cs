@@ -378,6 +378,7 @@ public sealed class MainForm : Form
             Maximum = 100,
             TickFrequency = 10,
             TickStyle = TickStyle.None,
+            AutoSize = false,
             Value = 100,
             Dock = DockStyle.Fill
         };
@@ -417,7 +418,7 @@ public sealed class MainForm : Form
         masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        masterPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
         var masterCaption = HeaderLabel("MASTER", 8.5F, FontStyle.Bold);
         masterCaption.AutoEllipsis = false;
         masterCaption.AutoSize = true;
@@ -493,13 +494,15 @@ public sealed class MainForm : Form
                 var sliderWidth = (int)Math.Ceiling(80 * scale);
                 var muteWidth = TextRenderer.MeasureText("ミュート中", masterMuteControl.Font,
                     Size.Empty, TextFormatFlags.SingleLine).Width + (int)Math.Ceiling(16 * scale);
-                masterMuteControl.MinimumSize = new Size(muteWidth, 0);
+                var muteColumnWidth = Math.Max(muteWidth, masterMuteControl.GetPreferredSize(Size.Empty).Width)
+                    + masterMuteControl.Margin.Horizontal;
+                masterPanel.ColumnStyles[4].Width = muteColumnWidth;
                 masterPanel.MinimumSize = new Size(
                     masterCaption.GetPreferredSize(Size.Empty).Width + masterCaption.Margin.Horizontal
                     + numericWidth + masterVolumeValue.Margin.Horizontal
                     + masterUnit.GetPreferredSize(Size.Empty).Width + masterUnit.Margin.Horizontal
                     + sliderWidth + masterVolumeControl.Margin.Horizontal
-                    + masterMuteControl.GetPreferredSize(Size.Empty).Width + masterMuteControl.Margin.Horizontal, 0);
+                    + muteColumnWidth + (int)Math.Ceiling(8 * scale), 0);
                 static int RequiredWidth(Control control) => control.GetPreferredSize(Size.Empty).Width + control.Margin.Horizontal;
                 var wideMasterWidth = masterPanel.MinimumSize.Width + masterPanel.Margin.Horizontal;
                 var wideColumns = new float[] {
@@ -612,6 +615,7 @@ public sealed class MainForm : Form
         masterCaption.FontChanged += (_, _) => ArrangeHeader();
         masterVolumeValue.FontChanged += (_, _) => ArrangeHeader();
         masterUnit.FontChanged += (_, _) => ArrangeHeader();
+        masterMuteControl.FontChanged += (_, _) => ArrangeHeader();
         clockLabelControl.FontChanged += (_, _) => ArrangeHeader();
         header.DpiChangedAfterParent += (_, _) => ArrangeHeader();
         header.Layout += (_, _) => ArrangeHeader();

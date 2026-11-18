@@ -385,6 +385,10 @@ public sealed class MainFormRegressionTests
         Method("EmergencyStopAll").Invoke(form, null);
         Application.DoEvents();
         Assert.True(resume.Visible);
+        var cancel = (ToolStripButton)Field("_cancelDiagnosticButton").GetValue(form)!;
+        Assert.False(cancel.Visible);
+        cancel.Visible = true;
+        Application.DoEvents();
         foreach (var button in status.Items.OfType<ToolStripButton>())
         {
             var preferred = button.GetPreferredSize(Size.Empty);
@@ -1105,8 +1109,8 @@ public sealed class MainFormRegressionTests
         var starts = 0;
         engine.PlaybackStarted += (_, _) => starts++;
         var dispatcher = (ShortcutDispatcher)typeof(MainForm).GetField("_shortcutDispatcher", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
-        var held = (HashSet<Keys>)typeof(ShortcutDispatcher).GetField("_pressed", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(dispatcher)!;
-        held.Add(Keys.B);
+        var held = (Dictionary<Keys, bool>)typeof(ShortcutDispatcher).GetField("_pressed", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(dispatcher)!;
+        held.Add(Keys.B, true);
         Method("OnGlobalKeyChanged").Invoke(form, [null, new GlobalKeyEventArgs(Keys.A, true)]);
         var emergency = form.MainMenuStrip!.Items.OfType<ToolStripMenuItem>()
             .SelectMany(item => item.DropDownItems.OfType<ToolStripMenuItem>())
@@ -1117,7 +1121,7 @@ public sealed class MainFormRegressionTests
         Assert.Equal(0, starts);
         Assert.Empty(engine.GetActiveSoundIds());
         Assert.True(manager.Current.Settings.FadeOutOnStopAll);
-        Assert.Contains(Keys.B, held);
+        Assert.Contains(Keys.B, held.Keys);
         form.CloseWithoutSavePromptForSmokeTest();
     });
 

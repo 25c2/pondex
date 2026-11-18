@@ -75,8 +75,7 @@ public sealed class ShortcutManager
 
         try
         {
-            var normalized = assignedKey.Trim().ToUpperInvariant();
-            var converted = _converter.ConvertFromInvariantString(normalized);
+            var converted = ShortcutKey.Parse(assignedKey.Trim(), _converter);
             if (converted is not Keys key)
             {
                 return false;

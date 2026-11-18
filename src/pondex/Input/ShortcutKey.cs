@@ -6,6 +6,13 @@ internal static class ShortcutKey
 {
     private static readonly KeysConverter Converter = new();
 
+    internal static object? Parse(string key, KeysConverter converter) => key.ToUpperInvariant() switch
+    {
+        "SPACE" => Keys.Space,
+        "ENTER" or "RETURN" => Keys.Enter,
+        var normalized => converter.ConvertFromInvariantString(normalized)
+    };
+
     public static bool TryNormalize(string? input, out string normalized)
     {
         normalized = string.Empty;
@@ -19,7 +26,7 @@ internal static class ShortcutKey
 
         try
         {
-            if (Converter.ConvertFromInvariantString(candidate.ToUpperInvariant()) is not Keys keys)
+            if (Parse(candidate, Converter) is not Keys keys)
             {
                 return false;
             }

@@ -17,11 +17,14 @@ public sealed class ShortcutMessageFilterTests
         using var editor = new TextBox { Top = 40 };
         form.Controls.AddRange([button, editor]);
         form.AcceptButton = button;
-        var sound = new SoundDefinition { Key = new KeysConverter().ConvertToInvariantString(key)! };
+        var sound = new SoundDefinition { Key = key == Keys.Space ? "Space" : "Enter" };
         var shortcuts = 0;
         var clicks = 0;
         button.Click += (_, _) => clicks++;
-        var dispatcher = new ShortcutDispatcher(new ShortcutManager(), () => [sound], () => editor.Focused, commands =>
+        var manager = new ShortcutManager();
+        Assert.True(manager.TryParseKey(sound.Key, out var mapped));
+        Assert.Equal(key, mapped);
+        var dispatcher = new ShortcutDispatcher(manager, () => [sound], () => editor.Focused, commands =>
         {
             Assert.Equal(sound.Id, Assert.Single(commands).SoundId);
             shortcuts++;
