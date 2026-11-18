@@ -8,6 +8,7 @@ public sealed class TriggerEngine
     private readonly Dictionary<Guid, SoundClock> _soundStarted = [];
     private readonly HashSet<Guid> _soundEndedSinceTick = [];
     private readonly HashSet<Guid> _latchedTriggers = [];
+    private readonly Dictionary<Guid, (DateOnly Date, TimeOnly Target)> _lastClockFire = [];
     private readonly TimeProvider _timeProvider;
     private IReadOnlyList<TriggerDefinition> _triggers = [];
     private DateTimeOffset? _lastTickNow;
@@ -103,6 +104,7 @@ public sealed class TriggerEngine
                 _soundStarted.Clear();
                 _soundEndedSinceTick.Clear();
                 _latchedTriggers.Clear();
+                _lastClockFire.Clear();
                 _lastTickNow = null;
                 _lastStopwatchElapsed = TimeSpan.Zero;
                 _stopwatchHasStarted = false;
@@ -116,6 +118,10 @@ public sealed class TriggerEngine
                 .Select(trigger => trigger.Id)
                 .ToHashSet();
             _latchedTriggers.RemoveWhere(triggerId => !triggerIds.Contains(triggerId));
+            foreach (var removed in _lastClockFire.Keys.Where(id => !_triggers.Any(trigger => trigger.Id == id)).ToArray())
+            {
+                _lastClockFire.Remove(removed);
+            }
         }
     }
 
@@ -238,7 +244,7 @@ public sealed class TriggerEngine
         return trigger.TriggerType switch
         {
             TriggerType.ClockTime => parameters.ClockTime is { } clockTime
-                && CrossedClockTime(previousNow, now, clockTime),
+                && CrossedClockTime(trigger.Id, previousNow, now, clockTime),
             TriggerType.StopwatchElapsed => parameters.Elapsed is { } stopwatchTarget
                 && stopwatchElapsed >= stopwatchTarget,
             TriggerType.SoundEnded => parameters.SourceSoundId is { } endedSoundId
@@ -252,7 +258,8 @@ public sealed class TriggerEngine
         };
     }
 
-    private static bool CrossedClockTime(
+    private bool CrossedClockTime(
+        Guid triggerId,
         DateTimeOffset? previousNow,
         DateTimeOffset now,
         TimeOnly target)
@@ -269,7 +276,14 @@ public sealed class TriggerEngine
             candidate = candidate.AddDays(1);
         }
 
-        return candidate <= now;
+        var date = DateOnly.FromDateTime(candidate.Date);
+        if (candidate > now || (_lastClockFire.TryGetValue(triggerId, out var previousDate) && target == previousDate.Target && date <= previousDate.Date))
+        {
+            return false;
+        }
+
+        _lastClockFire[triggerId] = (date, target);
+        return true;
     }
 
     private sealed class SoundClock(long started)

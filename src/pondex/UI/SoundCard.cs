@@ -199,9 +199,11 @@ public sealed class SoundCard : UserControl
             _detailsButton.Text = _detailsPanel.Visible ? "詳細 ▲" : "詳細 ▼";
             UpdatePreferredHeight();
         };
+        var lastDetailsWidth = ClientSize.Width;
         SizeChanged += (_, _) =>
         {
-            UpdateState(_state);
+            if (lastDetailsWidth == ClientSize.Width) { return; }
+            lastDetailsWidth = ClientSize.Width;
             if (_detailsPanel.Visible)
             {
                 UpdatePreferredHeight();
@@ -282,7 +284,8 @@ public sealed class SoundCard : UserControl
         _toolTip.SetToolTip(_volumeTrack, "通常は0～100%。再生調整で限界突破を許可すると200%まで使えます。右クリックで音量フェード。");
         _toolTip.SetToolTip(_volumeValue, "通常は0～100%。限界突破時は200%まで。右クリックで100%（標準）へ戻せます。");
         UpdateSummary();
-        _pauseButton.SizeChanged += (_, _) => UpdateState(_state);
+        _pauseButton.SizeChanged += (_, _) => FitPauseButtonText();
+        _pauseButton.FontChanged += (_, _) => FitPauseButtonText();
         UpdateState(PlaybackState.Stopped);
     }
 
@@ -501,17 +504,28 @@ public sealed class SoundCard : UserControl
         _state = state;
         (_stateLabel.Text, _stateLabel.BackColor) = state switch
         {
+            PlaybackState.CheckingOutput => ("出力確認中", _darkMode ? Color.FromArgb(45, 78, 105) : Color.LightSkyBlue),
+            PlaybackState.Preparing => ("準備中", _darkMode ? Color.FromArgb(45, 78, 105) : Color.LightSkyBlue),
+            PlaybackState.Missing => ("音源なし", _darkMode ? Color.FromArgb(113, 49, 54) : Color.MistyRose),
+            PlaybackState.Failed => ("再生失敗", _darkMode ? Color.FromArgb(113, 49, 54) : Color.MistyRose),
             PlaybackState.Playing => ("再生中", _darkMode ? Color.FromArgb(42, 91, 59) : Color.LightGreen),
             PlaybackState.Paused => ("一時停止", _darkMode ? Color.FromArgb(105, 86, 38) : Color.Khaki),
             PlaybackState.Fading => ("フェード中", _darkMode ? Color.FromArgb(45, 78, 105) : Color.LightSkyBlue),
             _ => ("停止中", _darkMode ? Color.FromArgb(58, 62, 67) : SystemColors.Control)
         };
         _stateLabel.ForeColor = _darkMode ? Color.FromArgb(238, 240, 242) : SystemColors.ControlText;
+        _toolTip.SetToolTip(_stateLabel, state is PlaybackState.Missing or PlaybackState.Failed
+            ? "失敗の詳細はログを確認してください。" : _stateLabel.Text);
+        FitPauseButtonText();
+    }
+
+    private void FitPauseButtonText()
+    {
         var pauseTextWidth = TextRenderer.MeasureText("Ⅱ 一時停止", _pauseButton.Font).Width
             + _pauseButton.Padding.Horizontal + 10 * DeviceDpi / 96;
-        _pauseButton.Text = state == PlaybackState.Paused ? "▶ 再開"
+        _pauseButton.Text = _state == PlaybackState.Paused ? "▶ 再開"
             : (_pauseButton.ClientSize.Width < pauseTextWidth ? "Ⅱ 休止" : "Ⅱ 一時停止");
-        _toolTip.SetToolTip(_pauseButton, state == PlaybackState.Paused ? "再生を再開" : "一時停止");
+        _toolTip.SetToolTip(_pauseButton, _state == PlaybackState.Paused ? "再生を再開" : "一時停止");
     }
 
     internal void EndEditing() => _detailsButton.Focus();
@@ -738,9 +752,10 @@ public sealed class SoundCard : UserControl
     private void ShowPlaybackSettings()
     {
         if (_editingLocked) { return; }
-        if (_playbackDialog is { IsDisposed: false })
+        if (_playbackDialog is { IsDisposed: false } existing)
         {
-            _playbackDialog.Activate();
+            if (existing.WindowState == FormWindowState.Minimized) { existing.WindowState = FormWindowState.Normal; }
+            existing.Activate();
             return;
         }
         var dialog = new PlaybackSettingsDialog(Sound);

@@ -17,7 +17,7 @@ public sealed class SettingsDialog : Form
     private readonly TextBox _themeColorText;
     private readonly NumericUpDown _soundListColumns;
 
-    public SettingsDialog(ProjectSettings settings, IReadOnlyList<AudioDeviceInfo> devices)
+    public SettingsDialog(ProjectSettings settings, IReadOnlyList<AudioDeviceInfo> devices, bool requireOutputSelection = false)
     {
         Text = "設定";
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -71,6 +71,13 @@ public sealed class SettingsDialog : Form
             _deviceCombo.SelectedValue = -1;
         }
 
+        _deviceCombo.SelectionChangeCommitted += (_, _) => OutputSelectionExplicit = _deviceCombo.SelectedIndex >= 0;
+        if (requireOutputSelection)
+        {
+            Shown += (_, _) => _deviceCombo.SelectedIndex = -1;
+            _deviceCombo.AccessibleName = "出力デバイスを選び直す";
+        }
+
         _backgroundInputCheck = new CheckBox
         {
             Text = "他のアプリでも有効",
@@ -119,7 +126,7 @@ public sealed class SettingsDialog : Form
         root.Controls.Add(_projectNameText, 1, 0);
         root.Controls.Add(new Label { Text = "テーマ色", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
         root.Controls.Add(_themeColorText, 1, 1);
-        root.Controls.Add(new Label { Text = "出力デバイス", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 2);
+        root.Controls.Add(new Label { Text = requireOutputSelection ? "出力（要選択）" : "出力デバイス", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 2);
         root.Controls.Add(_deviceCombo, 1, 2);
         root.Controls.Add(new Label { Text = "キー入力", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 3);
         root.Controls.Add(_backgroundInputCheck, 1, 3);
@@ -165,6 +172,8 @@ public sealed class SettingsDialog : Form
         AcceptButton = okButton;
         CancelButton = cancelButton;
     }
+
+    internal bool OutputSelectionExplicit { get; private set; }
 
     public int SelectedDeviceNumber => _deviceCombo.SelectedValue is int number ? number : -1;
 

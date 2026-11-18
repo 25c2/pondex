@@ -27,6 +27,8 @@ public sealed class ProjectModel
 
     [JsonIgnore]
     public List<string> MissingFiles { get; } = [];
+
+    internal HashSet<Guid> MissingSoundIds { get; } = [];
 }
 
 public sealed class ProjectMetadata

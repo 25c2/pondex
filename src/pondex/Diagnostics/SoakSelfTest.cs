@@ -65,7 +65,11 @@ internal static class SoakSelfTest
             {
                 engine.PlaybackFailed += (_, eventArgs) =>
                     failures.Enqueue($"{eventArgs.Message} {eventArgs.Exception.Message}");
-                engine.SelectOutputDevice(-1);
+                var devices = new AudioDeviceManager();
+                var snapshot = await devices.CaptureSnapshotAsync().WaitAsync(TimeSpan.FromSeconds(2), cancellationToken);
+                var binding = AudioOutputBinding.Create(AudioDeviceInfo.Default.PersistentId, snapshot)
+                    ?? throw new InvalidOperationException("Windows既定の出力先を識別できません。");
+                engine.SelectOutputDevice(binding.Device.DeviceNumber);
                 engine.SilentLoopEnabled = true;
                 DecodeEntireFile(mp3Path);
                 DecodeEntireFile(oggPath);
@@ -77,11 +81,23 @@ internal static class SoakSelfTest
                 var initialSamples = engine.OutputSamplesRead;
                 var lastSamples = initialSamples;
                 var lastProgress = TimeSpan.Zero;
+                var nextOutputCheck = TimeSpan.FromSeconds(2);
                 stopwatch.Start();
 
                 while (stopwatch.Elapsed < duration)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    if (stopwatch.Elapsed >= nextOutputCheck)
+                    {
+                        snapshot = await devices.CaptureSnapshotAsync().WaitAsync(TimeSpan.FromSeconds(2), cancellationToken);
+                        if (!binding.Matches(snapshot))
+                        {
+                            engine.EmergencyStopAll();
+                            failures.Enqueue("診断中に出力先が変化しました。");
+                            break;
+                        }
+                        nextOutputCheck = stopwatch.Elapsed + TimeSpan.FromSeconds(2);
+                    }
                     DecodeEntireFile(mp3Path);
                     DecodeEntireFile(oggPath);
                     DecodeEntireFile(opusPath);

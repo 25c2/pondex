@@ -13,13 +13,19 @@ public sealed class GlobalKeyboardHook : IDisposable
     private const int WmSysKeyUp = 0x0105;
     private const int EventQueueCapacity = 4_096;
     private readonly HookProcedure _procedure;
+    private readonly Func<long>? _getInputGeneration;
     private readonly Channel<GlobalKeyEventArgs> _events;
     private readonly Task _dispatchTask;
     private IntPtr _hook;
     private int _disposeStarted;
+    private uint _hookThread;
+    private readonly HashSet<uint> _heldKeys = [];
 
-    public GlobalKeyboardHook()
+    public GlobalKeyboardHook() : this(null) { }
+
+    internal GlobalKeyboardHook(Func<long>? getInputGeneration)
     {
+        _getInputGeneration = getInputGeneration;
         _procedure = HookCallback;
         _events = Channel.CreateBounded<GlobalKeyEventArgs>(new BoundedChannelOptions(EventQueueCapacity)
         {
@@ -45,6 +51,7 @@ public sealed class GlobalKeyboardHook : IDisposable
         using var process = Process.GetCurrentProcess();
         using var module = process.MainModule;
         var moduleHandle = GetModuleHandle(module?.ModuleName);
+        _hookThread = GetCurrentThreadId();
         _hook = SetWindowsHookEx(WhKeyboardLl, _procedure, moduleHandle, 0);
         if (_hook == IntPtr.Zero)
         {
@@ -68,6 +75,7 @@ public sealed class GlobalKeyboardHook : IDisposable
         }
 
         _hook = IntPtr.Zero;
+        _heldKeys.Clear();
     }
 
     public void Dispose()
@@ -108,7 +116,12 @@ public sealed class GlobalKeyboardHook : IDisposable
             {
                 var data = Marshal.PtrToStructure<KeyboardData>(lParam);
                 var key = (Keys)data.VirtualKey | Control.ModifierKeys;
-                _events.Writer.TryWrite(new GlobalKeyEventArgs(key, isDown));
+                // Capture ownership before the queued event can outlive a focus change.
+                var foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), out _);
+                var isRepeat = isDown && !_heldKeys.Add(data.VirtualKey);
+                if (isUp) { _heldKeys.Remove(data.VirtualKey); }
+                _events.Writer.TryWrite(new GlobalKeyEventArgs(key, isDown, foregroundThread == _hookThread, isRepeat)
+                { Generation = _getInputGeneration?.Invoke() });
             }
         }
 
@@ -160,19 +173,36 @@ public sealed class GlobalKeyboardHook : IDisposable
         IntPtr wParam,
         IntPtr lParam);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr GetModuleHandle(string? moduleName);
 }
 
 public sealed class GlobalKeyEventArgs : EventArgs
 {
-    public GlobalKeyEventArgs(Keys keyData, bool isDown)
+    public GlobalKeyEventArgs(Keys keyData, bool isDown, bool handledByWindowThread = false, bool isRepeat = false)
     {
         KeyData = keyData;
         IsDown = isDown;
+        HandledByWindowThread = handledByWindowThread;
+        IsRepeat = isRepeat;
     }
 
     public Keys KeyData { get; }
 
     public bool IsDown { get; }
+
+    public bool HandledByWindowThread { get; }
+
+    internal bool IsRepeat { get; }
+
+    internal long? Generation { get; init; }
 }

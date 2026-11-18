@@ -28,7 +28,7 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
     private int _detailedLoggingEnabled;
 
     public FileLogger(string logDirectory)
-        : this(date => CreateWriter(logDirectory, date), TimeProvider.System, DefaultQueueCapacity) { }
+        : this(date => new BoundedLogWriter(logDirectory, date), TimeProvider.System, DefaultQueueCapacity) { }
 
     internal FileLogger(TextWriter writer, int queueCapacity)
         : this((writer, default), null, TimeProvider.System, queueCapacity) { }
@@ -136,15 +136,6 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
     {
         var date = DateOnly.FromDateTime(timeProvider.GetLocalNow().DateTime);
         return (factory(date), date);
-    }
-
-    private static StreamWriter CreateWriter(string logDirectory, DateOnly date)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(logDirectory);
-        Directory.CreateDirectory(logDirectory);
-        var logPath = Path.Combine(logDirectory, $"pondex-{date:yyyyMMdd}.log");
-        return new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.Read,
-            16 * 1024, FileOptions.Asynchronous), new UTF8Encoding(false));
     }
 
     private void Enqueue(int priority, string message)

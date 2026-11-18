@@ -49,6 +49,7 @@ public sealed class PreparationSafetyReviewTests
 
     [Theory]
     [InlineData("stop")]
+    [InlineData("individual")]
     [InlineData("device")]
     [InlineData("dispose")]
     [InlineData("cancel")]
@@ -76,16 +77,22 @@ public sealed class PreparationSafetyReviewTests
             switch (operation)
             {
                 case "stop": engine.EmergencyStopAll(); break;
+                case "individual": engine.Stop(sound.Id); break;
                 case "device": engine.SelectOutputDevice(3); break;
                 case "dispose": engine.Dispose(); break;
                 case "cancel": cancellation.Cancel(); break;
             }
+            var active = Assert.Single(engine.GetActivePreparations());
+            Assert.Equal(sound.Id, active.SoundId);
+            Assert.Equal(1, active.Request);
+            Assert.True(active.Elapsed >= TimeSpan.Zero);
         }
         finally { release.Set(); }
         if (operation == "cancel") { await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Task.WhenAll(pending)); }
         else { await Task.WhenAll(pending).WaitAsync(TimeSpan.FromSeconds(10)); }
         Assert.Empty(engine.GetActiveSoundIds());
         Assert.Equal(0, engine.PreparationStatistics.Active);
+        Assert.Empty(engine.GetActivePreparations());
         using var exclusive = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
     }
 
@@ -109,12 +116,32 @@ public sealed class PreparationSafetyReviewTests
             await fourEntered.Task.WaitAsync(TimeSpan.FromSeconds(8));
             Assert.Equal(4, Volatile.Read(ref entered));
             Assert.Equal(4, engine.PreparationStatistics.Peak);
+            Assert.Equal(4, engine.GetActivePreparations().Count);
         }
         finally { release.Set(); }
         await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(12, engine.GetActiveSoundIds().Count);
         Assert.Equal(4, engine.PreparationStatistics.Peak);
         engine.StopAll();
+    }
+
+    [Fact]
+    public async Task Playback_RejectsAnUnverifiedOutputAfterPreparationWithoutOpeningIt()
+    {
+        using var directory = new TestDirectory();
+        var path = CreateWave(directory);
+        var opens = 0;
+        using var engine = new AudioEngine(new Logger(), (_, _) => { opens++; return new Output(); });
+        var sound = new SoundDefinition();
+        var result = await engine.StartPlaybackAsync(sound, path,
+            _ => Task.FromException(new IOException("Output identity changed")));
+        Assert.Equal(PlaybackStartResult.Failed, result);
+        Assert.Equal(0, opens);
+        Assert.Empty(engine.GetActiveSoundIds());
+
+        result = await engine.StartPlaybackAsync(sound, directory.GetPath("missing.wav"));
+        Assert.Equal(PlaybackStartResult.Missing, result);
+        Assert.Equal(0, opens);
     }
 
     private static string CreateWave(TestDirectory directory)

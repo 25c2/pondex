@@ -1,3 +1,4 @@
+using System.Drawing;
 using System.Reflection;
 using System.Diagnostics;
 using System.Text.Json;
@@ -194,9 +195,11 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
         var cards = list.Controls.OfType<SoundCard>().ToArray();
         var card = cards[0];
         WinFormsTest.Note("card measurement: create details");
+        var allocated = GC.GetAllocatedBytesForCurrentThread();
         var started = Stopwatch.GetTimestamp();
         card.EnsureDetailsCreated();
         var firstDetailsMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        var detailsBytes = GC.GetAllocatedBytesForCurrentThread() - allocated;
         var controls = Descendants(card).ToArray();
         var button = Descendants(card).OfType<Button>().Single(b => b.Text.StartsWith("詳細", StringComparison.Ordinal));
         started = Stopwatch.GetTimestamp();
@@ -210,6 +213,7 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
         var targetWidth = card.Width;
         var baseline = new List<double>();
         var batched = new List<double>();
+        var resizeBytes = new List<long>();
         // Keep the intentionally quadratic legacy comparison bounded at 500 cards.
         // All functional assertions still run for every size; report sample count.
         var measurementOrder = count >= 500 ? LargeResizeMeasurementOrder : ResizeMeasurementOrder;
@@ -220,10 +224,24 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
             foreach (var item in cards) { item.Width = targetWidth + 10; }
             list.ResumeLayout(true);
             started = Stopwatch.GetTimestamp();
+            allocated = GC.GetAllocatedBytesForCurrentThread();
             if (before) { foreach (var item in cards) { item.Width = targetWidth; } }
             else { Method("ResizeSoundCards").Invoke(form, null); }
             (before ? baseline : batched).Add(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            if (!before) { resizeBytes.Add(GC.GetAllocatedBytesForCurrentThread() - allocated); }
         }
+        var header = (TableLayoutPanel)Descendants(form).OfType<TrackBar>().First().Parent!.Parent!;
+        var visibleRows = cards.Where(item => list.ClientRectangle.Contains(item.Bounds)).Select(item => item.Top).Distinct().Count();
+        var initialScroll = list.AutoScrollPosition;
+        allocated = GC.GetAllocatedBytesForCurrentThread();
+        started = Stopwatch.GetTimestamp();
+        // Measure a fixed sequence of viewport movements on the actual list.
+        for (var frame = 1; frame <= 30; frame++) { list.AutoScrollPosition = new Point(0, frame * 12); }
+        var scrollMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        var scrollBytes = GC.GetAllocatedBytesForCurrentThread() - allocated;
+        Assert.True(-list.AutoScrollPosition.Y > -initialScroll.Y);
+        list.AutoScrollPosition = new Point(-initialScroll.X, -initialScroll.Y);
+
         started = Stopwatch.GetTimestamp();
         Method("OnProjectChanged").Invoke(form, [null, EventArgs.Empty]);
         var savedUiMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
@@ -237,7 +255,13 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
             reused_toggle_ms = reusedToggleMs,
             resize_before_ms = baseline.Order().ElementAt(baseline.Count / 2),
             resize_after_ms = batched.Order().ElementAt(batched.Count / 2),
-            layouts
+            layout_count = layouts,
+            details_allocated_bytes = detailsBytes,
+            resize_allocated_bytes = resizeBytes.Order().ElementAt(resizeBytes.Count / 2),
+            scroll_ms_30_steps = scrollMs,
+            scroll_allocated_bytes = scrollBytes,
+            header_height = header.Height,
+            fully_visible_rows = visibleRows
         }));
         form.CloseWithoutSavePromptForSmokeTest();
     }, timeout: TimeSpan.FromMinutes(2));

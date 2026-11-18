@@ -5,7 +5,11 @@ public enum PlaybackState
     Stopped,
     Playing,
     Paused,
-    Fading
+    Fading,
+    CheckingOutput,
+    Preparing,
+    Missing,
+    Failed
 }
 
 public enum PlaybackEndReason
@@ -18,3 +22,5 @@ public enum PlaybackEndReason
     Error
 }
 
+
+internal enum PlaybackStartResult { Started, Cancelled, Missing, Failed }

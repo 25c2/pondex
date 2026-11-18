@@ -59,7 +59,11 @@ public sealed class ProjectSerializer
                 string resolved;
                 try { resolved = ProjectPath.Resolve(fullPath, sound.File); }
                 catch (ArgumentException) { resolved = sound.File; }
-                if (!File.Exists(resolved)) { model.MissingFiles.Add($"{sound.Name}: {resolved}"); }
+                if (!File.Exists(resolved))
+                {
+                    model.MissingFiles.Add($"{sound.Name}: {resolved}");
+                    model.MissingSoundIds.Add(sound.Id);
+                }
             }
             return model;
         }

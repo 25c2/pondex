@@ -14,6 +14,113 @@ namespace pondex.Tests;
 [Collection(WinFormsTestGroup.Name)]
 public sealed class MainFormRegressionTests
 {
+    [Theory]
+    [InlineData("cancel")]
+    [InlineData("emergency")]
+    [InlineData("disconnect")]
+    [InlineData("close")]
+    public void Diagnostic_UsesBoundOutputAndStopsWithoutResumingEvents(string stopReason) => RunOnSta(() =>
+    {
+        using var directory = new TestDirectory();
+        using var manager = new ProjectManager(new ProjectSerializer());
+        var device = new AudioDeviceInfo(3, "Selected output", "selected");
+        var snapshot = new AudioDeviceSnapshot([AudioDeviceInfo.Default, device], new DefaultOutputIdentity(3, "selected-endpoint"));
+        var triggers = new TriggerEngine();
+        ISampleProvider? provider = null;
+        using var engine = new AudioEngine(new NullLogger(), (number, input) =>
+        {
+            Assert.Equal(3, number);
+            provider = input;
+            return new FakeOutput();
+        });
+        using var form = new MainForm(manager, engine, new AudioDeviceManager(() => Volatile.Read(ref snapshot)), triggers,
+            new NullLogger(), directory.Path)
+        { ShowInTaskbar = false, Opacity = 0 };
+        form.Show();
+        PumpUntil((Task)Field("_outputConfigurationTask").GetValue(form)!);
+        var binding = Assert.IsType<AudioOutputBinding>(Field("_outputBinding").GetValue(form));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.PlaybackStarted += (_, _) => started.TrySetResult();
+        engine.MasterMute = true;
+        var diagnostic = (Task)Method("RunDiagnosticAsync").Invoke(form, [engine, binding])!;
+        PumpUntil(started.Task);
+        Assert.True(triggers.IsSuspended);
+        var rendered = new float[512];
+        Assert.Equal(rendered.Length, provider!.Read(rendered, 0, rendered.Length));
+        Assert.All(rendered, sample => Assert.Equal(0F, sample));
+        engine.MasterMute = false;
+        engine.MasterVolume = 0.5F;
+        Assert.Equal(rendered.Length, provider.Read(rendered, 0, rendered.Length));
+        Assert.Contains(rendered, sample => sample != 0F);
+        Assert.All(rendered, sample => Assert.InRange(sample, -0.05F, 0.05F));
+        var cancel = Assert.IsType<ToolStripButton>(Field("_cancelDiagnosticButton").GetValue(form));
+        Assert.True(cancel.Visible);
+        switch (stopReason)
+        {
+            case "cancel": cancel.PerformClick(); break;
+            case "emergency": Method("EmergencyStopAll").Invoke(form, null); break;
+            case "disconnect":
+                Volatile.Write(ref snapshot, new AudioDeviceSnapshot([AudioDeviceInfo.Default], null));
+                PumpUntil((Task)Method("CheckSelectedDeviceAvailability").Invoke(form, [true])!);
+                break;
+            case "close": form.CloseWithoutSavePromptForSmokeTest(); break;
+        }
+        PumpUntil(diagnostic);
+        diagnostic.GetAwaiter().GetResult();
+        Assert.Empty(engine.GetActiveSoundIds());
+        Assert.True(triggers.IsSuspended);
+        if (!form.IsDisposed)
+        {
+            Assert.False(cancel.Visible);
+            form.CloseWithoutSavePromptForSmokeTest();
+        }
+    });
+
+    [Fact]
+    public void PowerResume_WithChangedDefaultLocksOutputAndKeepsEventsSuspended() => RunOnSta(() =>
+    {
+        using var directory = new TestDirectory();
+        using var manager = new ProjectManager(new ProjectSerializer());
+        var triggers = new TriggerEngine();
+        var first = new AudioDeviceInfo(1, "Before sleep", "before");
+        var second = new AudioDeviceInfo(2, "After sleep", "after");
+        var snapshot = new AudioDeviceSnapshot([AudioDeviceInfo.Default, first, second], new DefaultOutputIdentity(1, "before"));
+        using var engine = new AudioEngine(new NullLogger(), (number, _) =>
+        {
+            Assert.Equal(1, number);
+            return new FakeOutput();
+        });
+        using var form = new MainForm(manager, engine, new AudioDeviceManager(() => Volatile.Read(ref snapshot)),
+            triggers, new NullLogger(), directory.Path)
+        { ShowInTaskbar = false, Opacity = 0 };
+        form.Show();
+        PumpUntil((Task)Field("_outputConfigurationTask").GetValue(form)!);
+        SendPowerBroadcast(form.Handle, 0x0218, (IntPtr)4, IntPtr.Zero);
+        Assert.True(triggers.IsSuspended);
+        Volatile.Write(ref snapshot, snapshot with { DefaultOutput = new DefaultOutputIdentity(2, "after") });
+        SendPowerBroadcast(form.Handle, 0x0218, (IntPtr)18, IntPtr.Zero);
+        PumpUntil((Task)Field("_resumeOutputCheck").GetValue(form)!);
+        Assert.Equal(1, engine.OutputDeviceNumber);
+        Assert.True((bool)Field("_outputUnavailable").GetValue(form)!);
+        Assert.IsType<ToolStripButton>(Field("_resumeTriggersButton").GetValue(form)).PerformClick();
+        Assert.True(triggers.IsSuspended);
+        form.CloseWithoutSavePromptForSmokeTest();
+    });
+
+    [Fact]
+    public void ClockDiscontinuity_DistinguishesMidnightFromTickGapAndClockAdjustment()
+    {
+        var midnight = new DateTimeOffset(2026, 11, 18, 0, 0, 0, TimeSpan.FromHours(9));
+        var before = midnight.AddMilliseconds(-100);
+        Assert.False(MainForm.ClockWasInterrupted(before, midnight, TimeSpan.FromMilliseconds(100)));
+        Assert.True(MainForm.ClockWasInterrupted(before, midnight.AddMinutes(2), TimeSpan.FromMilliseconds(100)));
+        Assert.True(MainForm.ClockWasInterrupted(before, midnight.AddSeconds(10), TimeSpan.FromSeconds(10.1)));
+        Assert.True(MainForm.ClockWasInterrupted(before, midnight.AddSeconds(-10), TimeSpan.FromMilliseconds(100)));
+    }
+
+    [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
+    private static extern IntPtr SendPowerBroadcast(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+
     [Fact]
     public void CompactControls_KeepStopwatchActionsAndEmergencyDetailsAccessible() => RunOnSta(() =>
     {
@@ -293,6 +400,60 @@ public sealed class MainFormRegressionTests
     });
 
     [Fact]
+    public void PendingNormalSave_LeavesPlaybackAndTriggersUsableAndDefersClose() => RunOnSta(() =>
+    {
+        using var directory = new TestDirectory();
+        using var manager = new ProjectManager(new ProjectSerializer());
+        manager.SaveAsAsync(directory.GetPath("live.pondex")).GetAwaiter().GetResult();
+        var wavePath = directory.GetPath("live.wav");
+        using (var writer = new WaveFileWriter(wavePath, new WaveFormat(44100, 16, 1)))
+        {
+            writer.Write(new byte[8820], 0, 8820);
+        }
+
+        var sound = new SoundDefinition { Key = "A", File = wavePath };
+        manager.Current.Sounds.Add(sound);
+        manager.Current.Triggers.Add(new TriggerDefinition
+        {
+            Enabled = true,
+            TriggerType = TriggerType.StopwatchElapsed,
+            Parameters = new TriggerParameters { Elapsed = TimeSpan.Zero },
+            TargetSoundId = sound.Id,
+            Action = TriggerAction.Play
+        });
+        manager.MarkDirty();
+        using var engine = CreateEngine();
+        using var form = CreateForm(manager, engine, directory.Path);
+        form.Show();
+        PumpUntil((Task)Field("_outputConfigurationTask").GetValue(form)!);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.PlaybackStarted += (_, args) => { if (args.SoundId == sound.Id) { started.TrySetResult(); } };
+        var gate = (SemaphoreSlim)typeof(ProjectManager).GetField("_operationGate", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(manager)!;
+        Assert.True(gate.Wait(0));
+        Task<bool> save;
+        try
+        {
+            save = (Task<bool>)Method("SaveProjectAsync").Invoke(form, [false])!;
+            Assert.False(save.IsCompleted);
+            Assert.True(Assert.IsAssignableFrom<TabControl>(Field("_tabs").GetValue(form)).Enabled);
+            var close = new FormClosingEventArgs(CloseReason.UserClosing, false);
+            Method("OnFormClosing").Invoke(form, [form, close]);
+            Assert.True(close.Cancel);
+            ((System.Diagnostics.Stopwatch)Field("_stopwatch").GetValue(form)!).Start();
+            Method("UpdateClockAndTriggers").Invoke(form, null);
+            PumpUntil(started.Task);
+            Assert.Equal(pondex.Audio.PlaybackState.Playing, engine.GetState(sound.Id));
+            Method("EmergencyStopAll").Invoke(form, null);
+            Assert.Empty(engine.GetActiveSoundIds());
+            Assert.False(save.IsCompleted);
+        }
+        finally { gate.Release(); }
+        PumpUntil(save);
+        Assert.True(save.GetAwaiter().GetResult());
+        form.CloseWithoutSavePromptForSmokeTest();
+    });
+
+    [Fact]
     public void SaveDuringEdits_DoesNotAuthorizeClosingOrReplacingProject() => RunOnSta(() =>
     {
         using var directory = new TestDirectory();
@@ -401,7 +562,10 @@ public sealed class MainFormRegressionTests
             Application.DoEvents();
             Assert.Equal(width, header.ClientSize.Width);
             Assert.Equal(compact ? 3 : 6, header.ColumnCount);
-            Assert.Equal(compact ? 5 : 2, header.RowCount);
+            Assert.Equal(compact ? 4 : 2, header.RowCount);
+            var mute = Assert.Single(master.Parent.Controls.OfType<CheckBox>());
+            Assert.True(master.Parent.ClientRectangle.Contains(mute.Bounds));
+            Assert.All(master.Parent.Controls.Cast<Control>(), control => Assert.True(master.Parent.ClientRectangle.Contains(control.Bounds)));
             Assert.True(master.Width >= 80, $"幅{logicalWidth}のMASTERスライダー幅: {master.Width}");
         }
 
@@ -901,6 +1065,8 @@ public sealed class MainFormRegressionTests
 
     private static AudioEngine CreateEngine() => new(new NullLogger(), (_, _) => new FakeOutput());
 
+    private static FieldInfo Field(string name) => typeof(MainForm).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!;
+
     private static MethodInfo Method(string name) => typeof(MainForm).GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)!;
 
     private static void PumpUntil(Task task)
@@ -1026,7 +1192,15 @@ public sealed class MainFormRegressionTests
         Assert.Equal(2, form.OwnedForms.OfType<PlaybackSettingsDialog>().Count());
         Assert.All(form.OwnedForms, dialog => Assert.False(dialog.Modal));
         Assert.True(form.Enabled);
-        var dialogs = form.OwnedForms.ToArray();
+        var dialogs = form.OwnedForms.OfType<PlaybackSettingsDialog>().ToArray();
+        var first = Assert.Single(dialogs, dialog => dialog.Text.EndsWith("one", StringComparison.Ordinal));
+        Assert.True(first.MinimizeBox);
+        first.WindowState = FormWindowState.Minimized;
+        Application.DoEvents();
+        Assert.Equal(FormWindowState.Minimized, first.WindowState);
+        open.Invoke(Assert.Single(cards, card => card.Sound.Name == "one"), null);
+        Assert.Equal(FormWindowState.Normal, first.WindowState);
+        Assert.Equal(2, form.OwnedForms.OfType<PlaybackSettingsDialog>().Count());
         foreach (var card in cards) { card.Dispose(); }
         Assert.All(dialogs, dialog => Assert.True(dialog.IsDisposed));
         form.CloseWithoutSavePromptForSmokeTest();

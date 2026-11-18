@@ -4,7 +4,7 @@ namespace pondex.Input;
 
 public sealed class ShortcutDispatcher
 {
-    private readonly HashSet<Keys> _pressed = [];
+    private readonly Dictionary<Keys, bool> _pressed = [];
     private readonly ShortcutManager _manager;
     private readonly Func<IEnumerable<SoundDefinition>> _sounds;
     private readonly Func<IEnumerable<GroupShortcutDefinition>> _groupShortcuts;
@@ -36,47 +36,48 @@ public sealed class ShortcutDispatcher
         RefreshBindings();
     }
 
-    public void OnKeyChanged(Keys keyData, bool isDown)
+    public bool OnKeyChanged(Keys keyData, bool isDown) => OnKeyChanged(keyData, isDown, isRepeat: false);
+
+    internal bool OnKeyChanged(Keys keyData, bool isDown, bool isRepeat)
     {
         var keyCode = keyData & Keys.KeyCode;
-        if (!isDown)
-        {
-            _pressed.Remove(keyCode);
-            return;
-        }
+        if (!isDown) { return _pressed.Remove(keyCode, out var handled) && handled; }
+        if (_pressed.TryGetValue(keyCode, out var alreadyHandled)) { return alreadyHandled; }
+        if (isRepeat) { return false; }
 
-        if (!_pressed.Add(keyCode))
-        {
-            return;
-        }
+        var commands = ResolveCommands(keyData, keyCode);
+        var consumed = commands.Count != 0;
+        _pressed.Add(keyCode, consumed);
+        if (consumed) { _execute(commands); }
+        return consumed;
+    }
 
+    private IReadOnlyList<ShortcutCommand> ResolveCommands(Keys keyData, Keys keyCode)
+    {
         var modifiers = keyData & Keys.Modifiers;
         if (keyCode == Keys.R && modifiers == Keys.Control)
         {
-            _execute([new ShortcutCommand(ShortcutCommandType.StopAll)]);
-            return;
+            return [new ShortcutCommand(ShortcutCommandType.StopAll)];
         }
 
-        if (_textEditing()
-            || keyCode is Keys.None or Keys.ShiftKey or Keys.ControlKey or Keys.Menu)
+        if (_textEditing() || keyCode is Keys.None or Keys.ShiftKey or Keys.ControlKey or Keys.Menu)
         {
-            return;
+            return [];
         }
 
         if (modifiers == Keys.Alt)
         {
-            _execute(_manager.Resolve(keyData, _sounds(), [], textEditing: false));
-            return;
+            return _manager.Resolve(keyData, _sounds(), [], textEditing: false);
         }
 
         var stop = modifiers == Keys.Shift;
         if ((modifiers != Keys.None && !stop) || !_soundsByKey.TryGetValue(keyCode, out var soundIds))
         {
-            return;
+            return [];
         }
 
         var commandType = stop ? ShortcutCommandType.Stop : ShortcutCommandType.Play;
-        _execute(soundIds.Select(soundId => new ShortcutCommand(commandType, soundId)).ToArray());
+        return soundIds.Select(soundId => new ShortcutCommand(commandType, soundId)).ToArray();
     }
 
     public void Reset() => _pressed.Clear();

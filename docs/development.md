@@ -18,6 +18,8 @@ dotnet build pondex.sln --configuration Release --no-restore
 dotnet test pondex.sln --configuration Release --no-build --no-restore
 ```
 
+詳細ログの `decoder start` はデコーダの開始時刻、準備枠の使用数、待機時間を記録します。緊急停止の `decoder still occupies slot` はキャンセル後も処理が戻っていない枠を示します。同期デコードはドライバやファイルI/Oから戻るまで枠を保持します。長く止まる素材は本番前に読込確認を行い、強制終了が必要な用途では別プロセスでのデコードを検討してください。
+
 CIでは`main`へのpushとPull Requestごとに、依存関係の復元、NuGet脆弱性監査、フォーマット検査、Releaseビルド、テストを実行します。監査フィードを取得できない場合や、低重要度以上の既知の脆弱性が検出された場合も失敗します。
 
 ## Windows x64配布物
@@ -57,6 +59,6 @@ publicリポジトリで発行された来歴はGitHub CLIで検証できます�
 gh attestation verify pondex-v1.0-win-x64.zip --repo 25c2/pondex
 ```
 
-ワークフローは`release` Environmentを使用します。GitHubのリポジトリ設定でRequired reviewersを設定すると、公開前の承認ゲートになります。
+ビルド・テストジョブは `contents: read` で実行し、公開ジョブだけが公開・attestationの権限と `release` Environment を使います。GitHubのリポジトリ設定でRequired reviewersを設定すると、公開前の承認ゲートになります。
 
 実行ファイル自体は現在Authenticode署名されていません。署名を導入する場合は、コード署名証明書と秘密鍵をGitHub Actionsの保護されたSecretまたは外部署名サービスで管理してください。

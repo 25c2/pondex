@@ -6,6 +6,28 @@ namespace pondex.Tests;
 public sealed class TriggerEngineTests
 {
     [Fact]
+    public void ClockTime_SkipsSuspendedMidnightAndDoesNotRepeatAnOccurrenceAfterClockRollback()
+    {
+        var midnight = new DateTimeOffset(2026, 11, 18, 0, 0, 0, TimeSpan.FromHours(9));
+        var trigger = CreateTrigger(TriggerType.ClockTime, new TriggerParameters { ClockTime = TimeOnly.MinValue });
+        var engine = new TriggerEngine();
+        engine.SetTriggers([trigger]);
+        Assert.Empty(engine.Tick(midnight.AddSeconds(-1), TimeSpan.Zero, false));
+
+        engine.Suspend();
+        Assert.Empty(engine.Tick(midnight.AddHours(1), TimeSpan.Zero, false));
+        engine.Resume(midnight.AddHours(1), TimeSpan.Zero);
+        Assert.Empty(engine.Tick(midnight.AddHours(1).AddSeconds(1), TimeSpan.Zero, false));
+
+        var nextDay = midnight.AddDays(1);
+        Assert.Empty(engine.Tick(nextDay.AddSeconds(-1), TimeSpan.Zero, false));
+        Assert.Same(trigger, Assert.Single(engine.Tick(nextDay, TimeSpan.Zero, false)));
+        engine.Suspend();
+        engine.Resume(nextDay.AddSeconds(-30), TimeSpan.Zero);
+        Assert.Empty(engine.Tick(nextDay.AddSeconds(1), TimeSpan.Zero, false));
+    }
+
+    [Fact]
     public void Tick_FiresFourTriggerKindsWithoutChangingSavedEnabledState()
     {
         var beforeTarget = new DateTimeOffset(2026, 9, 19, 19, 28, 0, TimeSpan.FromHours(9));

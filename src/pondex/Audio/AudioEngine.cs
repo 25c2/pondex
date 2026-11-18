@@ -15,7 +15,9 @@ public sealed class AudioEngine : IAudioEngine
     private readonly Dictionary<Guid, long> _soundOperationVersions = [];
     private readonly Dictionary<Guid, CancellationTokenSource> _preparationCancellations = [];
     private readonly Dictionary<Guid, SemaphoreSlim> _preparationLanes = [];
-    private readonly SemaphoreSlim _preparationSlots = new(4, 4);
+    private const int PreparationCapacity = 4;
+    private readonly SemaphoreSlim _preparationSlots = new(PreparationCapacity, PreparationCapacity);
+    private readonly Dictionary<(Guid SoundId, long Request), (DateTimeOffset Started, long Timestamp)> _activePreparations = [];
     private long _preparationRequests, _preparationCompleted, _preparationDiscarded, _preparationFailed;
     private long _preparationTicks;
     private int _preparationsActive, _preparationsPeak;
@@ -171,6 +173,15 @@ public sealed class AudioEngine : IAudioEngine
         Volatile.Read(ref _preparationsActive), Volatile.Read(ref _preparationsPeak),
         TimeSpan.FromTicks(Interlocked.Read(ref _preparationTicks)));
 
+    internal IReadOnlyList<ActiveAudioPreparation> GetActivePreparations()
+    {
+        lock (_sync)
+        {
+            return _activePreparations.Select(entry => new ActiveAudioPreparation(entry.Key.SoundId, entry.Key.Request,
+                entry.Value.Started, Stopwatch.GetElapsedTime(entry.Value.Timestamp))).ToArray();
+        }
+    }
+
     public bool PlaybackTimingEnabled
     {
         get => _startDiagnostics.Enabled;
@@ -187,16 +198,18 @@ public sealed class AudioEngine : IAudioEngine
         }
     }
 
-    public async Task PlayAsync(
-        SoundDefinition sound,
-        string resolvedPath,
+    public Task PlayAsync(SoundDefinition sound, string resolvedPath, CancellationToken cancellationToken = default) =>
+        StartPlaybackAsync(sound, resolvedPath, cancellationToken: cancellationToken);
+
+    internal async Task<PlaybackStartResult> StartPlaybackAsync(
+        SoundDefinition sound, string resolvedPath, Func<CancellationToken, Task>? verifyOutput = null,
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(sound);
         ArgumentException.ThrowIfNullOrWhiteSpace(resolvedPath);
         var timingRequest = _startDiagnostics.Begin(sound.Id);
-        var diagnosticStarted = _logger.DetailedLoggingEnabled ? Stopwatch.GetTimestamp() : 0;
+        var diagnosticStarted = Stopwatch.GetTimestamp();
         PlaybackStartTiming? timing = null;
 
         long requestVersion;
@@ -241,7 +254,14 @@ public sealed class AudioEngine : IAudioEngine
                 {
                     token.ThrowIfCancellationRequested();
                     var started = Stopwatch.GetTimestamp();
+                    var startedAt = DateTimeOffset.Now;
+                    lock (_sync) { _activePreparations.Add((sound.Id, requestVersion), (startedAt, started)); }
                     var active = Interlocked.Increment(ref _preparationsActive);
+                    if (_logger.DetailedLoggingEnabled)
+                    {
+                        _logger.Debug(string.Create(CultureInfo.InvariantCulture,
+                            $"decoder start: sound={sound.Id} request={requestVersion} started={startedAt:O} active={active}/{PreparationCapacity} queued_ms={Stopwatch.GetElapsedTime(diagnosticStarted, started).TotalMilliseconds:F3}"));
+                    }
                     int peak;
                     do { peak = Volatile.Read(ref _preparationsPeak); }
                     while (active > peak && Interlocked.CompareExchange(ref _preparationsPeak, active, peak) != peak);
@@ -254,16 +274,24 @@ public sealed class AudioEngine : IAudioEngine
                     }
                     finally
                     {
+                        lock (_sync) { _activePreparations.Remove((sound.Id, requestVersion)); }
                         Interlocked.Decrement(ref _preparationsActive);
-                        Interlocked.Add(ref _preparationTicks, Stopwatch.GetElapsedTime(started).Ticks);
+                        var elapsed = Stopwatch.GetElapsedTime(started);
+                        Interlocked.Add(ref _preparationTicks, elapsed.Ticks);
+                        if (elapsed >= TimeSpan.FromSeconds(5))
+                        {
+                            _logger.Warning(string.Create(CultureInfo.InvariantCulture,
+                                $"decoder finished after delay: sound={sound.Id} request={requestVersion} elapsed_ms={elapsed.TotalMilliseconds:F3}"));
+                        }
                     }
                 }, token, TaskCreationOptions.LongRunning, TaskScheduler.Default).ConfigureAwait(false);
             completionInstance = prepared;
+            if (verifyOutput is not null) { await verifyOutput(token).ConfigureAwait(false); }
             // Stop/device changes are accounted for as superseded requests below;
             // explicit caller cancellation must also dispose a decoder already in flight.
             cancellationToken.ThrowIfCancellationRequested();
             var preparedAt = timingRequest.Attempt > 0 ? Stopwatch.GetTimestamp() : 0;
-            if (diagnosticStarted != 0 && _logger.DetailedLoggingEnabled)
+            if (_logger.DetailedLoggingEnabled)
             {
                 _logger.Debug(string.Create(CultureInfo.InvariantCulture,
                     $"play prepared: sound={sound.Id} request={requestVersion} prepare_ms={Stopwatch.GetElapsedTime(diagnosticStarted).TotalMilliseconds:F3}"));
@@ -277,7 +305,7 @@ public sealed class AudioEngine : IAudioEngine
                     if (_logger.DetailedLoggingEnabled) { _logger.Debug($"play discarded: sound={sound.Id} request={requestVersion} reason=disposed"); }
                     prepared.Dispose();
                     prepared = null;
-                    return;
+                    return PlaybackStartResult.Cancelled;
                 }
 
                 if (!_soundOperationVersions.TryGetValue(sound.Id, out var currentVersion)
@@ -287,7 +315,7 @@ public sealed class AudioEngine : IAudioEngine
                     if (_logger.DetailedLoggingEnabled) { _logger.Debug($"play discarded: sound={sound.Id} request={requestVersion} current_request={currentVersion} reason=superseded"); }
                     prepared.Dispose();
                     prepared = null;
-                    return;
+                    return PlaybackStartResult.Cancelled;
                 }
 
                 // Settings may have changed while the decoder was being prepared.
@@ -329,6 +357,7 @@ public sealed class AudioEngine : IAudioEngine
                 _logger.Info(string.Create(CultureInfo.InvariantCulture,
                     $"再生開始計測: {sound.Id} attempt={timing.Attempt} prepare_ms={timing.PreparationMilliseconds:F3} start_ms={timing.StartMilliseconds:F3}（内部処理時間。実際の出音遅延ではありません）"));
             }
+            return PlaybackStartResult.Started;
         }
         catch (OperationCanceledException)
         {
@@ -336,6 +365,7 @@ public sealed class AudioEngine : IAudioEngine
             Interlocked.Increment(ref _preparationDiscarded);
             if (_logger.DetailedLoggingEnabled) { _logger.Debug($"play cancelled: sound={sound.Id} request={requestVersion}"); }
             if (cancellationToken.IsCancellationRequested) { throw; }
+            return PlaybackStartResult.Cancelled;
         }
         catch (Exception exception)
         {
@@ -347,12 +377,14 @@ public sealed class AudioEngine : IAudioEngine
                 {
                     Interlocked.Increment(ref _preparationDiscarded);
                     if (_logger.DetailedLoggingEnabled) { _logger.Debug($"play discarded: sound={sound.Id} request={requestVersion} reason=obsolete_prepare_failure"); }
-                    return;
+                    return PlaybackStartResult.Cancelled;
                 }
             }
             var message = $"音源「{sound.Name}」を再生できません。";
             _logger.Error(message, exception);
             PlaybackFailed?.Invoke(this, new SoundErrorEventArgs(sound.Id, message, exception));
+            return exception is FileNotFoundException or DirectoryNotFoundException
+                ? PlaybackStartResult.Missing : PlaybackStartResult.Failed;
         }
         finally
         {
@@ -475,7 +507,15 @@ public sealed class AudioEngine : IAudioEngine
     {
         lock (_sync)
         {
-            if (_logger.DetailedLoggingEnabled) { _logger.Debug($"emergency_stop requested: device={_deviceNumber} active={_instances.Count}"); }
+            if (_logger.DetailedLoggingEnabled)
+            {
+                _logger.Debug($"emergency_stop requested: device={_deviceNumber} active={_instances.Count} decoding={_activePreparations.Count}/{PreparationCapacity}");
+                foreach (var job in GetActivePreparations())
+                {
+                    _logger.Debug(string.Create(CultureInfo.InvariantCulture,
+                        $"decoder still occupies slot: sound={job.SoundId} request={job.Request} started={job.Started:O} elapsed_ms={job.Elapsed.TotalMilliseconds:F3}"));
+                }
+            }
             // StopAll also invalidates every in-flight preparation before disposing active instances.
             StopAll(useFadeOut: false);
             // Release the device handle as well as flushing its queued buffers.
@@ -857,3 +897,5 @@ public sealed class AudioEngine : IAudioEngine
 
 internal readonly record struct AudioPreparationStatistics(long Requested, long Completed, long Discarded,
     long Failed, int Active, int Peak, TimeSpan PreparationTime);
+
+internal sealed record ActiveAudioPreparation(Guid SoundId, long Request, DateTimeOffset Started, TimeSpan Elapsed);

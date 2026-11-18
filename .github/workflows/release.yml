@@ -6,9 +6,7 @@ on:
       - "v*"
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -20,21 +18,22 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: true
 
 jobs:
-  release:
+  build:
     runs-on: windows-latest
     timeout-minutes: 30
-    environment: release
 
     steps:
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5d # v5.0.0
         with:
-          dotnet-version: 10.0.402
+          dotnet-version: 10.0.404
 
       - name: Validate release tag
         shell: pwsh
@@ -112,6 +111,42 @@ jobs:
           $encoding = [Text.UTF8Encoding]::new($false)
           [IO.File]::WriteAllText($checksum, $checksumText, $encoding)
 
+      - name: Upload validated ZIP and checksum
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pondex-release
+          path: |
+            artifacts/*.zip
+            artifacts/*.sha256
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download validated ZIP and checksum
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pondex-release
+          path: artifacts
+
+      - name: Verify downloaded ZIP
+        shell: pwsh
+        run: |
+          $archiveName = "pondex-$($env:GITHUB_REF_NAME)-win-x64.zip"
+          $archive = Join-Path "artifacts" $archiveName
+          $checksum = "$archive.sha256"
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ((Get-Content -LiteralPath $checksum -Raw).TrimEnd() -cne "$hash *$archiveName") {
+            throw "配布ZIPのSHA-256が一致しません。"
+          }
           "RELEASE_ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "RELEASE_CHECKSUM=$checksum" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
@@ -134,6 +169,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
+          $tagRef = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$tag" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $object = $tagRef.object
+          while ($object.type -eq "tag") {
+            $annotated = gh api "repos/$env:GITHUB_REPOSITORY/git/tags/$($object.sha)" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $object = $annotated.object
+          }
+          if ($object.type -ne "commit" -or $object.sha -cne $env:GITHUB_SHA) {
+            throw "検証後にリリースタグの参照先が変化しました。"
+          }
           $title = "pondex $tag"
           $arguments = @(
             "release", "create", $tag,
@@ -143,7 +189,7 @@ jobs:
             "--generate-notes",
             "--title", $title
           )
-          if ($env:RELEASE_VERSION.Contains("-")) {
+          if ($tag.Contains("-")) {
             $arguments += "--prerelease"
           }
 

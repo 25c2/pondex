@@ -18,7 +18,7 @@ public sealed class PlaybackSettingsDialog : Form
         AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterParent;
         MaximizeBox = false;
-        MinimizeBox = false;
+        MinimizeBox = true;
         DpiWindowHelper.Attach(this);
         var root = new TableLayoutPanel
         {

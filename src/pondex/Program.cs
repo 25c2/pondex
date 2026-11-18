@@ -53,7 +53,22 @@ internal static class Program
 
             if (args.Contains("--audio-self-test", StringComparer.OrdinalIgnoreCase))
             {
-                var result = AudioSelfTest.RunAsync(logger).GetAwaiter().GetResult();
+                using var diagnosticEngine = new AudioEngine(logger);
+                var devices = new AudioDeviceManager();
+                var binding = AudioOutputBinding.Create(AudioDeviceInfo.Default.PersistentId, devices.CaptureSnapshot())
+                    ?? throw new InvalidOperationException("Windows既定の出力先を識別できません。");
+                diagnosticEngine.SelectOutputDevice(binding.Device.DeviceNumber);
+                using var diagnosticCancellation = new CancellationTokenSource();
+                var result = AudioSelfTest.RunAsync(diagnosticEngine, async cancellationToken =>
+                {
+                    var snapshot = await devices.CaptureSnapshotAsync().WaitAsync(TimeSpan.FromSeconds(2), cancellationToken);
+                    if (!binding.Matches(snapshot))
+                    {
+                        diagnosticCancellation.Cancel();
+                        diagnosticEngine.EmergencyStopAll();
+                        throw new OperationCanceledException("診断中に出力先が変化しました。", cancellationToken);
+                    }
+                }, logger, diagnosticCancellation.Token).GetAwaiter().GetResult();
                 var reportPath = AudioSelfTest.SaveReport(result, logDirectory);
                 logger.Info($"動作診断を完了しました: {(result.Success ? "PASS" : "FAIL")} — {reportPath}");
                 return result.Success ? 0 : 2;

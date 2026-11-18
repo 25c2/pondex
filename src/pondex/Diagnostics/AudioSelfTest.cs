@@ -11,9 +11,13 @@ namespace pondex.Diagnostics;
 
 internal static class AudioSelfTest
 {
+    internal const float TestVolume = 0.10f;
+
     public static async Task<AudioSelfTestResult> RunAsync(
+        AudioEngine engine,
+        Func<CancellationToken, Task> verifyOutput,
         IAppLogger logger,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken)
     {
         var results = new List<AudioSelfTestItem>();
         var stopwatch = Stopwatch.StartNew();
@@ -39,12 +43,18 @@ internal static class AudioSelfTest
                 ("Ogg Opus managed decode + actual output", opusPath)
             })
             {
-                results.Add(await TestPlaybackAsync(name, path, logger, cancellationToken));
+                await verifyOutput(cancellationToken);
+                results.Add(await TestPlaybackAsync(name, path, engine, verifyOutput, cancellationToken));
             }
 
-            results.Add(await TestPitchAndLoopAsync(wavPath, logger, cancellationToken));
-            results.Add(await TestFadeAsync(wavPath, logger, cancellationToken));
-            results.Add(await TestSilentLoopAsync(logger, cancellationToken));
+            await verifyOutput(cancellationToken);
+            results.Add(await TestPitchAndLoopAsync(wavPath, engine, verifyOutput, cancellationToken));
+            await verifyOutput(cancellationToken);
+            results.Add(await TestFadeAsync(wavPath, engine, verifyOutput, cancellationToken));
+            await verifyOutput(cancellationToken);
+            results.Add(await TestSilentLoopAsync(engine, cancellationToken));
+            await verifyOutput(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
 
             results.Add(TestKeyboardHook());
             results.Add(new AudioSelfTestItem(
@@ -68,28 +78,31 @@ internal static class AudioSelfTest
 
     private static async Task<AudioSelfTestItem> TestPitchAndLoopAsync(
         string path,
-        IAppLogger logger,
+        AudioEngine engine,
+        Func<CancellationToken, Task> verifyOutput,
         CancellationToken cancellationToken)
     {
         const string name = "Pitch + loop start sample actual output";
-        using var engine = new AudioEngine(logger);
         var sound = new SoundDefinition
         {
             Id = Guid.NewGuid(),
             Name = name,
+            Volume = TestVolume,
             File = path,
             Pitch = 1.5f,
             Loop = new LoopSettings { Enabled = true, StartSample = 1_000 }
         };
         var failure = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        engine.PlaybackFailed += (_, eventArgs) => failure.TrySetResult(eventArgs.Exception.Message);
+        void OnFailure(object? sender, SoundErrorEventArgs eventArgs) =>
+            failure.TrySetResult(eventArgs.Exception.Message);
+        engine.PlaybackFailed += OnFailure;
 
         try
         {
-            engine.SelectOutputDevice(-1);
-            await engine.PlayAsync(sound, path, cancellationToken);
+            await engine.StartPlaybackAsync(sound, path, verifyOutput, cancellationToken);
             var delay = Task.Delay(TimeSpan.FromMilliseconds(750), cancellationToken);
             var completed = await Task.WhenAny(delay, failure.Task);
+            cancellationToken.ThrowIfCancellationRequested();
             if (completed == failure.Task)
             {
                 return new AudioSelfTestItem(name, false, await failure.Task);
@@ -103,32 +116,35 @@ internal static class AudioSelfTest
                 success,
                 $"state={engine.GetState(sound.Id)}, soundSamplesRead={soundSamples}");
         }
-        catch (Exception exception)
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
             return new AudioSelfTestItem(name, false, exception.Message);
         }
         finally
         {
-            engine.StopAll();
+            engine.PlaybackFailed -= OnFailure;
+            engine.StopImmediately(sound.Id);
         }
     }
 
     private static async Task<AudioSelfTestItem> TestSilentLoopAsync(
-        IAppLogger logger,
+        AudioEngine engine,
         CancellationToken cancellationToken)
     {
         const string name = "Silent loop continuous output";
-        using var engine = new AudioEngine(logger);
         var failure = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        engine.PlaybackFailed += (_, eventArgs) => failure.TrySetResult(eventArgs.Exception.Message);
+        void OnFailure(object? sender, SoundErrorEventArgs eventArgs) =>
+            failure.TrySetResult(eventArgs.Exception.Message);
+        engine.PlaybackFailed += OnFailure;
 
+        var previousSilentLoop = engine.SilentLoopEnabled;
         try
         {
-            engine.SelectOutputDevice(-1);
             engine.SilentLoopEnabled = true;
             var before = engine.OutputSamplesRead;
             var delay = Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken);
             var completed = await Task.WhenAny(delay, failure.Task);
+            cancellationToken.ThrowIfCancellationRequested();
             if (completed == failure.Task)
             {
                 return new AudioSelfTestItem(name, false, await failure.Task);
@@ -140,39 +156,46 @@ internal static class AudioSelfTest
                 samples > 0 && engine.GetActiveSoundIds().Count == 0,
                 $"silentSamplesRead={samples}");
         }
-        catch (Exception exception)
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
             return new AudioSelfTestItem(name, false, exception.Message);
         }
         finally
         {
-            engine.SilentLoopEnabled = false;
+            engine.PlaybackFailed -= OnFailure;
+            // Emergency stop already released the output. Restoring a running
+            // silent loop here could reopen a disconnected or reassigned device.
+            if (!previousSilentLoop) { engine.SilentLoopEnabled = false; }
         }
     }
 
     private static async Task<AudioSelfTestItem> TestFadeAsync(
         string path,
-        IAppLogger logger,
+        AudioEngine engine,
+        Func<CancellationToken, Task> verifyOutput,
         CancellationToken cancellationToken)
     {
         const string name = "Fade In + Fade Out actual output";
-        using var engine = new AudioEngine(logger);
         var sound = new SoundDefinition
         {
             Id = Guid.NewGuid(),
             Name = name,
+            Volume = TestVolume,
             File = path,
             Loop = new LoopSettings { Enabled = true },
             FadeIn = new FadeSettings { Enabled = true, Value = 0.25f },
             FadeOut = new FadeSettings { Enabled = true, Value = 0.25f }
         };
         var failure = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        engine.PlaybackFailed += (_, eventArgs) => failure.TrySetResult(eventArgs.Exception.Message);
+        void OnFailure(object? sender, SoundErrorEventArgs eventArgs) =>
+            failure.TrySetResult(eventArgs.Exception.Message);
+        engine.PlaybackFailed += OnFailure;
 
+        var previousFade = engine.FadeOutOnStopEnabled;
         try
         {
-            engine.SelectOutputDevice(-1);
-            await engine.PlayAsync(sound, path, cancellationToken);
+            engine.FadeOutOnStopEnabled = true;
+            await engine.StartPlaybackAsync(sound, path, verifyOutput, cancellationToken);
             await Task.Delay(TimeSpan.FromMilliseconds(350), cancellationToken);
             engine.Stop(sound.Id);
             var fadingState = engine.GetState(sound.Id);
@@ -189,39 +212,42 @@ internal static class AudioSelfTest
                     && finalState == pondex.Audio.PlaybackState.Stopped,
                 $"afterStop={fadingState}, afterFade={finalState}");
         }
-        catch (Exception exception)
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
             return new AudioSelfTestItem(name, false, exception.Message);
         }
         finally
         {
-            engine.StopAll();
+            engine.FadeOutOnStopEnabled = previousFade;
+            engine.PlaybackFailed -= OnFailure;
+            engine.StopImmediately(sound.Id);
         }
     }
 
     private static async Task<AudioSelfTestItem> TestPlaybackAsync(
         string name,
         string path,
-        IAppLogger logger,
+        AudioEngine engine,
+        Func<CancellationToken, Task> verifyOutput,
         CancellationToken cancellationToken)
     {
-        using var engine = new AudioEngine(logger);
         var sound = new SoundDefinition
         {
             Id = Guid.NewGuid(),
             Name = name,
+            Volume = TestVolume,
             File = path
         };
         var completion = new TaskCompletionSource<AudioSelfTestItem>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        engine.PlaybackEnded += (_, eventArgs) =>
+        void OnEnded(object? sender, SoundPlaybackEventArgs eventArgs)
         {
             if (eventArgs.SoundId == sound.Id && eventArgs.EndReason == PlaybackEndReason.Natural)
             {
                 completion.TrySetResult(new AudioSelfTestItem(name, true, "natural completion"));
             }
-        };
-        engine.PlaybackFailed += (_, eventArgs) =>
+        }
+        void OnFailure(object? sender, SoundErrorEventArgs eventArgs)
         {
             if (eventArgs.SoundId == sound.Id || eventArgs.SoundId == Guid.Empty)
             {
@@ -230,15 +256,17 @@ internal static class AudioSelfTest
                     false,
                     $"{eventArgs.Message} {eventArgs.Exception.Message}"));
             }
-        };
+        }
+        engine.PlaybackEnded += OnEnded;
+        engine.PlaybackFailed += OnFailure;
 
         try
         {
-            engine.SelectOutputDevice(-1);
-            await engine.PlayAsync(sound, path, cancellationToken);
+            await engine.StartPlaybackAsync(sound, path, verifyOutput, cancellationToken);
             var completed = await Task.WhenAny(
                 completion.Task,
                 Task.Delay(TimeSpan.FromSeconds(4), cancellationToken));
+            cancellationToken.ThrowIfCancellationRequested();
             if (completed != completion.Task)
             {
                 return new AudioSelfTestItem(
@@ -249,13 +277,15 @@ internal static class AudioSelfTest
 
             return await completion.Task;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
             return new AudioSelfTestItem(name, false, exception.Message);
         }
         finally
         {
-            engine.StopAll();
+            engine.PlaybackEnded -= OnEnded;
+            engine.PlaybackFailed -= OnFailure;
+            engine.StopImmediately(sound.Id);
         }
     }
 
