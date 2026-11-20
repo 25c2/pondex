@@ -43,7 +43,7 @@ public sealed class PlaybackSettingsDialog : Form
         _pan = AddValue(root, 2, "Pan（左 −100 ～ 右 +100）", -100, 100, (decimal)(sound.Pan * 100), 0, 0);
         _allowVolumeBoost = new CheckBox
         {
-            Text = "音量の限界突破（上限200%）",
+            Text = "この音源を200%まで増幅する",
             AutoSize = true,
             Checked = sound.AllowVolumeBoost,
             Anchor = AnchorStyles.Left
@@ -52,7 +52,7 @@ public sealed class PlaybackSettingsDialog : Form
         root.SetColumnSpan(_allowVolumeBoost, 2);
         root.Controls.Add(new Label
         {
-            Text = "限界突破をOFFにすると100%以内へ戻ります。増幅で音割れする場合は音量を下げてください。",
+            Text = "オフにすると、100%を超えた音量は100%に戻ります。音が割れるときは音量を下げてください。",
             Dock = DockStyle.Fill,
             AutoSize = true,
             Margin = new Padding(0, 8, 0, 8)

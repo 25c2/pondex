@@ -80,11 +80,12 @@ public sealed class AudioDeviceManagerTests
     }
 
     [Fact]
-    public void FindConfiguredDevice_AcceptsLegacyNumericSetting()
+    public void FindConfiguredDevice_RequiresSelectionForLegacyNumericSetting()
     {
         var result = AudioDeviceManager.FindConfiguredDevice(Devices, "0");
 
-        Assert.Equal("USB Audio", result?.Name);
+        Assert.Null(result);
+        Assert.Null(AudioOutputBinding.Create("0", new AudioDeviceSnapshot(Devices, new(0, "usb"))));
     }
 
     [Fact]

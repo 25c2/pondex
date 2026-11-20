@@ -17,11 +17,22 @@ internal sealed class CompletionSampleProvider : ISampleProvider
 
     public WaveFormat WaveFormat => _source.WaveFormat;
 
+    internal Action<Exception>? ReadFailed { get; set; }
+
     public long SamplesRead => Interlocked.Read(ref _samplesRead);
 
     public int Read(float[] buffer, int offset, int count)
     {
-        var read = _source.Read(buffer, offset, count);
+        if (Volatile.Read(ref _completionSignaled) != 0) { return 0; }
+        int read;
+        try { read = _source.Read(buffer, offset, count); }
+        catch (Exception exception) when (ReadFailed is not null
+            && exception is IOException or InvalidDataException or InvalidOperationException or ArgumentException or FormatException
+                or System.Runtime.InteropServices.ExternalException)
+        {
+            if (Interlocked.Exchange(ref _completionSignaled, 1) == 0) { ReadFailed(exception); }
+            return 0;
+        }
         if (read > 0)
         {
             Interlocked.Add(ref _samplesRead, read);

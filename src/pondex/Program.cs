@@ -22,7 +22,7 @@ internal static class Program
         var userDirectory = Path.Combine(localApplicationData, "pondex");
         var storage = AppStoragePaths.Resolve(AppContext.BaseDirectory, userDirectory, Path.GetTempPath());
         var (logger, logDirectory) = CreateLogger(storage);
-        logger.Info("pondexを起動しました。");
+        logger.Info($"pondexを起動しました。ログ: {logger.CurrentLogPath}");
 
         Application.ThreadException += (_, eventArgs) =>
         {
@@ -89,6 +89,10 @@ internal static class Program
                 new RecentProjectStore(Path.Combine(storage.DataDirectory, "recent-projects.json"),
                     Path.Combine(userDirectory, "recent-projects.json"), AppContext.BaseDirectory,
                     additionalLegacyPaths: [AppStoragePaths.GetLegacyHistoryPath(localApplicationData)]));
+            if (logger.CurrentLogPath is null)
+            {
+                mainForm.Shown += (_, _) => mainForm.ReportLoggingUnavailable();
+            }
             if (smokeTest)
             {
                 mainForm.Shown += (_, _) => mainForm.BeginInvoke(mainForm.CloseWithoutSavePromptForSmokeTest);

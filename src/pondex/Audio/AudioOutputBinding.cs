@@ -22,6 +22,7 @@ public sealed record AudioOutputBinding(string ConfiguredId, AudioDeviceInfo Dev
         var current = Create(ConfiguredId, snapshot);
         return current is not null && current.Device.DeviceNumber == Device.DeviceNumber
             && string.Equals(current.Device.PersistentId, Device.PersistentId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(current.Device.EndpointId, Device.EndpointId, StringComparison.OrdinalIgnoreCase)
             && string.Equals(current.DefaultEndpointId, DefaultEndpointId, StringComparison.OrdinalIgnoreCase);
     }
 }

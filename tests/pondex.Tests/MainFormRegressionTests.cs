@@ -139,7 +139,7 @@ public sealed class MainFormRegressionTests
         button.PerformClick();
         Assert.False(stopwatch.IsRunning);
         Assert.Equal("開始", button.Text);
-        Descendants(form).OfType<Button>().Single(control => control.Text == "リセット").PerformClick();
+        Descendants(form).OfType<Button>().Single(control => control.Text == "SWリセット").PerformClick();
         Assert.Equal(TimeSpan.Zero, stopwatch.Elapsed);
         Method("EmergencyStopAll").Invoke(form, null);
         var status = (ToolStripStatusLabel)typeof(MainForm).GetField("_statusLabel", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;

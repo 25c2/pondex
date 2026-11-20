@@ -12,6 +12,10 @@ internal sealed class LivePitchSampleProvider(ISampleProvider source) : ISampleP
     private SmbPitchShifter[]? _shifters;
     private float[][]? _channels;
     private float[]? _input;
+    private float[]? _dryDelay;
+    private float[]? _dryBlock;
+    private int _dryOffset;
+    private float _dryMix;
     private float _factor = 1F;
     private long _inputSamples;
     private long _outputSamples;
@@ -64,6 +68,8 @@ internal sealed class LivePitchSampleProvider(ISampleProvider source) : ISampleP
         _shifters = Enumerable.Range(0, WaveFormat.Channels).Select(_ => new SmbPitchShifter()).ToArray();
         _channels = _shifters.Select(_ => new float[BlockFrames]).ToArray();
         _input = new float[BlockFrames * WaveFormat.Channels];
+        _dryBlock = new float[_input.Length];
+        _dryDelay = new float[FftSize * WaveFormat.Channels];
     }
 
     private bool ProcessBlock()
@@ -81,6 +87,9 @@ internal sealed class LivePitchSampleProvider(ISampleProvider source) : ISampleP
             }
             _inputSamples += read;
             Array.Clear(input, read, input.Length - read);
+            Array.Copy(_dryDelay!, _dryOffset, _dryBlock!, 0, input.Length);
+            Array.Copy(input, 0, _dryDelay!, _dryOffset, input.Length);
+            _dryOffset = (_dryOffset + input.Length) % _dryDelay!.Length;
             for (var channel = 0; channel < WaveFormat.Channels; channel++)
             {
                 var data = _channels![channel];
@@ -88,7 +97,7 @@ internal sealed class LivePitchSampleProvider(ISampleProvider source) : ISampleP
                 {
                     data[frame] = input[frame * WaveFormat.Channels + channel];
                 }
-                // Bypassing at 1x would discard the delayed tail on a live reset.
+                // Keep the FFT history while transitioning to the delay-aligned dry signal.
                 _shifters![channel].PitchShift(_factor, BlockFrames, FftSize,
                     OverSampling, WaveFormat.SampleRate, data);
                 for (var frame = 0; frame < BlockFrames; frame++)
@@ -97,6 +106,7 @@ internal sealed class LivePitchSampleProvider(ISampleProvider source) : ISampleP
                 }
             }
 
+            MixDelayAlignedInput(input);
             var skip = Math.Min(_skipFrames, BlockFrames);
             _skipFrames -= skip;
             _bufferOffset = skip * WaveFormat.Channels;
@@ -108,6 +118,22 @@ internal sealed class LivePitchSampleProvider(ISampleProvider source) : ISampleP
             }
             _outputSamples += _bufferCount - _bufferOffset;
             if (_bufferCount > _bufferOffset) { return true; }
+        }
+    }
+
+    private void MixDelayAlignedInput(float[] processed)
+    {
+        var step = (Math.Abs(_factor - 1F) < 0.001F ? 1F : -1F) / (2 * BlockFrames);
+        if (_dryMix == 0 && step < 0) { return; }
+        var channels = WaveFormat.Channels;
+        for (var frame = 0; frame < BlockFrames; frame++)
+        {
+            _dryMix = Math.Clamp(_dryMix + step, 0F, 1F);
+            for (var channel = 0; channel < channels; channel++)
+            {
+                var index = frame * channels + channel;
+                processed[index] = processed[index] * (1F - _dryMix) + _dryBlock![index] * _dryMix;
+            }
         }
     }
 

@@ -6,11 +6,13 @@ public sealed class TriggerEngine
 {
     private readonly object _sync = new();
     private readonly Dictionary<Guid, SoundClock> _soundStarted = [];
-    private readonly HashSet<Guid> _soundEndedSinceTick = [];
+    private readonly Dictionary<Guid, int> _soundEndedSinceTick = [];
+    private readonly Dictionary<Guid, List<SoundClock>> _finishedClocks = [];
     private readonly HashSet<Guid> _latchedTriggers = [];
     private readonly Dictionary<Guid, (DateOnly Date, TimeOnly Target)> _lastClockFire = [];
     private readonly TimeProvider _timeProvider;
     private IReadOnlyList<TriggerDefinition> _triggers = [];
+    private Dictionary<TriggerDefinition, TriggerDefinition> _originals = [];
     private DateTimeOffset? _lastTickNow;
     private TimeSpan _lastStopwatchElapsed;
     private bool _stopwatchHasStarted;
@@ -52,6 +54,7 @@ public sealed class TriggerEngine
     {
         _soundStarted.Clear();
         _soundEndedSinceTick.Clear();
+        _finishedClocks.Clear();
     }
 
     private void EstablishResumeBaseline(DateTimeOffset now, TimeSpan elapsed, bool running)
@@ -70,6 +73,18 @@ public sealed class TriggerEngine
         _lastTickNow = now;
         _lastStopwatchElapsed = elapsed;
         _resumeNeedsBaseline = false;
+    }
+
+    internal int SatisfiedStopwatchTriggerCount
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _triggers.Count(trigger => trigger.Enabled && trigger.TriggerType == TriggerType.StopwatchElapsed
+                    && _latchedTriggers.Contains(trigger.Id));
+            }
+        }
     }
 
     public void ResetStopwatch()
@@ -97,12 +112,12 @@ public sealed class TriggerEngine
     {
         lock (_sync)
         {
-            _triggers = triggers;
+            _originals = triggers.ToDictionary(trigger => Snapshot(trigger), trigger => trigger);
+            _triggers = _originals.Keys.ToArray();
             _dispatchGeneration++;
             if (!preserveRuntimeState)
             {
-                _soundStarted.Clear();
-                _soundEndedSinceTick.Clear();
+                ClearSoundNotifications();
                 _latchedTriggers.Clear();
                 _lastClockFire.Clear();
                 _lastTickNow = null;
@@ -118,6 +133,7 @@ public sealed class TriggerEngine
                 .Select(trigger => trigger.Id)
                 .ToHashSet();
             _latchedTriggers.RemoveWhere(triggerId => !triggerIds.Contains(triggerId));
+            foreach (var clock in _soundStarted.Values) { clock.Fired.RemoveWhere(id => !triggerIds.Contains(id)); }
             foreach (var removed in _lastClockFire.Keys.Where(id => !_triggers.Any(trigger => trigger.Id == id)).ToArray())
             {
                 _lastClockFire.Remove(removed);
@@ -125,19 +141,29 @@ public sealed class TriggerEngine
         }
     }
 
+    private static TriggerDefinition Snapshot(TriggerDefinition source) => new()
+    {
+        Id = source.Id,
+        Enabled = source.Enabled,
+        Memo = source.Memo,
+        TriggerType = source.TriggerType,
+        Parameters = new TriggerParameters
+        {
+            ClockTime = source.Parameters.ClockTime,
+            Elapsed = source.Parameters.Elapsed,
+            SourceSoundId = source.Parameters.SourceSoundId
+        },
+        Action = source.Action,
+        TargetSoundId = source.TargetSoundId,
+        TargetGroup = source.TargetGroup
+    };
+
     public void OnSoundStarted(Guid soundId)
     {
         lock (_sync)
         {
             if (_suspended) { return; }
             _soundStarted[soundId] = new SoundClock(_timeProvider.GetTimestamp());
-            _soundEndedSinceTick.Remove(soundId);
-            foreach (var trigger in _triggers.Where(item =>
-                         item.TriggerType == TriggerType.SoundElapsed
-                         && item.Parameters.SourceSoundId == soundId))
-            {
-                _latchedTriggers.Remove(trigger.Id);
-            }
         }
     }
 
@@ -146,12 +172,17 @@ public sealed class TriggerEngine
         lock (_sync)
         {
             if (_suspended) { return; }
-            var wasStarted = _soundStarted.Remove(soundId);
-            if (_requireFreshSoundStart && !wasStarted) { return; }
-            if (naturalEnd)
+            var wasStarted = _soundStarted.Remove(soundId, out var clock);
+            if (!naturalEnd || (_requireFreshSoundStart && !wasStarted)) { return; }
+            _soundEndedSinceTick[soundId] = _soundEndedSinceTick.GetValueOrDefault(soundId) + 1;
+            if (clock is null) { return; }
+            if (!clock.Paused) { clock.Elapsed += _timeProvider.GetElapsedTime(clock.Started); }
+            if (!_finishedClocks.TryGetValue(soundId, out var finished))
             {
-                _soundEndedSinceTick.Add(soundId);
+                finished = [];
+                _finishedClocks.Add(soundId, finished);
             }
+            finished.Add(clock);
         }
     }
 
@@ -183,6 +214,7 @@ public sealed class TriggerEngine
         bool stopwatchRunning = true)
     {
         List<TriggerDefinition> fired;
+        TriggerDefinition[] originalResults;
         long generation;
         lock (_sync)
         {
@@ -195,6 +227,13 @@ public sealed class TriggerEngine
             fired = [];
             foreach (var trigger in _triggers.Where(trigger => trigger.Enabled))
             {
+                if (trigger.TriggerType is TriggerType.SoundEnded or TriggerType.SoundElapsed)
+                {
+                    var count = CountSoundOccurrences(trigger);
+                    for (var i = 0; i < count; i++) { fired.Add(trigger); }
+                    continue;
+                }
+
                 var shouldFire = (trigger.TriggerType != TriggerType.StopwatchElapsed || stopwatchRunning)
                     && ShouldFire(trigger, now, stopwatchElapsed, _lastTickNow);
                 if (!shouldFire)
@@ -208,7 +247,7 @@ public sealed class TriggerEngine
                     continue;
                 }
 
-                if (trigger.TriggerType is TriggerType.ClockTime or TriggerType.SoundEnded
+                if (trigger.TriggerType == TriggerType.ClockTime
                     || _latchedTriggers.Add(trigger.Id))
                 {
                     fired.Add(trigger);
@@ -216,6 +255,8 @@ public sealed class TriggerEngine
             }
 
             _soundEndedSinceTick.Clear();
+            _finishedClocks.Clear();
+            originalResults = fired.Select(trigger => _originals[trigger]).ToArray();
             _lastTickNow = now;
         }
 
@@ -226,12 +267,28 @@ public sealed class TriggerEngine
             TriggerFired?.Invoke(this, args);
         }
 
-        return fired;
+        return originalResults;
     }
 
     private bool IsDispatchCurrent(long generation)
     {
         lock (_sync) { return !_suspended && generation == _dispatchGeneration; }
+    }
+
+    private int CountSoundOccurrences(TriggerDefinition trigger)
+    {
+        if (trigger.Parameters.SourceSoundId is not { } source) { return 0; }
+        if (trigger.TriggerType == TriggerType.SoundEnded) { return _soundEndedSinceTick.GetValueOrDefault(source); }
+        if (trigger.Parameters.Elapsed is not { } target) { return 0; }
+
+        var count = _finishedClocks.TryGetValue(source, out var finished)
+            ? finished.Count(clock => clock.Elapsed >= target && clock.Fired.Add(trigger.Id)) : 0;
+        if (_soundStarted.TryGetValue(source, out var active) && !active.Paused
+            && active.Elapsed + _timeProvider.GetElapsedTime(active.Started) >= target && active.Fired.Add(trigger.Id))
+        {
+            count++;
+        }
+        return count;
     }
 
     private bool ShouldFire(
@@ -247,13 +304,6 @@ public sealed class TriggerEngine
                 && CrossedClockTime(trigger.Id, previousNow, now, clockTime),
             TriggerType.StopwatchElapsed => parameters.Elapsed is { } stopwatchTarget
                 && stopwatchElapsed >= stopwatchTarget,
-            TriggerType.SoundEnded => parameters.SourceSoundId is { } endedSoundId
-                && _soundEndedSinceTick.Contains(endedSoundId),
-            TriggerType.SoundElapsed => parameters.SourceSoundId is { } startedSoundId
-                && parameters.Elapsed is { } soundTarget
-                && _soundStarted.TryGetValue(startedSoundId, out var clock)
-                && !clock.Paused
-                && clock.Elapsed + _timeProvider.GetElapsedTime(clock.Started) >= soundTarget,
             _ => false
         };
     }
@@ -288,6 +338,8 @@ public sealed class TriggerEngine
 
     private sealed class SoundClock(long started)
     {
+        public HashSet<Guid> Fired { get; } = [];
+
         public long Started { get; set; } = started;
 
         public TimeSpan Elapsed { get; set; }

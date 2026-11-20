@@ -5,6 +5,10 @@ namespace pondex.Audio;
 
 public sealed record AudioDeviceInfo(int DeviceNumber, string Name, string PersistentId)
 {
+    public string? EndpointId { get; init; }
+
+    internal string SelectionId => EndpointId is null ? PersistentId : $"waveout-endpoint:{EndpointId}";
+
     public static AudioDeviceInfo Default { get; } = new(-1, "Windows既定", "default");
 }
 
@@ -44,7 +48,8 @@ public sealed class AudioDeviceManager
                 devices.Add(new AudioDeviceInfo(
                     index,
                     capabilities.ProductName,
-                    CreatePersistentId(capabilities)));
+                    CreatePersistentId(capabilities))
+                { EndpointId = QueryEndpointId(index) });
             }
             catch
             {
@@ -67,21 +72,15 @@ public sealed class AudioDeviceManager
         }
 
         var matches = devices.Where(
-            device => string.Equals(device.PersistentId, configuredId, StringComparison.OrdinalIgnoreCase)).ToArray();
+            device => string.Equals(device.PersistentId, configuredId, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(device.SelectionId, configuredId, StringComparison.OrdinalIgnoreCase)).ToArray();
         if (matches.Length > 0)
         {
             // Identical legacy capabilities are not enough to select safely.
             return matches.Length == 1 ? matches[0] : null;
         }
 
-        // v1.0 preview builds stored the volatile WaveOut index. Keep those projects readable.
-        return int.TryParse(
-            configuredId,
-            System.Globalization.NumberStyles.Integer,
-            System.Globalization.CultureInfo.InvariantCulture,
-            out var legacyNumber)
-            ? devices.FirstOrDefault(device => device.DeviceNumber == legacyNumber)
-            : null;
+        return null;
     }
 
     private static string CreatePersistentId(WaveOutCapabilities capabilities)
@@ -97,13 +96,25 @@ public sealed class AudioDeviceManager
     private static DefaultOutputIdentity? QueryDefaultOutput()
     {
         if (!OperatingSystem.IsWindows()) { return null; }
-        // Microsoft mmddk.h: DRVM_MAPPER_PREFERRED_GET, DRV_QUERYFUNCTIONINSTANCEIDSIZE / ID.
-        const uint preferredGet = 0x2015, querySize = 0x0812, queryId = 0x0811;
+        const uint preferredGet = 0x2015;
         try
         {
             if (WaveOutMessagePair(new IntPtr(-1), preferredGet, out var number, out _) != 0
                 || number >= WaveOutEvent.DeviceCount) { return null; }
-            var device = new IntPtr(number);
+            var endpoint = QueryEndpointId((int)number);
+            return endpoint is null ? null : new((int)number, endpoint);
+        }
+        catch { return null; }
+    }
+
+    private static string? QueryEndpointId(int number)
+    {
+        if (!OperatingSystem.IsWindows()) { return null; }
+        // DRV_QUERYFUNCTIONINSTANCEIDSIZE / DRV_QUERYFUNCTIONINSTANCEID.
+        const uint querySize = 0x0812, queryId = 0x0811;
+        var device = new IntPtr(number);
+        try
+        {
             if (WaveOutMessageSize(device, querySize, out var size, UIntPtr.Zero) != 0
                 || size < 2 || size > 64 * 1024) { return null; }
             // Reserve UTF-16 storage even for drivers reporting a character count.
@@ -116,7 +127,7 @@ public sealed class AudioDeviceManager
                 Marshal.Copy(new byte[bufferBytes], 0, buffer, bufferBytes);
                 if (WaveOutMessageBuffer(device, queryId, buffer, new UIntPtr(size)) != 0) { return null; }
                 var id = Marshal.PtrToStringUni(buffer, (int)size)?.TrimEnd('\0');
-                return string.IsNullOrWhiteSpace(id) ? null : new((int)number, id);
+                return string.IsNullOrWhiteSpace(id) ? null : id;
             }
             finally { Marshal.FreeHGlobal(buffer); }
         }

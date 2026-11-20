@@ -40,6 +40,7 @@ public sealed class SoundCardTests
         GroupChangedEventArgs? changed = null;
         card.GroupChangeCommitted += (_, eventArgs) => changed = eventArgs;
         groupEditor.Text = "SFX";
+        Assert.Equal("SE", sound.Group);
 
         RaiseEvent(groupEditor, "OnValidated", EventArgs.Empty);
 
@@ -267,10 +268,12 @@ public sealed class SoundCardTests
         Assert.Equal("A2", sound.Key);
     }
 
-    [Fact]
-    public void InvalidKey_WhenEditingEndsClearsAssignmentAndRaisesNotice()
+    [Theory]
+    [InlineData("")]
+    [InlineData("A")]
+    public void InvalidKey_WhenEditingEndsKeepsLastCommittedAssignmentAndRaisesNotice(string assignedKey)
     {
-        var sound = new SoundDefinition();
+        var sound = new SoundDefinition { Key = assignedKey };
         using var card = new SoundCard(sound);
         card.EnsureDetailsCreated();
         var keyEditor = Descendants(card)
@@ -283,8 +286,8 @@ public sealed class SoundCardTests
         RaiseEvent(keyEditor, "OnValidated", EventArgs.Empty);
 
         Assert.True(rejected);
-        Assert.Empty(keyEditor.Text);
-        Assert.Empty(sound.Key);
+        Assert.Equal(assignedKey, keyEditor.Text);
+        Assert.Equal(assignedKey, sound.Key);
     }
 
     [Fact]

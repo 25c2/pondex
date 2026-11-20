@@ -48,6 +48,8 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
         _writerTask = Task.Run(WriteLoopAsync);
     }
 
+    internal string? CurrentLogPath => (_writer as BoundedLogWriter)?.CurrentPath;
+
     public LoggerDiagnostics Diagnostics
     {
         get

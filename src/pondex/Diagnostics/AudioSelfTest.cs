@@ -289,16 +289,8 @@ internal static class AudioSelfTest
         }
     }
 
-    public static string SaveReport(AudioSelfTestResult result, string logDirectory)
-    {
-        Directory.CreateDirectory(logDirectory);
-        var reportPath = Path.Combine(logDirectory, "audio-self-test.txt");
-        File.WriteAllText(
-            reportPath,
-            result.ToReport(),
-            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        return reportPath;
-    }
+    public static string SaveReport(AudioSelfTestResult result, string logDirectory) =>
+        DiagnosticReport.Write(logDirectory, "audio-self-test", result.ToReport());
 
     private static AudioSelfTestItem TestKeyboardHook()
     {

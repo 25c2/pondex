@@ -28,6 +28,10 @@ public sealed class ProjectModel
     [JsonIgnore]
     public List<string> MissingFiles { get; } = [];
 
+    internal Dictionary<Guid, string> ApprovedSoundPaths { get; } = [];
+
+    internal string? FileRevision { get; set; }
+
     internal HashSet<Guid> MissingSoundIds { get; } = [];
 }
 

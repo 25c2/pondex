@@ -60,13 +60,16 @@ internal sealed class SoundInstance : IDisposable
 
     public long SamplesRead => _completionProvider.SamplesRead;
 
+    internal void SetReadFailureHandler(Action<Exception> handler) => _completionProvider.ReadFailed = handler;
+
     public static SoundInstance Create(
         SoundDefinition definition,
         string path,
         WaveFormat mixerFormat,
-        Action completed)
+        Action completed) => Create(definition, AudioDecoderFactory.Open(path), mixerFormat, completed);
+
+    internal static SoundInstance Create(SoundDefinition definition, WaveStream decoder, WaveFormat mixerFormat, Action completed)
     {
-        var decoder = AudioDecoderFactory.Open(path);
         try
         {
             var loopStartSample = definition.Loop.StartSeconds > 0

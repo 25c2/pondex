@@ -51,9 +51,13 @@ public static class ProjectPath
         }
 
         var projectFullPath = GetSafeFullPath(projectFilePath, "プロジェクトパス");
-        var resolvedPath = Resolve(projectFullPath, storedPath);
+        return ClassifyResolved(projectFullPath, Resolve(projectFullPath, storedPath));
+    }
+
+    internal static ProjectPathKind ClassifyResolved(string projectFullPath, string resolvedPath)
+    {
         var projectDirectory = Path.GetDirectoryName(projectFullPath)
-            ?? throw new ArgumentException("プロジェクトの保存先フォルダを特定できません。", nameof(projectFilePath));
+            ?? throw new ArgumentException("プロジェクトの保存先フォルダを特定できません。", nameof(projectFullPath));
         var relativePath = Path.GetRelativePath(projectDirectory, resolvedPath);
         var isOutside = Path.IsPathRooted(relativePath)
             || relativePath.Equals("..", StringComparison.Ordinal)

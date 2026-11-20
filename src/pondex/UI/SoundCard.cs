@@ -38,6 +38,7 @@ public sealed class SoundCard : UserControl
     private bool _loopSecondsEdited;
     private bool _darkMode;
     private string _committedGroup;
+    private string _committedKey;
     private bool _updatingPlaybackSettings;
     private bool _detailsCreated;
     private PlaybackSettingsDialog? _playbackDialog;
@@ -53,6 +54,7 @@ public sealed class SoundCard : UserControl
         Sound = sound;
         _resolveSoundPath = resolveSoundPath ?? (() => Sound.File);
         _committedGroup = sound.Group;
+        _committedKey = sound.Key;
         sound.FadeIn.Value = NormalizeFadeValue(sound.FadeIn);
         sound.FadeOut.Value = NormalizeFadeValue(sound.FadeOut);
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -107,6 +109,13 @@ public sealed class SoundCard : UserControl
         var stopButton = CreateButton("■ 停止", Color.FromArgb(255, 225, 225));
         _pauseButton = CreateButton("Ⅱ 一時停止", Color.FromArgb(255, 245, 205));
         _detailsButton = CreateButton("詳細 ▼", SystemColors.Control);
+        void UpdateAccessibleNames()
+        {
+            playButton.AccessibleName = $"{_nameLabel.Text}を再生";
+            stopButton.AccessibleName = $"{_nameLabel.Text}を停止";
+        }
+        _nameLabel.TextChanged += (_, _) => UpdateAccessibleNames();
+        UpdateAccessibleNames();
         playButton.Tag = UiTheme.SuccessButtonRole;
         stopButton.Tag = UiTheme.StopButtonRole;
         _pauseButton.Tag = UiTheme.WarningButtonRole;
@@ -117,7 +126,7 @@ public sealed class SoundCard : UserControl
             Maximum = ProjectLimits.GetMaxVolumePercent(sound),
             TickFrequency = 10,
             TickStyle = TickStyle.None,
-            Value = (int)(Math.Clamp(sound.Volume, 0, ProjectLimits.GetMaxVolume(sound)) * 100),
+            Value = ProjectLimits.ToVolumePercent(sound.Volume, ProjectLimits.GetMaxVolume(sound)),
             Dock = DockStyle.Fill
         };
         _volumeValue = new NumericUpDown
@@ -307,7 +316,7 @@ public sealed class SoundCard : UserControl
             var maximum = ProjectLimits.GetMaxVolumePercent(Sound);
             _volumeTrack.Maximum = maximum;
             _volumeValue.Maximum = maximum;
-            var percent = (int)(Math.Clamp(Sound.Volume, 0, ProjectLimits.GetMaxVolume(Sound)) * 100);
+            var percent = ProjectLimits.ToVolumePercent(Sound.Volume, ProjectLimits.GetMaxVolume(Sound));
             _volumeTrack.Value = percent;
             _volumeValue.Value = percent;
         }
@@ -413,7 +422,6 @@ public sealed class SoundCard : UserControl
             _nameText.TextChanged += (_, _) => UpdateDefinition();
             _keyText.TextChanged += (_, _) => NormalizeKeyAndUpdate();
             _keyText.Validated += (_, _) => CommitKeyInput();
-            _groupText.TextChanged += (_, _) => UpdateDefinition();
             _groupText.Validated += (_, _) => CommitGroupChange();
             _panValue.ValueChanged += (_, _) => UpdateDefinition();
             _panValue.MouseDown += (_, eventArgs) =>
@@ -523,9 +531,15 @@ public sealed class SoundCard : UserControl
     {
         var pauseTextWidth = TextRenderer.MeasureText("Ⅱ 一時停止", _pauseButton.Font).Width
             + _pauseButton.Padding.Horizontal + 10 * DeviceDpi / 96;
+        _pauseButton.AccessibleName = $"{Sound.Name}を{(_state == PlaybackState.Paused ? "再開" : "一時停止")}";
         _pauseButton.Text = _state == PlaybackState.Paused ? "▶ 再開"
             : (_pauseButton.ClientSize.Width < pauseTextWidth ? "Ⅱ 休止" : "Ⅱ 一時停止");
-        _toolTip.SetToolTip(_pauseButton, _state == PlaybackState.Paused ? "再生を再開" : "一時停止");
+        _toolTip.SetToolTip(_pauseButton, _state switch
+        {
+            PlaybackState.Paused => "再生を再開",
+            PlaybackState.CheckingOutput or PlaybackState.Preparing => "保留中の再生を取り消す",
+            _ => "一時停止"
+        });
     }
 
     internal void EndEditing() => _detailsButton.Focus();
@@ -729,7 +743,6 @@ public sealed class SoundCard : UserControl
 
         Sound.Name = string.IsNullOrWhiteSpace(_nameText.Text) ? "名称未設定" : _nameText.Text.Trim();
         Sound.Key = _keyText.Text.Trim();
-        Sound.Group = _groupText.Text.Trim();
         Sound.Pan = (float)_panValue.Value / 100.0f;
         Sound.Pitch = (float)_pitchValue.Value;
         Sound.Loop.Enabled = _loopCheck.Checked;
@@ -817,6 +830,7 @@ public sealed class SoundCard : UserControl
         if (_editingLocked) { return; }
         if (string.IsNullOrWhiteSpace(_keyText.Text))
         {
+            _committedKey = string.Empty;
             return;
         }
 
@@ -824,7 +838,7 @@ public sealed class SoundCard : UserControl
         _normalizingKey = true;
         try
         {
-            _keyText.Text = valid ? normalized : string.Empty;
+            _keyText.Text = valid ? normalized : _committedKey;
             _keyText.SelectionStart = _keyText.TextLength;
         }
         finally
@@ -832,6 +846,7 @@ public sealed class SoundCard : UserControl
             _normalizingKey = false;
         }
 
+        if (valid) { _committedKey = normalized; }
         UpdateDefinition();
         if (!valid)
         {
@@ -872,15 +887,23 @@ public sealed class SoundCard : UserControl
     private void CommitGroupChange()
     {
         if (_editingLocked) { return; }
-        var currentGroup = Sound.Group;
-        if (string.Equals(_committedGroup, currentGroup, StringComparison.Ordinal))
+        var currentGroup = _groupText.Text.Trim();
+        if (string.Equals(_committedGroup, currentGroup, StringComparison.Ordinal)) { return; }
+
+        var previousGroup = _committedGroup;
+        var change = new GroupChangedEventArgs(previousGroup, currentGroup);
+        _committedGroup = currentGroup;
+        GroupChangeCommitted?.Invoke(this, change);
+        if (change.Cancel)
         {
+            _committedGroup = previousGroup;
+            _groupText.Text = previousGroup;
             return;
         }
 
-        var previousGroup = _committedGroup;
-        _committedGroup = currentGroup;
-        GroupChangeCommitted?.Invoke(this, new GroupChangedEventArgs(previousGroup, currentGroup));
+
+        Sound.Group = currentGroup;
+        UpdateDefinition();
     }
 
     private double GetLoopStartSecondsForDisplay()
@@ -934,6 +957,8 @@ public sealed class GroupChangedEventArgs : EventArgs
         PreviousGroup = previousGroup;
         CurrentGroup = currentGroup;
     }
+
+    public bool Cancel { get; set; }
 
     public string PreviousGroup { get; }
 

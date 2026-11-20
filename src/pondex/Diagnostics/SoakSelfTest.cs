@@ -148,16 +148,8 @@ internal static class SoakSelfTest
             failures.ToArray());
     }
 
-    public static string SaveReport(SoakSelfTestResult result, string logDirectory)
-    {
-        Directory.CreateDirectory(logDirectory);
-        var reportPath = Path.Combine(logDirectory, "soak-self-test.txt");
-        File.WriteAllText(
-            reportPath,
-            result.ToReport(),
-            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        return reportPath;
-    }
+    public static string SaveReport(SoakSelfTestResult result, string logDirectory) =>
+        DiagnosticReport.Write(logDirectory, "soak-self-test", result.ToReport());
 
     private static void DecodeEntireFile(string path)
     {

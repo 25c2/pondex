@@ -19,6 +19,7 @@ public sealed class MainForm : Form
     private readonly string _logDirectory;
     private readonly RecentProjectStore _recentProjects;
     private readonly Stopwatch _stopwatch = new();
+    private long _shortcutBindingsVersion = -1;
     private readonly Dictionary<Guid, SoundCard> _soundCards = [];
     private readonly GlobalKeyboardHook _globalHook;
     private readonly ShortcutDispatcher _shortcutDispatcher;
@@ -35,6 +36,7 @@ public sealed class MainForm : Form
     private readonly ToolStripStatusLabel _statusLabel;
     private readonly ToolStripMenuItem _recentMenu;
     private readonly ToolStripMenuItem _muteMenuItem;
+    private ToolStripMenuItem _missingAudioMenuItem = null!;
     private readonly TrackBar _masterVolume;
     private readonly CheckBox _masterMute;
     private NumericUpDown _masterVolumeValue = null!;
@@ -48,6 +50,7 @@ public sealed class MainForm : Form
     private bool _cleanupCompleted;
     private bool _darkMode;
     private bool _statusIsError;
+    private bool _loggingFailureShown;
     private bool _projectOperationInProgress;
     private bool _savingProject;
     private readonly List<ToolStripItem> _saveCommands = [];
@@ -72,6 +75,7 @@ public sealed class MainForm : Form
     private ToolStripButton _cancelDiagnosticButton = null!;
     private (DateTimeOffset WallTime, long Timestamp)? _previousClockTick;
     private bool _systemSuspended;
+    private bool _interactiveResize;
     private Task _resumeOutputCheck = Task.CompletedTask;
 
     public MainForm(
@@ -104,6 +108,7 @@ public sealed class MainForm : Form
 
         var menu = BuildMenu(out _recentMenu, out _muteMenuItem);
         MainMenuStrip = menu;
+        _recentMenu.DropDownOpening += (_, _) => RefreshRecentMenu();
 
         var root = new TableLayoutPanel
         {
@@ -154,7 +159,7 @@ public sealed class MainForm : Form
         _triggerPanel.DefinitionsChanged += (_, _) =>
         {
             _triggerEngine.SetTriggers(_projectManager.Current.Triggers, preserveRuntimeState: true);
-            _projectManager.MarkDirty();
+            _projectManager.MarkDirty(shortcutBindingsChanged: false);
         };
         triggersTab.Controls.Add(_triggerPanel);
         _tabs.TabPages.Add(soundsTab);
@@ -253,7 +258,13 @@ public sealed class MainForm : Form
 
         DragEnter += OnDragEnter;
         DragDrop += OnDragDrop;
-        Resize += (_, _) => ResizeSoundCards();
+        ResizeBegin += (_, _) => _interactiveResize = true;
+        Resize += (_, _) => { if (!_interactiveResize) { ResizeSoundCards(); } };
+        ResizeEnd += (_, _) =>
+        {
+            _interactiveResize = false;
+            ResizeSoundCards();
+        };
         FormClosing += OnFormClosing;
         FormClosed += OnFormClosed;
         Deactivate += (_, _) => _shortcutDispatcher.Reset();
@@ -286,7 +297,8 @@ public sealed class MainForm : Form
         saveAsItem.ShortcutKeys = Keys.Control | Keys.Shift | Keys.S;
         var addItem = new ToolStripMenuItem("音源を追加…", null, (_, _) => AddSoundsWithDialog());
         recentMenu = new ToolStripMenuItem("最近使ったファイル");
-        file.DropDownItems.AddRange([newItem, openItem, saveItem, saveAsItem, new ToolStripSeparator(), addItem, recentMenu]);
+        _missingAudioMenuItem = new ToolStripMenuItem("欠落音源…", null, (_, _) => ShowMissingSounds()) { Visible = false };
+        file.DropDownItems.AddRange([newItem, openItem, saveItem, saveAsItem, new ToolStripSeparator(), addItem, _missingAudioMenuItem, recentMenu]);
 
         var operations = new ToolStripMenuItem("操作(&O)");
         var stopAllItem = new ToolStripMenuItem("全停止(&R)", null, (_, _) => StopAll())
@@ -365,7 +377,7 @@ public sealed class MainForm : Form
         var modeButton = HeaderButton("時計 / SW", SystemColors.Control);
         var startButton = HeaderButton("開始", SystemColors.Control);
         _stopwatchToggleButton = startButton;
-        var resetButton = HeaderButton("リセット", SystemColors.Control);
+        var resetButton = HeaderButton("SWリセット", SystemColors.Control);
 
         _headerToolTip.SetToolTip(modeButton, "時計とストップウォッチの表示を切り替えます。");
         _headerToolTip.SetToolTip(startButton, "ストップウォッチを開始・一時停止します。");
@@ -656,6 +668,11 @@ public sealed class MainForm : Form
         };
         resetButton.Click += (_, _) =>
         {
+            var satisfied = _triggerEngine.SatisfiedStopwatchTriggerCount;
+            if (satisfied > 0 && MessageBox.Show(this,
+                $"ストップウォッチをリセットすると、成立済みのイベント{satisfied}件も再び待機します。リセットしますか？",
+                "SWリセット", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) { return; }
             _stopwatch.Reset();
             _triggerEngine.ResetStopwatch();
             _stopwatchMode = true;
@@ -677,7 +694,7 @@ public sealed class MainForm : Form
             var volume = masterVolumeControl.Value / 100.0f;
             _audioEngine.MasterVolume = volume;
             _projectManager.Current.Settings.MasterVolume = volume;
-            _projectManager.MarkDirty();
+            _projectManager.MarkDirty(shortcutBindingsChanged: false);
         };
         masterVolumeValue.ValueChanged += (_, _) =>
         {
@@ -704,7 +721,7 @@ public sealed class MainForm : Form
 
             _audioEngine.MasterMute = masterMuteControl.Checked;
             _projectManager.Current.Settings.MasterMute = masterMuteControl.Checked;
-            _projectManager.MarkDirty();
+            _projectManager.MarkDirty(shortcutBindingsChanged: false);
         };
         UpdateMuteAppearance(masterMuteControl);
         return header;
@@ -779,7 +796,7 @@ public sealed class MainForm : Form
         _applyingProjectSettings = true;
         try
         {
-            var percent = (int)(Math.Clamp(_projectManager.Current.Settings.MasterVolume, 0, 1) * 100);
+            var percent = ProjectLimits.ToVolumePercent(_projectManager.Current.Settings.MasterVolume, 1);
             _masterVolume.Value = percent;
             _masterVolumeValue.Value = percent;
         }
@@ -863,8 +880,8 @@ public sealed class MainForm : Form
             await RebuildSoundCardsAsync();
             if (_projectManager.Current.MissingFiles.Count > 0)
             {
-                MessageBox.Show(this, "次の音源が見つかりません。登録は保持しています。参照から差し替えできます。\n"
-                    + string.Join(Environment.NewLine, _projectManager.Current.MissingFiles.Take(20)),
+                MessageBox.Show(this,
+                    $"音源が{_projectManager.Current.MissingSoundIds.Count}件見つかりません。ファイルメニューの「欠落音源」から確認・差し替えできます。",
                     "欠落音源", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             RefreshRecentMenu();
@@ -874,15 +891,16 @@ public sealed class MainForm : Form
                 _logger.Warning($"プロジェクトの一部を修復またはスキップしました:{Environment.NewLine}{warningText}");
                 MessageBox.Show(
                     this,
-                    $"プロジェクトの一部を読み込めませんでした。正常な項目は利用できます。元ファイルへの上書きはできません。回復用のコピーを別の名前で保存してください。\n\n{warningText}",
-                    "プロジェクト読込警告",
+                    $"読み込めた項目は使えます。変更を残すには、別の名前で保存してください。元のファイルは上書きできません。\n\n{warningText}",
+                    "一部の設定を読み込めませんでした",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
                 SetStatus($"警告付きで開きました（{_projectManager.Current.LoadWarnings.Count}件）。", true);
             }
             else
             {
-                SetStatus("読み込み完了", false);
+                var missing = _projectManager.Current.MissingSoundIds.Count;
+                SetStatus(missing == 0 ? "読み込み完了" : $"読み込み完了・欠落{missing}件", missing > 0);
             }
         }
         catch (Exception exception)
@@ -907,6 +925,7 @@ public sealed class MainForm : Form
         try
         {
             var savingProject = _projectManager.Current;
+            EndTextEditing();
             _ = _masterVolumeValue.Value;
             _savingProject = true;
             SetProjectOperationBusy(true);
@@ -997,11 +1016,12 @@ public sealed class MainForm : Form
         }
 
         var added = new List<SoundDefinition>();
+        var skipped = new List<string>();
         foreach (var path in paths)
         {
             if (!IsSupportedAudioFile(path))
             {
-                SetStatus($"未対応形式をスキップしました: {Path.GetFileName(path)}", true);
+                skipped.Add($"{Path.GetFileName(path)}（未対応形式）");
                 continue;
             }
 
@@ -1012,7 +1032,7 @@ public sealed class MainForm : Form
             catch (Exception exception) when (exception is InvalidOperationException or ArgumentException)
             {
                 _logger.Warning($"音源を追加できません: {path} ({exception.Message})");
-                SetStatus($"音源を追加できません: {exception.Message}", true);
+                skipped.Add($"{Path.GetFileName(path)}（{exception.Message}）");
             }
         }
 
@@ -1034,8 +1054,13 @@ public sealed class MainForm : Form
             }
 
             RefreshTriggerData(resetEngine: false);
-            SetStatus($"音源を{added.Count}件追加しました。", false);
+
         }
+        if (skipped.Count > 0)
+        {
+            SetStatus($"追加{added.Count}件・スキップ{skipped.Count}件", true, string.Join(Environment.NewLine, skipped));
+        }
+        else if (added.Count > 0) { SetStatus($"音源を{added.Count}件追加しました。", false); }
     }
 
     private void RebuildSoundCards()
@@ -1112,19 +1137,21 @@ public sealed class MainForm : Form
         card.ApplyDarkMode(_projectManager.Current.Settings.DarkMode);
         card.PlayRequested += async (_, _) => await PlaySoundAsync(sound.Id);
         card.StopRequested += (_, _) => StopSound(sound.Id);
-        card.PauseRequested += (_, _) => _audioEngine.Pause(sound.Id);
+        card.PauseRequested += (_, _) => PauseSound(sound.Id);
         card.ResumeRequested += (_, _) => _audioEngine.Resume(sound.Id);
         card.FileBrowseRequested += (_, _) => BrowseReplacementFile(sound, card);
         card.DeleteRequested += (_, _) => DeleteSound(sound, card);
         card.InvalidKeyRejected += (_, _) =>
-            SetStatus("使用できないキー名だったため、割り当てを解除しました。A、2、F1などを入力してください。", true);
-        card.GroupChangeCommitted += (_, eventArgs) => OnSoundGroupChangeCommitted(eventArgs);
+            SetStatus("キー名を確認してください。元の割り当てはそのままです。", true);
+        card.GroupChangeCommitted += (_, eventArgs) => OnSoundGroupChangeCommitted(card, eventArgs);
         card.VolumeFadeRequested += (_, eventArgs) =>
         {
             _audioEngine.FadeVolume(sound.Id, eventArgs.TargetVolume, eventArgs.Duration);
-            _projectManager.MarkDirty();
+            _projectManager.MarkDirty(shortcutBindingsChanged: false);
         };
         var displayName = sound.Name;
+        var assignedKey = sound.Key;
+        var assignedGroup = sound.Group;
         card.DefinitionChanged += (_, _) =>
         {
             _audioEngine.ApplyLiveSettings(sound);
@@ -1133,7 +1160,11 @@ public sealed class MainForm : Form
                 displayName = sound.Name;
                 _triggerPanel.RefreshSoundNames();
             }
-            _projectManager.MarkDirty();
+            var bindingsChanged = assignedKey != sound.Key || assignedGroup != sound.Group;
+            if (assignedGroup != sound.Group) { _triggerPanel.RefreshSoundNames(); }
+            assignedKey = sound.Key;
+            assignedGroup = sound.Group;
+            _projectManager.MarkDirty(shortcutBindingsChanged: bindingsChanged);
         };
         card.SetEditingLocked(_editingLocked || _projectOperationInProgress);
         card.UpdateState(_projectManager.Current.MissingSoundIds.Contains(sound.Id)
@@ -1275,6 +1306,7 @@ public sealed class MainForm : Form
 
         _soundCards.Remove(sound.Id);
         _projectManager.Current.MissingSoundIds.Remove(sound.Id);
+        _projectManager.Current.ApprovedSoundPaths.Remove(sound.Id);
         _uiPlayVersions.Remove(sound.Id);
         _soundList.Controls.Remove(card);
         card.Dispose();
@@ -1351,7 +1383,50 @@ public sealed class MainForm : Form
         finally { _soundList.ResumeLayout(performLayout: true); }
     }
 
-    private void BrowseReplacementFile(SoundDefinition sound, SoundCard card)
+    private void ShowMissingSounds()
+    {
+        using var dialog = new Form
+        {
+            StartPosition = FormStartPosition.CenterParent,
+            ClientSize = new Size(720, 380),
+            MinimumSize = new Size(420, 240)
+        };
+        dialog.AutoScaleMode = AutoScaleMode.Dpi;
+        DpiWindowHelper.Attach(dialog);
+        var list = new ListBox { Dock = DockStyle.Fill, HorizontalScrollbar = true, DisplayMember = nameof(MissingSoundEntry.Description) };
+        var replace = new Button { Text = "参照…", AutoSize = true };
+        var close = new Button { Text = "閉じる", DialogResult = DialogResult.Cancel, AutoSize = true };
+        var footer = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, Padding = new Padding(8) };
+        footer.Controls.AddRange([replace, close]);
+        dialog.Controls.Add(list);
+        dialog.Controls.Add(footer);
+        dialog.CancelButton = close;
+
+        void RefreshList()
+        {
+            var project = _projectManager.Current;
+            var missing = project.Sounds.Where(sound => project.MissingSoundIds.Contains(sound.Id))
+                .Select(sound => new MissingSoundEntry(sound, $"{sound.Name} — {sound.File}")).ToArray();
+            list.DataSource = missing;
+            dialog.Text = $"欠落音源（残り{missing.Length}件）";
+            replace.Enabled = !_editingLocked && list.SelectedItem is MissingSoundEntry;
+        }
+        list.SelectedIndexChanged += (_, _) => replace.Enabled = !_editingLocked && list.SelectedItem is MissingSoundEntry;
+        replace.Click += (_, _) =>
+        {
+            if (list.SelectedItem is not MissingSoundEntry item || !_soundCards.TryGetValue(item.Sound.Id, out var card)) { return; }
+            BrowseReplacementFile(item.Sound, card, dialog);
+            RefreshList();
+        };
+
+        RefreshList();
+        UiTheme.Apply(dialog, _darkMode);
+        dialog.ShowDialog(this);
+    }
+
+    private sealed record MissingSoundEntry(SoundDefinition Sound, string Description);
+
+    private void BrowseReplacementFile(SoundDefinition sound, SoundCard card, IWin32Window? owner = null)
     {
         if (!CanEditProject()) { return; }
         using var dialog = new OpenFileDialog
@@ -1372,18 +1447,24 @@ public sealed class MainForm : Form
             // 壊れた旧パスでも参照ダイアログ自体は利用できるようにする。
         }
 
-        if (dialog.ShowDialog(this) != DialogResult.OK)
+        if (dialog.ShowDialog(owner ?? this) != DialogResult.OK)
         {
             return;
         }
 
         try
         {
-            StopSound(sound.Id);
+            if (!IsSupportedAudioFile(dialog.FileName))
+            {
+                throw new InvalidOperationException("対応する音声形式を選んでください。");
+            }
             _projectManager.ReplaceSoundFile(sound, dialog.FileName);
+            StopSound(sound.Id, immediately: true);
             _projectManager.Current.MissingSoundIds.Remove(sound.Id);
             card.UpdateState(PlaybackState.Stopped);
             card.UpdateFilePath(sound.File);
+            _triggerPanel.RefreshSoundNames();
+            UpdateProjectHeader();
             SetStatus($"音声ファイルを差し替えました: {sound.Name}", false);
         }
         catch (Exception exception) when (exception is InvalidOperationException or ArgumentException)
@@ -1393,9 +1474,9 @@ public sealed class MainForm : Form
         }
     }
 
-    private async Task PlaySoundAsync(Guid soundId)
+    private async Task<PlaybackStartResult> PlaySoundAsync(Guid soundId)
     {
-        if (_diagnosticCancellation is not null || _systemSuspended) { return; }
+        if (_diagnosticCancellation is not null || _systemSuspended) { return PlaybackStartResult.Cancelled; }
         var generation = Interlocked.Read(ref _playbackGeneration);
         var version = _uiPlayVersions.GetValueOrDefault(soundId) + 1;
         _uiPlayVersions[soundId] = version;
@@ -1405,47 +1486,66 @@ public sealed class MainForm : Form
         await _outputConfigurationTask;
         await _resumeOutputCheck;
         await CheckSelectedDeviceAvailability(force: true);
-        if (!IsCurrent()) { return; }
+        if (!IsCurrent()) { return PlaybackStartResult.Cancelled; }
         if (_outputUnavailable)
         {
             CompletePlaybackDisplay(soundId, PlaybackState.Failed);
             SetStatus("出力先を設定で選び直してください。", true);
-            return;
+            return PlaybackStartResult.Failed;
         }
         var sound = _projectManager.Current.Sounds.FirstOrDefault(item => item.Id == soundId);
         if (sound is null)
         {
             CompletePlaybackDisplay(soundId, PlaybackState.Stopped);
-            return;
+            return PlaybackStartResult.Cancelled;
         }
 
         string path;
         try
         {
-            path = _projectManager.ResolveSoundPath(sound);
+            path = _projectManager.ResolvePlaybackPath(sound);
         }
         catch (Exception exception)
         {
             CompletePlaybackDisplay(soundId, PlaybackState.Failed);
             _logger.Error($"音源のパスを解決できません: {sound.Name} ({sound.Id})", exception);
             SetStatus($"パスを解決できません: {sound.Name} — {exception.Message}", true);
-            return;
+            return PlaybackStartResult.Failed;
         }
 
         SetPendingPlayback(soundId, PlaybackState.Preparing);
         var result = PlaybackStartResult.Started;
-        if (_audioEngine is AudioEngine engine) { result = await engine.StartPlaybackAsync(sound, path); }
+        var binding = _outputBinding;
+        var outputChanged = false;
+        if (_audioEngine is AudioEngine engine && binding is not null)
+        {
+            result = await engine.StartPlaybackAsync(sound, path, async token =>
+            {
+                if (!engine.NeedsOutputOpen || await ProbeBoundOutputAsync(binding, token)) { return; }
+                outputChanged = true;
+                throw new InvalidOperationException("再生準備中に出力先を確認できなくなりました。");
+            });
+            if (outputChanged) { MarkOutputChanged(binding); }
+        }
         else { await _audioEngine.PlayAsync(sound, path); }
 
         if (IsCurrent())
         {
+            var missing = _projectManager.Current.MissingSoundIds;
+            if ((result == PlaybackStartResult.Missing && missing.Add(soundId))
+                || (result == PlaybackStartResult.Started && missing.Remove(soundId)))
+            {
+                UpdateProjectHeader();
+            }
             CompletePlaybackDisplay(soundId, result switch
             {
                 PlaybackStartResult.Missing => PlaybackState.Missing,
                 PlaybackStartResult.Failed => PlaybackState.Failed,
                 _ => _audioEngine.GetState(soundId)
             });
+            return result;
         }
+        return PlaybackStartResult.Cancelled;
     }
 
     private void SetPendingPlayback(Guid soundId, PlaybackState state)
@@ -1468,6 +1568,25 @@ public sealed class MainForm : Form
             if (_soundCards.TryGetValue(soundId, out var card)) { card.UpdateState(_audioEngine.GetState(soundId)); }
         }
         _pendingPlayback.Clear();
+    }
+
+    private void PauseSound(Guid soundId)
+    {
+        // A pending decoder cannot be paused before it joins the mixer.
+        // Cancel the pending request before pausing any already playing instance.
+        if (_pendingPlayback.ContainsKey(soundId))
+        {
+            _uiPlayVersions[soundId] = _uiPlayVersions.GetValueOrDefault(soundId) + 1;
+            if (_audioEngine is AudioEngine engine)
+            {
+                engine.CancelPendingPlayback(soundId);
+                engine.Pause(soundId);
+            }
+            else { _audioEngine.StopImmediately(soundId); }
+            CompletePlaybackDisplay(soundId, _audioEngine.GetState(soundId));
+            return;
+        }
+        _audioEngine.Pause(soundId);
     }
 
     private void StopSound(Guid soundId, bool immediately = false)
@@ -1513,7 +1632,19 @@ public sealed class MainForm : Form
         _resumeTriggersButton.Visible = true;
         InvalidatePendingPlayback();
         // Keep held-key state so an auto-repeat does not count as a new press after the stop.
-        _audioEngine.EmergencyStopAll();
+        try { _audioEngine.EmergencyStopAll(); }
+        catch (Exception exception)
+        {
+            _outputUnavailable = true;
+            _logger.Error("緊急停止中に音声出力を終了できませんでした。", exception);
+        }
+        if (_audioEngine is AudioEngine { IsOutputFaulted: true }) { _outputUnavailable = true; }
+        if (_outputUnavailable)
+        {
+            _deviceLabel.Text = "出力: エラー（設定で選び直す）";
+            SetStatus("緊急停止・イベント休止中。設定で出力先を確認してください。", true);
+            return;
+        }
         SetStatus("緊急停止・イベント休止中", false, "手動再生は可能です。「イベント再開」で自動イベントを再開します。");
     }
 
@@ -1625,7 +1756,7 @@ public sealed class MainForm : Form
         var selectedDevice = dialog.OutputSelectionExplicit
             ? devices.FirstOrDefault(device => device.DeviceNumber == dialog.SelectedDeviceNumber)
             : null;
-        var selectedId = selectedDevice?.PersistentId ?? settings.OutputDevice;
+        var selectedId = selectedDevice?.SelectionId ?? settings.OutputDevice;
         var selectedBinding = selectedDevice is null ? null : AudioOutputBinding.Create(selectedId, snapshot);
         if (selectedDevice is not null && selectedBinding is null)
         {
@@ -1661,7 +1792,7 @@ public sealed class MainForm : Form
         project.ThemeColor = dialog.ThemeColor;
         if (changed)
         {
-            _projectManager.MarkDirty();
+            _projectManager.MarkDirty(shortcutBindingsChanged: false);
         }
 
         ApplyProjectSettingsCore(allowOutputRebind: selectedDevice is not null, selectedBinding);
@@ -1725,7 +1856,7 @@ public sealed class MainForm : Form
             string.Equals(pair.First.Group, pair.Second.Group, StringComparison.Ordinal)
             && string.Equals(pair.First.Key, pair.Second.Key, StringComparison.Ordinal));
 
-    private void OnSoundGroupChangeCommitted(GroupChangedEventArgs eventArgs)
+    private void OnSoundGroupChangeCommitted(SoundCard card, GroupChangedEventArgs eventArgs)
     {
         if (_editingLocked) { return; }
         var previousGroup = eventArgs.PreviousGroup.Trim();
@@ -1733,7 +1864,7 @@ public sealed class MainForm : Form
         if (previousGroup.Length == 0
             || string.Equals(previousGroup, currentGroup, StringComparison.Ordinal)
             || _projectManager.Current.Sounds.Any(sound =>
-                string.Equals(sound.Group, previousGroup, StringComparison.OrdinalIgnoreCase)))
+                sound.Id != card.Sound.Id && string.Equals(sound.Group, previousGroup, StringComparison.OrdinalIgnoreCase)))
         {
             return;
         }
@@ -1748,6 +1879,27 @@ public sealed class MainForm : Form
         {
             SetStatus($"グループ「{previousGroup}」を参照する設定が{referenceCount}件残っています。", true);
             return;
+        }
+
+        var destinationCount = _projectManager.Current.Sounds.Count(sound => sound.Id != card.Sound.Id
+            && string.Equals(sound.Group, currentGroup, StringComparison.OrdinalIgnoreCase));
+        if (destinationCount > 0)
+        {
+            var result = MessageBox.Show(this,
+                $"「{previousGroup}」の関連設定 {referenceCount}件を「{currentGroup}」へ移すと、対象が1音源から{destinationCount + 1}音源に増えます。\n\n"
+                + "はい: 音源と関連設定を移動\nいいえ: 音源だけ移動し、関連設定の参照先を保留\nキャンセル: 移動を取り消す",
+                "既存グループへの移動", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button3);
+            if (result == DialogResult.Cancel)
+            {
+                eventArgs.Cancel = true;
+                return;
+            }
+            if (result != DialogResult.Yes)
+            {
+                RefreshTriggerData(resetEngine: false);
+                SetStatus($"音源を移動しました。グループ「{previousGroup}」を参照する設定が{referenceCount}件残っています。", true);
+                return;
+            }
         }
 
         var updated = RetargetGroupReferences(_projectManager.Current, previousGroup, currentGroup);
@@ -1896,7 +2048,7 @@ public sealed class MainForm : Form
         _applyingProjectSettings = true;
         try
         {
-            _masterVolume.Value = (int)(Math.Clamp(settings.MasterVolume, 0, 1) * 100);
+            _masterVolume.Value = ProjectLimits.ToVolumePercent(settings.MasterVolume, 1);
             _masterMute.Checked = settings.MasterMute;
         }
         finally
@@ -2021,6 +2173,7 @@ public sealed class MainForm : Form
     private void UpdateClockAndTriggers()
     {
         UpdateClockDisplay();
+        if (!_loggingFailureShown && _logger is FileLogger { Diagnostics.IsDisabled: true }) { ReportLoggingUnavailable(); }
         var now = DateTimeOffset.Now;
         var timestamp = Stopwatch.GetTimestamp();
         if (_previousClockTick is { } previous
@@ -2074,8 +2227,8 @@ public sealed class MainForm : Form
         catch (Exception exception)
         {
             if (IsDisposed || Disposing || version != _outputConfigurationVersion) { return; }
-            EmergencyStopAll();
             _outputUnavailable = true;
+            EmergencyStopAll();
             _logger.Error("出力デバイスを使用できません。", exception);
             _deviceLabel.Text = "出力: エラー（設定を確認）";
             SetStatus(exception.Message, true);
@@ -2092,14 +2245,26 @@ public sealed class MainForm : Form
         return _deviceCheckTask = CheckBoundOutputAsync(binding);
     }
 
+    private async Task<bool> ProbeBoundOutputAsync(AudioOutputBinding binding, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return binding.Matches(await _deviceManager.CaptureSnapshotAsync()
+                .WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false));
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested) { return false; }
+    }
+
     private async Task CheckBoundOutputAsync(AudioOutputBinding binding)
     {
-        bool available;
-        try { available = binding.Matches(await _deviceManager.CaptureSnapshotAsync().WaitAsync(TimeSpan.FromSeconds(2))); }
-        catch { available = false; }
-        if (IsDisposed || Disposing || !ReferenceEquals(binding, _outputBinding) || _outputUnavailable || available) { return; }
-        EmergencyStopAll();
+        if (!await ProbeBoundOutputAsync(binding)) { MarkOutputChanged(binding); }
+    }
+
+    private void MarkOutputChanged(AudioOutputBinding binding)
+    {
+        if (IsDisposed || Disposing || !ReferenceEquals(binding, _outputBinding) || _outputUnavailable) { return; }
         _outputUnavailable = true;
+        EmergencyStopAll();
         _deviceLabel.Text = "出力: 切断・変更検出（設定で選び直す）";
         _logger.Warning("出力デバイスまたはWindows既定出力の変更を検出し、安全停止しました。");
         SetStatus("出力先が変化しました。設定で出力先を確認して選び直してください。", true);
@@ -2142,28 +2307,53 @@ public sealed class MainForm : Form
             return;
         }
 
+        if (trigger.Action == TriggerAction.Play)
+        {
+            var cue = string.IsNullOrWhiteSpace(trigger.Memo) ? "再生イベント" : trigger.Memo;
+            _ = TrackTriggerPlaybackAsync(cue, targetIds);
+            return;
+        }
+
         foreach (var targetId in targetIds)
         {
             switch (trigger.Action)
             {
-                case TriggerAction.Play:
-                    _ = PlaySoundAsync(targetId);
-                    break;
                 case TriggerAction.Stop:
                     StopSound(targetId);
                     break;
                 case TriggerAction.Pause:
-                    _audioEngine.Pause(targetId);
+                    PauseSound(targetId);
                     break;
             }
         }
 
-        SetStatus($"イベントを実行しました: {trigger.Memo}", false);
+        SetStatus($"イベント「{trigger.Memo}」: {trigger.Action switch
+        {
+            TriggerAction.Stop => "停止要求",
+            _ => "一時停止要求"
+        }} {targetIds.Length}件", false);
+    }
+
+    private async Task TrackTriggerPlaybackAsync(string cue, Guid[] targets)
+    {
+        var generation = Interlocked.Read(ref _playbackGeneration);
+        SetStatus($"イベント「{cue}」: 再生要求 {targets.Length}件", false);
+        var results = await Task.WhenAll(targets.Select(PlaySoundAsync));
+        if (IsDisposed || Disposing || generation != Interlocked.Read(ref _playbackGeneration)) { return; }
+        var started = results.Count(result => result == PlaybackStartResult.Started);
+        var failed = results.Count(result => result is PlaybackStartResult.Failed or PlaybackStartResult.Missing);
+        var cancelled = results.Length - started - failed;
+        var summary = $"イベント「{cue}」: {results.Length}件要求、{started}件開始、{failed}件失敗、{cancelled}件中止";
+        _logger.Info(summary);
+        SetStatus(summary, failed > 0);
     }
 
     private void OnSoundStateChanged(object? sender, SoundStateChangedEventArgs eventArgs)
     {
-        _triggerEngine.SetSoundPaused(eventArgs.SoundId, eventArgs.State == PlaybackState.Paused);
+        if (eventArgs.State is PlaybackState.Paused or PlaybackState.Playing)
+        {
+            _triggerEngine.SetSoundPaused(eventArgs.SoundId, eventArgs.State == PlaybackState.Paused);
+        }
         if (IsDisposed || Disposing)
         {
             return;
@@ -2224,14 +2414,17 @@ public sealed class MainForm : Form
         }
 
         // Even a legacy/recovered notification must never authorize automatic rerouting.
-        EmergencyStopAll();
         _outputUnavailable = true;
+        EmergencyStopAll();
         _deviceLabel.Text = "出力: エラー（設定で選び直す）";
         SetStatus("音声出力デバイス異常を検出しました。接続とWindowsの設定を確認し、出力先を選び直してください。", true);
     }
 
     private void UpdateProjectHeader()
     {
+        var missing = _projectManager.Current.MissingSoundIds.Count;
+        _missingAudioMenuItem.Visible = missing > 0;
+        _missingAudioMenuItem.Text = $"欠落音源 {missing}件…";
         var dirty = _projectManager.IsDirty ? " *" : string.Empty;
         _projectLabel.Text = $"{_projectManager.Current.Project.Name}{dirty}";
         var path = _projectManager.CurrentPath;
@@ -2246,7 +2439,7 @@ public sealed class MainForm : Form
     private void RefreshRecentMenu()
     {
         _recentMenu.DropDownItems.Clear();
-        var recent = _recentProjects.Load();
+        var recent = _recentProjects.Load(includeUnavailable: true);
         if (recent.Count == 0)
         {
             _recentMenu.DropDownItems.Add(new ToolStripMenuItem("（なし）") { Enabled = false });
@@ -2255,7 +2448,8 @@ public sealed class MainForm : Form
 
         foreach (var path in recent)
         {
-            var item = new ToolStripMenuItem(path);
+            var available = File.Exists(path);
+            var item = new ToolStripMenuItem(available ? path : $"{path}（未接続）") { Enabled = available };
             item.Click += async (_, _) => await OpenProjectAsync(path);
             _recentMenu.DropDownItems.Add(item);
         }
@@ -2291,11 +2485,10 @@ public sealed class MainForm : Form
 
     private bool AuthorizeUntrustedProject(ProjectModel model, string projectPath)
     {
-        var externalPathCount = model.Sounds.Count(sound =>
-            !string.IsNullOrWhiteSpace(sound.File)
-            && ProjectPath.Classify(projectPath, sound.File) == ProjectPathKind.ExternalLocal);
+        var externalPathCount = model.ApprovedSoundPaths.Values.Count(path =>
+            ProjectPath.ClassifyResolved(projectPath, path) == ProjectPathKind.ExternalLocal);
         var enabledTriggerCount = model.Triggers.Count(trigger => trigger.Enabled);
-        if (externalPathCount == 0 && !model.Settings.BackgroundInput && enabledTriggerCount == 0)
+        if (externalPathCount == 0 && !model.Settings.BackgroundInput && enabledTriggerCount == 0 && !model.Settings.DetailedLogging)
         {
             return true;
         }
@@ -2316,7 +2509,12 @@ public sealed class MainForm : Form
             risks.Add($"・有効なイベントトリガ: {enabledTriggerCount}件");
         }
 
-        var message = "このプロジェクトは、外部ファイルまたは自動操作を使用します。\n"
+        if (model.Settings.DetailedLogging)
+        {
+            risks.Add($"・詳細ログ: このPCの音源のパスなどを {_logDirectory} に記録します");
+        }
+
+        var message = "このプロジェクトには、確認が必要な設定があります。\n"
             + "信頼できる作成元の場合だけ開いてください。\n\n"
             + string.Join("\n", risks)
             + "\n\n開きますか？";
@@ -2399,8 +2597,13 @@ public sealed class MainForm : Form
 
     private void OnProjectChanged(object? sender, EventArgs eventArgs)
     {
-        _shortcutDispatcher.RefreshBindings();
-        _backgroundShortcutDispatcher.RefreshBindings();
+        var version = _projectManager.ShortcutBindingsVersion;
+        if (_shortcutBindingsVersion != version)
+        {
+            _shortcutBindingsVersion = version;
+            _shortcutDispatcher.RefreshBindings();
+            _backgroundShortcutDispatcher.RefreshBindings();
+        }
         UpdateProjectHeader();
     }
 
@@ -2553,6 +2756,13 @@ public sealed class MainForm : Form
         }
 
         return active;
+    }
+
+    internal void ReportLoggingUnavailable()
+    {
+        if (_loggingFailureShown) { return; }
+        _loggingFailureShown = true;
+        SetStatus("ログを記録できません。保存フォルダを確認してください。", true);
     }
 
     private void SetStatus(string message, bool error, string? detail = null)

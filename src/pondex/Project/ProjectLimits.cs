@@ -17,6 +17,9 @@ public static class ProjectLimits
     public const int MaxOutputDeviceLength = 1_024;
     public const int MaxThemeColorLength = 32;
 
+    internal static int ToVolumePercent(float value, float maximum) =>
+        (int)MathF.Round(Math.Clamp(value, 0, maximum) * 100, MidpointRounding.AwayFromZero);
+
     public static float GetMaxVolume(SoundDefinition sound) => sound.AllowVolumeBoost ? MaxVolume : 1.0f;
 
     public static int GetMaxVolumePercent(SoundDefinition sound) => sound.AllowVolumeBoost ? MaxVolumePercent : 100;

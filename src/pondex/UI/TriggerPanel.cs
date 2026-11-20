@@ -116,6 +116,7 @@ public sealed class TriggerPanel : UserControl
 
     internal void RefreshSoundNames()
     {
+        _soundNames = TriggerDialog.BuildSoundNames(_sounds);
         foreach (DataGridViewRow gridRow in _grid.Rows)
         {
             if (gridRow.DataBoundItem is TriggerRow row)
@@ -157,7 +158,7 @@ public sealed class TriggerPanel : UserControl
             return;
         }
 
-        var definition = new TriggerDefinition { TargetSoundId = _sounds[0].Id };
+        var definition = new TriggerDefinition { Enabled = false };
         using var dialog = new TriggerDialog(definition, _sounds);
         UiTheme.Apply(dialog, _darkMode);
         if (dialog.ShowDialog(this) == DialogResult.OK)
@@ -193,7 +194,7 @@ public sealed class TriggerPanel : UserControl
             return;
         }
 
-        if (MessageBox.Show(this, "選択したイベントを削除しますか？", "イベントトリガ", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+        if (MessageBox.Show(this, $"このイベントを削除しますか？\n{selected.Memo}\n{DescribeCondition(selected)} → {DescribeTarget(selected)}を{DescribeAction(selected.Action)}", "イベントトリガ", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) == DialogResult.Yes)
         {
             _triggers.Remove(selected);
             Changed();
@@ -225,6 +226,10 @@ public sealed class TriggerPanel : UserControl
         _refreshing = true;
         try
         {
+            var selectedId = SelectedTrigger?.Id;
+            var selectedIndex = _grid.CurrentRow?.Index ?? -1;
+            var scroll = _grid.FirstDisplayedScrollingRowIndex;
+            _soundNames = TriggerDialog.BuildSoundNames(_sounds);
             _grid.DataSource = null;
             _grid.DataSource = _triggers.Select(trigger => new TriggerRow(
                 trigger,
@@ -232,6 +237,15 @@ public sealed class TriggerPanel : UserControl
                 DescribeCondition(trigger),
                 DescribeAction(trigger.Action),
                 DescribeTarget(trigger))).ToList();
+            if (_grid.Rows.Count == 0) { return; }
+            var selected = _grid.Rows.Cast<DataGridViewRow>().FirstOrDefault(row =>
+                row.DataBoundItem is TriggerRow item && item.Definition.Id == selectedId);
+            if (selected is not null || selectedIndex >= 0)
+            {
+                var row = selected ?? _grid.Rows[Math.Min(selectedIndex, _grid.Rows.Count - 1)];
+                _grid.CurrentCell = row.Cells.Cast<DataGridViewCell>().First(cell => cell.Visible);
+            }
+            if (scroll >= 0) { _grid.FirstDisplayedScrollingRowIndex = Math.Min(scroll, _grid.Rows.Count - 1); }
         }
         finally
         {
@@ -266,8 +280,10 @@ public sealed class TriggerPanel : UserControl
         return SoundName(trigger.TargetSoundId);
     }
 
+    private Dictionary<Guid, string> _soundNames = [];
+
     private string SoundName(Guid? soundId) => soundId is { } id
-        ? _sounds.FirstOrDefault(sound => sound.Id == id)?.Name ?? $"不明 [{id.ToString()[..8]}]"
+        ? _soundNames.GetValueOrDefault(id) ?? $"不明 [{id.ToString()[..8]}]"
         : "未指定";
 
     private sealed class TriggerRow

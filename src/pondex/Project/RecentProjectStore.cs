@@ -19,7 +19,9 @@ public sealed class RecentProjectStore
         _portableRoot = Path.GetFullPath(portableRoot ?? Path.GetDirectoryName(Path.GetFullPath(path))!);
     }
 
-    public IReadOnlyList<string> Load()
+    public IReadOnlyList<string> Load() => Load(includeUnavailable: false);
+
+    internal IReadOnlyList<string> Load(bool includeUnavailable)
     {
         try
         {
@@ -33,7 +35,7 @@ public sealed class RecentProjectStore
             return (JsonSerializer.Deserialize<List<string>>(json) ?? [])
                 .Select(ResolveEntry)
                 .OfType<string>()
-                .Where(File.Exists)
+                .Where(path => includeUnavailable || File.Exists(path))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Take(10)
                 .ToArray();
@@ -49,7 +51,7 @@ public sealed class RecentProjectStore
         try
         {
             var fullPath = ProjectPath.GetSafeFullPath(path, "履歴のプロジェクトパス");
-            var items = Load()
+            var items = Load(includeUnavailable: true)
                 .Where(item => !string.Equals(item, fullPath, StringComparison.OrdinalIgnoreCase))
                 .Prepend(fullPath)
                 .Take(10)

@@ -24,6 +24,7 @@ public sealed class GroupShortcutDialog : Form
         var definitionCopies = definitions
             .Select(definition => new GroupShortcutDefinition
             {
+                ExtensionData = definition.ExtensionData,
                 Group = definition.Group,
                 Key = definition.Key
             })
@@ -165,6 +166,7 @@ public sealed class GroupShortcutDialog : Form
         .Select(item => (GroupShortcutDefinition)item.Tag!)
         .Select(definition => new GroupShortcutDefinition
         {
+            ExtensionData = definition.ExtensionData,
             Group = definition.Group,
             Key = definition.Key
         })

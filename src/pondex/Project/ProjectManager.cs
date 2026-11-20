@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+
 namespace pondex.Project;
 
 public sealed class ProjectManager : IDisposable
@@ -10,6 +13,9 @@ public sealed class ProjectManager : IDisposable
     private bool _isDirty;
     private string? _protectedSourcePath;
     private long _stateVersion;
+    private long _shortcutBindingsVersion;
+
+    internal long ShortcutBindingsVersion => Interlocked.Read(ref _shortcutBindingsVersion);
     private long _replaceRequestId;
 
     public ProjectManager(ProjectSerializer serializer)
@@ -72,6 +78,7 @@ public sealed class ProjectManager : IDisposable
         lock (_stateLock)
         {
             _current = new ProjectModel();
+            Interlocked.Increment(ref _shortcutBindingsVersion);
             _currentPath = null;
             _protectedSourcePath = null;
             _isDirty = false;
@@ -107,6 +114,7 @@ public sealed class ProjectManager : IDisposable
 
                 _protectedSourcePath = candidate.LoadWarnings.Count > 0 ? fullPath : null;
                 _current = candidate;
+                Interlocked.Increment(ref _shortcutBindingsVersion);
                 _currentPath = fullPath;
                 _isDirty = false;
                 _stateVersion++;
@@ -141,11 +149,12 @@ public sealed class ProjectManager : IDisposable
             }
 
             LastSaveResult = null;
-            LastSaveResult = await Task.Run(() => _serializer.SaveAsync(currentPath, snapshot, cancellationToken), cancellationToken).ConfigureAwait(true);
+            LastSaveResult = await SaveWithRevisionAsync(currentPath, snapshot, current.FileRevision, cancellationToken).ConfigureAwait(true);
 
             var changed = false;
             lock (_stateLock)
             {
+                if (ReferenceEquals(_current, current)) { current.FileRevision = LastSaveResult.FileRevision; }
                 if (ReferenceEquals(_current, current)
                     && _stateVersion == stateVersion
                     && string.Equals(_currentPath, currentPath, StringComparison.OrdinalIgnoreCase))
@@ -187,16 +196,20 @@ public sealed class ProjectManager : IDisposable
 
             foreach (var sound in snapshot.Sounds)
             {
-                var resolvedPath = ResolveSoundPath(sound, oldPath);
+                var resolvedPath = current.ApprovedSoundPaths.TryGetValue(sound.Id, out var approved)
+                    ? approved : ResolveSoundPath(sound, oldPath);
                 sound.File = ProjectPath.ToStoredPath(newPath, resolvedPath);
             }
 
             LastSaveResult = null;
-            LastSaveResult = await Task.Run(() => _serializer.SaveAsync(newPath, snapshot, cancellationToken), cancellationToken).ConfigureAwait(true);
+            var sameDestination = string.Equals(newPath, oldPath, StringComparison.OrdinalIgnoreCase);
+            LastSaveResult = await SaveWithRevisionAsync(newPath, snapshot,
+                sameDestination ? current.FileRevision : null, cancellationToken).ConfigureAwait(true);
 
             var changed = false;
             lock (_stateLock)
             {
+                if (sameDestination && ReferenceEquals(_current, current)) { current.FileRevision = LastSaveResult.FileRevision; }
                 if (ReferenceEquals(_current, current) && _stateVersion == stateVersion)
                 {
                     var storedPaths = snapshot.Sounds.ToDictionary(sound => sound.Id, sound => sound.File);
@@ -209,6 +222,7 @@ public sealed class ProjectManager : IDisposable
                     }
 
                     _currentPath = newPath;
+                    current.FileRevision = LastSaveResult.FileRevision;
                     _isDirty = false;
                     _stateVersion++;
                     changed = true;
@@ -224,6 +238,49 @@ public sealed class ProjectManager : IDisposable
         {
             _operationGate.Release();
         }
+    }
+
+    private Task<ProjectSaveResult> SaveWithRevisionAsync(string path, ProjectModel snapshot, string? expectedRevision,
+        CancellationToken cancellationToken) => Task.Run(() =>
+    {
+        // Use the canonical destination so separate instances cannot both pass
+        // a revision check and then replace the same file.
+        var lockId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            OperatingSystem.IsWindows() ? path.ToUpperInvariant() : path)));
+        using var gate = new Mutex(false, $"pondex-save-{lockId}");
+        var acquired = false;
+        try
+        {
+            try
+            {
+                var started = System.Diagnostics.Stopwatch.StartNew();
+                do
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    acquired = gate.WaitOne(100);
+                }
+                while (!acquired && started.Elapsed < TimeSpan.FromSeconds(5));
+            }
+            catch (AbandonedMutexException) { acquired = true; }
+            if (!acquired) { throw new IOException("別のウィンドウが保存中です。時間をおいてやり直してください。"); }
+            if (expectedRevision is not null && !MatchesRevision(path, expectedRevision))
+            {
+                throw new IOException("別のウィンドウまたはアプリがプロジェクトを変更しました。変更を残すには別の名前で保存してください。");
+            }
+            return _serializer.SaveAsync(path, snapshot, cancellationToken).GetAwaiter().GetResult();
+        }
+        finally
+        {
+            if (acquired) { gate.ReleaseMutex(); }
+        }
+    }, cancellationToken);
+
+    private static bool MatchesRevision(string path, string expected)
+    {
+        if (!File.Exists(path)) { return false; }
+        using var stream = File.OpenRead(path);
+        return stream.Length <= ProjectLimits.MaxFileBytes
+            && string.Equals(Convert.ToHexString(SHA256.HashData(stream)), expected, StringComparison.Ordinal);
     }
 
     private void EnsureSafeSavePath(string path)
@@ -264,7 +321,9 @@ public sealed class ProjectManager : IDisposable
                 Name = soundName,
                 File = storedPath
             };
+            _current.ApprovedSoundPaths[sound.Id] = ResolveSoundPath(sound, _currentPath);
             _current.Sounds.Add(sound);
+            Interlocked.Increment(ref _shortcutBindingsVersion);
             MarkDirtyLocked();
         }
 
@@ -287,6 +346,7 @@ public sealed class ProjectManager : IDisposable
             }
 
             sound.File = storedPath;
+            _current.ApprovedSoundPaths[sound.Id] = ResolveSoundPath(sound, _currentPath);
             MarkDirtyLocked();
         }
 
@@ -302,10 +362,27 @@ public sealed class ProjectManager : IDisposable
         }
     }
 
-    public void MarkDirty()
+    internal string ResolvePlaybackPath(SoundDefinition sound)
     {
         lock (_stateLock)
         {
+            var path = ResolveSoundPath(sound, _currentPath);
+            if (_current.ApprovedSoundPaths.TryGetValue(sound.Id, out var approved)
+                && !string.Equals(path, approved, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("音源の参照先が変わりました。「参照…」でファイルを選び直してください。");
+            }
+            return path;
+        }
+    }
+
+    public void MarkDirty() => MarkDirty(shortcutBindingsChanged: true);
+
+    internal void MarkDirty(bool shortcutBindingsChanged)
+    {
+        lock (_stateLock)
+        {
+            if (shortcutBindingsChanged) { Interlocked.Increment(ref _shortcutBindingsVersion); }
             MarkDirtyLocked();
         }
 

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -28,13 +29,6 @@ public sealed class ProjectSerializer
         try
         {
             var fullPath = ProjectPath.GetSafeFullPath(path, "プロジェクトパス");
-            var fileLength = new FileInfo(fullPath).Length;
-            if (fileLength > ProjectLimits.MaxFileBytes)
-            {
-                throw new ProjectFormatException(
-                    $"プロジェクトファイルが大きすぎます（上限 {ProjectLimits.MaxFileBytes / 1024 / 1024} MiB）。");
-            }
-
             await using var stream = new FileStream(
                 fullPath,
                 FileMode.Open,
@@ -42,22 +36,34 @@ public sealed class ProjectSerializer
                 FileShare.Read,
                 bufferSize: 64 * 1024,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
-            using var document = await JsonDocument.ParseAsync(
-                stream,
+            if (stream.Length > ProjectLimits.MaxFileBytes)
+            {
+                throw new ProjectFormatException(
+                    $"プロジェクトファイルが大きすぎます（上限 {ProjectLimits.MaxFileBytes / 1024 / 1024} MiB）。");
+            }
+            var bytes = new byte[stream.Length];
+            await stream.ReadExactlyAsync(bytes, cancellationToken);
+            var payloadOffset = bytes.AsSpan().StartsWith(new byte[] { 0xef, 0xbb, 0xbf }) ? 3 : 0;
+            using var document = JsonDocument.Parse(
+                bytes.AsMemory(payloadOffset),
                 new JsonDocumentOptions
                 {
                     AllowTrailingCommas = true,
                     CommentHandling = JsonCommentHandling.Skip,
                     MaxDepth = ProjectLimits.MaxJsonDepth
-                },
-                cancellationToken);
+                });
             var model = DeserializeDocument(document.RootElement);
+            model.FileRevision = Convert.ToHexString(SHA256.HashData(bytes));
             ValidateAndNormalize(model);
             foreach (var sound in model.Sounds)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 string resolved;
-                try { resolved = ProjectPath.Resolve(fullPath, sound.File); }
+                try
+                {
+                    resolved = ProjectPath.Resolve(fullPath, sound.File);
+                    model.ApprovedSoundPaths[sound.Id] = resolved;
+                }
                 catch (ArgumentException) { resolved = sound.File; }
                 if (!File.Exists(resolved))
                 {
@@ -128,7 +134,8 @@ public sealed class ProjectSerializer
                 {
                     return new ProjectSaveResult(
                         $"本体は保存しましたが、バックアップを整理できませんでした: {exception.Message}",
-                        temporaryBackupPath);
+                        temporaryBackupPath)
+                    { FileRevision = Convert.ToHexString(SHA256.HashData(bytes)) };
                 }
             }
             else
@@ -136,7 +143,7 @@ public sealed class ProjectSerializer
                 File.Move(tempPath, fullPath);
             }
 
-            return new ProjectSaveResult();
+            return new ProjectSaveResult { FileRevision = Convert.ToHexString(SHA256.HashData(bytes)) };
         }
         finally
         {
@@ -335,10 +342,15 @@ public sealed class ProjectSerializer
         model.Sounds = (model.Sounds ?? []).OfType<SoundDefinition>().ToList();
         ValidateCount(model.Sounds.Count, ProjectLimits.MaxSounds, "音源");
         var soundIds = new HashSet<Guid>();
+        var duplicateSoundIds = new HashSet<Guid>();
         foreach (var sound in model.Sounds)
         {
             if (sound.Id == Guid.Empty || !soundIds.Add(sound.Id))
             {
+                if (sound.Id != Guid.Empty && duplicateSoundIds.Add(sound.Id))
+                {
+                    model.LoadWarnings.Add($"音源ID {sound.Id} が重複しています。該当するイベントの対象を確認してください。");
+                }
                 sound.Id = Guid.NewGuid();
                 soundIds.Add(sound.Id);
             }
@@ -400,6 +412,22 @@ public sealed class ProjectSerializer
             ValidateString(trigger.Memo, ProjectLimits.MaxMemoLength, "イベントメモ");
             ValidateString(trigger.TargetGroup, ProjectLimits.MaxGroupLength, "イベント対象グループ");
 
+            if (!Enum.IsDefined(trigger.Action) || !Enum.IsDefined(trigger.TriggerType))
+            {
+                trigger.Enabled = false;
+                model.LoadWarnings.Add($"イベント「{trigger.Memo}」の操作または条件が不明です。イベントを無効にしました。");
+            }
+
+            var ambiguousTarget = trigger.TargetGroup.Length == 0 && duplicateSoundIds.Contains(trigger.TargetSoundId);
+            var ambiguousSource = trigger.Parameters.SourceSoundId is { } candidate && duplicateSoundIds.Contains(candidate);
+            if (ambiguousTarget || ambiguousSource)
+            {
+                trigger.Enabled = false;
+                if (ambiguousTarget) { trigger.TargetSoundId = Guid.Empty; }
+                if (ambiguousSource) { trigger.Parameters.SourceSoundId = null; }
+                model.LoadWarnings.Add($"イベント「{trigger.Memo}」が重複した音源IDを参照しています。対象を選び直してください。");
+            }
+
             if ((trigger.TargetGroup.Length > 0 && !model.Sounds.Any(sound =>
                     string.Equals(sound.Group, trigger.TargetGroup, StringComparison.OrdinalIgnoreCase)))
                 || (trigger.TargetGroup.Length == 0 && !soundIds.Contains(trigger.TargetSoundId))
@@ -428,7 +456,10 @@ public sealed class ProjectSerializer
     }
 }
 
-public sealed record ProjectSaveResult(string? BackupWarning = null, string? RecoveryBackupPath = null);
+public sealed record ProjectSaveResult(string? BackupWarning = null, string? RecoveryBackupPath = null)
+{
+    internal string? FileRevision { get; init; }
+}
 
 public sealed class ProjectFormatException : Exception
 {

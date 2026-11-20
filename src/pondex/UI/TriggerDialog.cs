@@ -67,7 +67,8 @@ public sealed class TriggerDialog : Form
                 7 * 24 * 60 * 60),
             Width = 140
         };
-        var soundItems = sounds.Select(sound => new SoundItem(sound.Id, sound.Name)).ToList();
+        var names = BuildSoundNames(sounds);
+        var soundItems = sounds.Select(sound => new SoundItem(sound.Id, names[sound.Id])).ToList();
         _sourceSoundCombo = CreateSoundCombo(soundItems, definition.Parameters.SourceSoundId);
         _actionCombo = CreateEnumCombo<TriggerAction>(definition.Action);
         var targetItems = soundItems
@@ -108,8 +109,20 @@ public sealed class TriggerDialog : Form
         AcceptButton = okButton;
         CancelButton = cancelButton;
 
-        _typeCombo.SelectedValueChanged += (_, _) => UpdateConditionControls();
+        void UpdateAcceptButton()
+        {
+            okButton.Enabled = _typeCombo.SelectedItem is TriggerType type
+                && _actionCombo.SelectedItem is TriggerAction
+                && _targetSoundCombo.SelectedItem is TargetItem { Missing: false }
+                && (type is not (TriggerType.SoundEnded or TriggerType.SoundElapsed)
+                    || _sourceSoundCombo.SelectedItem is SoundItem { Missing: false });
+        }
+        _typeCombo.SelectedValueChanged += (_, _) => { UpdateConditionControls(); UpdateAcceptButton(); };
+        _actionCombo.SelectedValueChanged += (_, _) => UpdateAcceptButton();
+        _targetSoundCombo.SelectedValueChanged += (_, _) => UpdateAcceptButton();
+        _sourceSoundCombo.SelectedValueChanged += (_, _) => UpdateAcceptButton();
         UpdateConditionControls();
+        UpdateAcceptButton();
     }
 
     public TriggerDefinition Definition { get; }
@@ -122,8 +135,11 @@ public sealed class TriggerDialog : Form
             return;
         }
 
-        var type = (TriggerType)_typeCombo.SelectedItem!;
-        var action = (TriggerAction)_actionCombo.SelectedItem!;
+        if (_typeCombo.SelectedItem is not TriggerType type || _actionCombo.SelectedItem is not TriggerAction action)
+        {
+            MessageBox.Show(this, "条件と操作を選択してください。", "入力確認", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
         var needsSource = type is TriggerType.SoundEnded or TriggerType.SoundElapsed;
         if (needsSource && _sourceSoundCombo.SelectedItem is not SoundItem { Missing: false })
         {
@@ -139,6 +155,7 @@ public sealed class TriggerDialog : Form
         Definition.TargetGroup = target.Group ?? string.Empty;
         Definition.Parameters = new TriggerParameters
         {
+            ExtensionData = Definition.Parameters.ExtensionData,
             ClockTime = type == TriggerType.ClockTime ? TimeOnly.FromDateTime(_clockTime.Value) : null,
             Elapsed = type is TriggerType.StopwatchElapsed or TriggerType.SoundElapsed
                 ? TimeSpan.FromSeconds((double)_elapsedSeconds.Value)
@@ -178,8 +195,9 @@ public sealed class TriggerDialog : Form
         };
         combo.Items.AddRange(values.Cast<object>().ToArray());
         combo.SelectedItem = selected;
-        if (combo.SelectedIndex < 0 && values.Length > 0)
+        if (combo.SelectedIndex < 0)
         {
+            combo.Items.Insert(0, "不明な設定。選び直してください");
             combo.SelectedIndex = 0;
         }
 
@@ -250,12 +268,34 @@ public sealed class TriggerDialog : Form
             combo.Items.Add(missing);
             combo.SelectedItem = missing;
         }
-        if (combo.SelectedIndex < 0 && combo.Items.Count > 0)
+        if (combo.SelectedIndex < 0)
         {
-            combo.SelectedIndex = 0;
+            var unselected = new TargetItem(null, null, "対象を選んでください", Missing: true);
+            combo.Items.Insert(0, unselected);
+            combo.SelectedItem = unselected;
         }
 
         return combo;
+    }
+
+    internal static Dictionary<Guid, string> BuildSoundNames(IReadOnlyList<SoundDefinition> sounds)
+    {
+        var names = new Dictionary<Guid, string>();
+        foreach (var group in sounds.GroupBy(sound => sound.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            var items = group.ToArray();
+            if (items.Length == 1)
+            {
+                names[items[0].Id] = items[0].Name;
+                continue;
+            }
+            foreach (var sound in items)
+            {
+                var label = $"{sound.Name} — {sound.Group} / {Path.GetFileName(sound.File)}";
+                names[sound.Id] = $"{label} [{sound.Id.ToString()[..8]}]";
+            }
+        }
+        return names;
     }
 
     private static void AddRow(TableLayoutPanel root, int row, string label, Control control)
@@ -271,7 +311,7 @@ public sealed class TriggerDialog : Form
 
     private sealed record SoundItem(Guid Id, string Name, bool Missing = false)
     {
-        public string DisplayName => $"{Name}  [{Id.ToString()[..8]}]";
+        public string DisplayName => Name;
     }
 
     private sealed record TargetItem(Guid? SoundId, string? Group, string DisplayName, bool Missing = false);

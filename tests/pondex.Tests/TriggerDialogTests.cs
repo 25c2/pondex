@@ -18,7 +18,7 @@ public sealed class TriggerDialogTests
     }
 
     [Fact]
-    public void Constructor_WithInvalidPersistedEnum_FallsBackWithoutCrashing()
+    public void Constructor_WithInvalidPersistedEnumsRequiresExplicitSelection()
     {
         var sound = new SoundDefinition { Id = Guid.NewGuid(), Name = "効果音" };
         var trigger = new TriggerDefinition
@@ -31,6 +31,8 @@ public sealed class TriggerDialogTests
         using var dialog = new TriggerDialog(trigger, [sound]);
 
         Assert.Equal("イベントトリガ", dialog.Text);
+        Assert.False(Assert.IsType<Button>(dialog.AcceptButton).Enabled);
+        Assert.Equal((TriggerAction)999, trigger.Action);
     }
 
     [Fact]

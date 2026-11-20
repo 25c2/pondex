@@ -154,6 +154,16 @@ public sealed class AudioEngine : IAudioEngine
         }
     }
 
+    internal bool NeedsOutputOpen
+    {
+        get { lock (_sync) { return _output is null; } }
+    }
+
+    internal bool IsOutputFaulted
+    {
+        get { lock (_sync) { return _outputFaulted; } }
+    }
+
     public int OutputDeviceNumber
     {
         get
@@ -286,6 +296,7 @@ public sealed class AudioEngine : IAudioEngine
                     }
                 }, token, TaskCreationOptions.LongRunning, TaskScheduler.Default).ConfigureAwait(false);
             completionInstance = prepared;
+            prepared.SetReadFailureHandler(exception => QueueSoundReadFailure(sound.Id, completionInstance, exception));
             if (verifyOutput is not null) { await verifyOutput(token).ConfigureAwait(false); }
             // Stop/device changes are accounted for as superseded requests below;
             // explicit caller cancellation must also dispose a decoder already in flight.
@@ -341,9 +352,9 @@ public sealed class AudioEngine : IAudioEngine
                 {
                     timing = _startDiagnostics.Complete(sound.Id, timingRequest, preparedAt, Stopwatch.GetTimestamp());
                 }
-                StateChanged?.Invoke(this, new SoundStateChangedEventArgs(sound.Id, PlaybackState.Playing));
-                PlaybackStarted?.Invoke(this, new SoundPlaybackEventArgs(sound.Id));
                 prepared = null;
+                Notify(StateChanged, new SoundStateChangedEventArgs(sound.Id, PlaybackState.Playing));
+                Notify(PlaybackStarted, new SoundPlaybackEventArgs(sound.Id));
                 if (_logger.DetailedLoggingEnabled)
                 {
                     _logger.Debug($"play started: sound={sound.Id} request={requestVersion} device={_deviceNumber} active={_instances.Count}");
@@ -403,6 +414,11 @@ public sealed class AudioEngine : IAudioEngine
             }
             preparationCancellation.Dispose();
         }
+    }
+
+    internal void CancelPendingPlayback(Guid soundId)
+    {
+        lock (_sync) { NextOperationVersion(soundId); }
     }
 
     public void Stop(Guid soundId)
@@ -516,11 +532,21 @@ public sealed class AudioEngine : IAudioEngine
                         $"decoder still occupies slot: sound={job.SoundId} request={job.Request} started={job.Started:O} elapsed_ms={job.Elapsed.TotalMilliseconds:F3}"));
                 }
             }
-            // StopAll also invalidates every in-flight preparation before disposing active instances.
-            StopAll(useFadeOut: false);
-            // Release the device handle as well as flushing its queued buffers.
-            // A later explicit play/selection must open a fresh handle.
-            DisposeOutput(stopFirst: true);
+            foreach (var soundId in _soundOperationVersions.Keys.ToArray()) { NextOperationVersion(soundId); }
+            Exception? failure = null;
+            try { DisposeOutput(stopFirst: true); }
+            catch (Exception exception) { failure = exception; }
+            foreach (var soundId in _instances.Keys.ToArray())
+            {
+                try { StopCore(soundId, PlaybackEndReason.StopAll); }
+                catch (Exception exception) { failure ??= exception; }
+            }
+
+            if (failure is not null)
+            {
+                _outputFaulted = true;
+                _logger.Error("緊急停止中に音声出力を終了できませんでした。", failure);
+            }
         }
     }
 
@@ -682,9 +708,37 @@ public sealed class AudioEngine : IAudioEngine
             _logger.Debug($"play ended: sound={soundId} reason={reason} previous_state={instance.State} samples_read={instance.SamplesRead} active={_instances.Count}");
         }
         instance.MarkStopped();
-        instance.Dispose();
-        StateChanged?.Invoke(this, new SoundStateChangedEventArgs(soundId, PlaybackState.Stopped));
-        PlaybackEnded?.Invoke(this, new SoundPlaybackEventArgs(soundId, reason));
+        try { instance.Dispose(); }
+        catch (Exception exception) { _logger.Error($"音源を閉じられませんでした: {soundId}", exception); }
+        Notify(StateChanged, new SoundStateChangedEventArgs(soundId, PlaybackState.Stopped));
+        Notify(PlaybackEnded, new SoundPlaybackEventArgs(soundId, reason));
+    }
+
+    private void QueueSoundReadFailure(Guid soundId, SoundInstance? expected, Exception exception)
+    {
+        _ = Task.Run(() =>
+        {
+            lock (_sync)
+            {
+                if (_disposed || !_instances.TryGetValue(soundId, out var current) || current != expected) { return; }
+                StopCore(soundId, PlaybackEndReason.Error);
+                var message = $"音源「{current.Definition.Name}」の読み出しを停止しました。";
+                _logger.Error(message, exception);
+                Notify(PlaybackFailed, new SoundErrorEventArgs(soundId, message, exception));
+                try { StopOutputWhenIdle(); }
+                catch (Exception outputError) { QueueOutputRecovery(outputError); }
+            }
+        });
+    }
+
+    private void Notify<T>(EventHandler<T>? handlers, T args)
+    {
+        if (handlers is null) { return; }
+        foreach (var handler in Delegate.EnumerateInvocationList(handlers))
+        {
+            try { handler(this, args); }
+            catch (Exception exception) { _logger.Error("再生通知の処理に失敗しました。", exception); }
+        }
     }
 
     private void StopWithFadeCore(Guid soundId, PlaybackEndReason reason)
@@ -842,8 +896,9 @@ public sealed class AudioEngine : IAudioEngine
                         StopCore(soundId, PlaybackEndReason.DeviceChanged);
                     }
 
-                    DisposeOutput();
                     _outputFaulted = true;
+                    try { DisposeOutput(); }
+                    catch (Exception exception) { _logger.Error("異常が発生した出力を閉じられませんでした。", exception); }
                     (_mixer, _masterVolumeProvider) = CreateMixer();
                     _logger.Error("出力デバイス異常のため停止しました。設定で出力先を選び直してください。", cause);
                     result = new OutputDeviceFallbackEventArgs(failedDeviceNumber, recovered: false, cause);
@@ -871,17 +926,18 @@ public sealed class AudioEngine : IAudioEngine
         var output = _output;
         _output = null;
         output.PlaybackStopped -= OnOutputPlaybackStopped;
+        Exception? stopError = null;
         try
         {
-            if (stopFirst)
-            {
-                output.Stop();
-            }
+            if (stopFirst) { output.Stop(); }
         }
-        finally
+        catch (Exception exception) { stopError = exception; }
+        try { output.Dispose(); }
+        catch (Exception exception) when (stopError is not null)
         {
-            output.Dispose();
+            _logger.Error("停止失敗後に音声出力を解放できませんでした。", exception);
         }
+        if (stopError is not null) { System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(stopError); }
     }
 
     private long NextOperationVersion(Guid soundId)

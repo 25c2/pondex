@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 
@@ -5,6 +6,7 @@ namespace pondex.Utility;
 
 internal sealed class BoundedLogWriter : TextWriter
 {
+    private static readonly ConcurrentDictionary<string, byte> OpenPaths = new(StringComparer.OrdinalIgnoreCase);
     private const int MaxFileBytes = 4 * 1024 * 1024;
     private const int MaxTotalBytes = 32 * 1024 * 1024;
     private const int KeepDays = 14;
@@ -15,6 +17,7 @@ internal sealed class BoundedLogWriter : TextWriter
     private StreamWriter _stream;
     private long _bytes;
     private int _part;
+    private string? _claimedPath;
 
     public BoundedLogWriter(string directory, DateOnly date)
     {
@@ -28,6 +31,8 @@ internal sealed class BoundedLogWriter : TextWriter
         _stream = OpenPart();
     }
 
+    internal string? CurrentPath { get; private set; }
+
     public override Encoding Encoding { get; } = new UTF8Encoding(false);
 
     public override async Task WriteLineAsync(string? value)
@@ -37,7 +42,7 @@ internal sealed class BoundedLogWriter : TextWriter
         var bytes = Encoding.GetByteCount(record) + Encoding.GetByteCount(_stream.NewLine);
         if (_bytes + bytes > MaxFileBytes)
         {
-            await _stream.DisposeAsync().ConfigureAwait(false);
+            await ClosePartAsync().ConfigureAwait(false);
             _part++;
             _stream = OpenPart();
         }
@@ -49,31 +54,77 @@ internal sealed class BoundedLogWriter : TextWriter
 
     public override async ValueTask DisposeAsync()
     {
-        try { await _stream.DisposeAsync().ConfigureAwait(false); }
+        try { await ClosePartAsync().ConfigureAwait(false); }
         finally { await base.DisposeAsync().ConfigureAwait(false); }
     }
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { _stream.Dispose(); }
+        if (disposing)
+        {
+            try { _stream.Dispose(); }
+            finally { ReleasePath(); }
+        }
         base.Dispose(disposing);
+    }
+
+    private async ValueTask ClosePartAsync()
+    {
+        try { await _stream.DisposeAsync().ConfigureAwait(false); }
+        finally { ReleasePath(); }
+    }
+
+    private void ReleasePath()
+    {
+        var path = Interlocked.Exchange(ref _claimedPath, null);
+        if (path is not null) { OpenPaths.TryRemove(path, out _); }
     }
 
     private StreamWriter OpenPart()
     {
-        var name = _part == 0 ? $"{_stem}.log" : string.Create(CultureInfo.InvariantCulture, $"{_stem}-{_part:D4}.log");
-        var path = Path.Combine(_directory, name);
-        // Do not append through links that happen to have a recognized filename.
-        if (new FileInfo(path).LinkTarget is not null)
+        for (var attempt = 0; ; attempt++)
         {
-            throw new IOException($"ログファイルがリンクです: {name}");
-        }
+            var name = _part == 0 ? $"{_stem}.log"
+                : string.Create(CultureInfo.InvariantCulture, $"{_stem}-{_part:D4}.log");
+            var path = Path.Combine(_directory, name);
+            if (new FileInfo(path).LinkTarget is not null)
+            {
+                throw new IOException($"ログファイルがリンクです: {name}");
+            }
 
-        var file = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read,
-            16 * 1024, FileOptions.Asynchronous);
-        _bytes = file.Length;
-        Prune(name);
-        return new StreamWriter(file, Encoding);
+            if (!OpenPaths.TryAdd(Path.GetFullPath(path), 0))
+            {
+                _part++;
+                continue;
+            }
+            _claimedPath = Path.GetFullPath(path);
+            FileStream? file = null;
+            try
+            {
+                file = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read,
+                    16 * 1024, FileOptions.Asynchronous);
+                if (OperatingSystem.IsLinux()) { file.Lock(0, 1); }
+            }
+            catch (IOException) when (attempt < 31 && File.Exists(path))
+            {
+                // Another running process may have this segment open for writing.
+                try { file?.Dispose(); }
+                finally { ReleasePath(); }
+                _part++;
+                continue;
+            }
+            catch
+            {
+                try { file?.Dispose(); }
+                finally { ReleasePath(); }
+                throw;
+            }
+
+            CurrentPath = path;
+            _bytes = file.Length;
+            Prune(name);
+            return new StreamWriter(file, Encoding);
+        }
     }
 
     private void Prune(string activeName)
