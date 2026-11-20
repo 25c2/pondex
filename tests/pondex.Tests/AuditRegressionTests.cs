@@ -149,19 +149,26 @@ public sealed class AuditRegressionTests
         File.WriteAllText(Path.Combine(changed, "alert.wav"), "changed");
         var link = directory.GetPath("linked");
         CreateLink(link, original);
-        var path = directory.GetPath("show.pondex");
-        var collection = new ProjectModel { Sounds = [new SoundDefinition { File = "linked/alert.wav" }] };
-        var serializer = new ProjectSerializer();
-        await serializer.SaveAsync(path, collection);
-        using var manager = new ProjectManager(serializer);
-        Assert.True(await manager.OpenAsync(path));
-        var sound = Assert.Single(manager.Current.Sounds);
-        Assert.Equal(Path.Combine(original, "alert.wav"), manager.ResolvePlaybackPath(sound));
-        Directory.Delete(link);
-        CreateLink(link, changed);
-        Assert.Throws<InvalidOperationException>(() => manager.ResolvePlaybackPath(sound));
-        manager.ReplaceSoundFile(sound, Path.Combine(changed, "alert.wav"));
-        Assert.Equal(Path.Combine(changed, "alert.wav"), manager.ResolvePlaybackPath(sound));
+        try
+        {
+            var path = directory.GetPath("show.pondex");
+            var collection = new ProjectModel { Sounds = [new SoundDefinition { File = "linked/alert.wav" }] };
+            var serializer = new ProjectSerializer();
+            await serializer.SaveAsync(path, collection);
+            using var manager = new ProjectManager(serializer);
+            Assert.True(await manager.OpenAsync(path));
+            var sound = Assert.Single(manager.Current.Sounds);
+            Assert.Equal(Path.Combine(original, "alert.wav"), manager.ResolvePlaybackPath(sound));
+            Directory.Delete(link);
+            CreateLink(link, changed);
+            Assert.Throws<InvalidOperationException>(() => manager.ResolvePlaybackPath(sound));
+            manager.ReplaceSoundFile(sound, Path.Combine(changed, "alert.wav"));
+            Assert.Equal(Path.Combine(changed, "alert.wav"), manager.ResolvePlaybackPath(sound));
+        }
+        finally
+        {
+            if (Directory.Exists(link)) { Directory.Delete(link); }
+        }
     }
 
     private static void CreateLink(string path, string destination)
