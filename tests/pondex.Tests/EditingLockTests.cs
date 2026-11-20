@@ -56,7 +56,7 @@ public sealed class EditingLockTests
         Call(form, "ToggleMasterMute");
         Call(form, "AddSoundFiles", (object)new[] { directory.GetPath("blocked.wav") });
         Call(form, "DeleteSound", sound, card);
-        Call(form, "BrowseReplacementFile", sound, card, null);
+        Call(form, "BrowseReplacementFile", sound, card, form);
         Call(form, "ShowSettings");
         Call(form, "ShowSoundOrder");
         Call(form, "ShowGroupShortcuts");
