@@ -18,6 +18,15 @@ public sealed class ReleaseWorkflowTests
         Assert.DoesNotMatch(pattern, "v1.0-$(Write-Output-injected)");
     }
 
+    [Fact]
+    public void PublishJobSpecifiesRepositoryForGhWithoutCheckout()
+    {
+        var workflow = ReadWorkflow();
+        var publishJob = workflow[workflow.IndexOf("  release:", StringComparison.Ordinal)..];
+        Assert.DoesNotContain("actions/checkout@", publishJob, StringComparison.Ordinal);
+        Assert.Contains("\"--repo\", $env:GITHUB_REPOSITORY", publishJob, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("v1.0", "1.0")]
     [InlineData("v1.0.1", "1.0.1")]

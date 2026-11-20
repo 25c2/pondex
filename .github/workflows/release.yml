@@ -183,6 +183,7 @@ jobs:
           $title = "pondex $tag"
           $arguments = @(
             "release", "create", $tag,
+            "--repo", $env:GITHUB_REPOSITORY,
             $env:RELEASE_ARCHIVE,
             $env:RELEASE_CHECKSUM,
             "--verify-tag",
