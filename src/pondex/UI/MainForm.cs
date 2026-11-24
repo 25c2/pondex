@@ -837,6 +837,8 @@ public sealed class MainForm : Form
     private static Button HeaderButton(string text, Color color) => new()
     {
         Text = text,
+        // Measure the caption and chrome independently of the button's current docked height.
+        AutoSizeMode = AutoSizeMode.GrowAndShrink,
         Dock = DockStyle.Fill,
         BackColor = color,
         UseVisualStyleBackColor = false,
