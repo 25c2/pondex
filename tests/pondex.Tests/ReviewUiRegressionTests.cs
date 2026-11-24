@@ -33,6 +33,7 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
         using var engine = new AudioEngine(new Logger(), (_, _) => new Output());
         MainForm Create() => new(manager, engine, new AudioDeviceManager(() => Initial), new TriggerEngine(), new Logger(),
             directory.Path, null, new UiPreferences(directory.Path));
+        int defaultHeight;
         int grownHeight;
         using (var form = Create())
         {
@@ -41,7 +42,7 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
             var root = (TableLayoutPanel)grip.Parent!;
             var header = (TableLayoutPanel)root.GetControlFromPosition(0, 1)!;
             var tabs = (TabControl)root.GetControlFromPosition(0, 3)!;
-            var defaultHeight = header.Height;
+            defaultHeight = header.Height;
             var master = Descendants(header).OfType<TrackBar>().Single();
             var controls = master.Parent!.Controls.Cast<Control>().ToArray();
             var centers = controls.Select(control => control.Top + control.Height / 2).ToArray();
@@ -71,8 +72,9 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
         Assert.InRange(restoredHeader.Height, grownHeight - 2, grownHeight + 2);
         typeof(HeaderResizeGrip).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(restoredGrip, [new KeyEventArgs(Keys.Home)]);
-        Assert.True(restoredHeader.Height < grownHeight);
+        Application.DoEvents();
         Assert.Null(preferences.HeaderHeight);
+        Assert.InRange(restoredHeader.Height, defaultHeight - 2, defaultHeight + 2);
         Assert.False(manager.IsDirty);
         restored.CloseWithoutSavePromptForSmokeTest();
     });

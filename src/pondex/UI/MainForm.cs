@@ -171,6 +171,7 @@ public sealed class MainForm : Form
             _dragHeaderHeight = null;
             _requestedHeaderHeight = null;
             ApplyHeaderHeight(root);
+            root.PerformLayout();
             SaveHeaderHeight();
         };
         root.SizeChanged += (_, _) => ApplyHeaderHeight(root);
