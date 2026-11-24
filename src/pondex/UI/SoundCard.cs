@@ -7,7 +7,8 @@ namespace pondex.UI;
 
 public sealed class SoundCard : UserControl
 {
-    private const int CollapsedHeight = 144;
+    private const int DefaultCollapsedHeight = 144;
+    private const int VolumeRowHeight = 40;
     private readonly Label _stateLabel;
     private readonly Label _nameLabel;
     private readonly Label _summaryLabel;
@@ -43,6 +44,7 @@ public sealed class SoundCard : UserControl
     private bool _detailsCreated;
     private PlaybackSettingsDialog? _playbackDialog;
     private bool _updatingHeight;
+    private int _collapsedHeight = DefaultCollapsedHeight;
     private bool _editingLocked;
     private readonly Func<string> _resolveSoundPath;
     private string _loopDisplayText = string.Empty;
@@ -63,8 +65,8 @@ public sealed class SoundCard : UserControl
         BackColor = Color.FromArgb(245, 245, 245);
         Tag = UiTheme.ElevatedSurfaceRole;
         Margin = new Padding(6);
-        MinimumSize = new Size(320, CollapsedHeight);
-        Height = CollapsedHeight;
+        MinimumSize = new Size(320, _collapsedHeight);
+        Height = _collapsedHeight;
 
         var root = new TableLayoutPanel
         {
@@ -79,7 +81,7 @@ public sealed class SoundCard : UserControl
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, VolumeRowHeight));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         _nameLabel = new Label
@@ -142,7 +144,8 @@ public sealed class SoundCard : UserControl
             TextAlign = HorizontalAlignment.Right,
             Margin = new Padding(3, 5, 0, 5)
         };
-        var volumePanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4 };
+        var volumePanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1 };
+        volumePanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         volumePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
         volumePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         volumePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58));
@@ -155,12 +158,17 @@ public sealed class SoundCard : UserControl
             var label = TextRenderer.MeasureText("200", _volumeValue.Font, Size.Empty, TextFormatFlags.SingleLine).Width;
             var spinner = _volumeValue.Controls.Cast<Control>().Where(child => child is not TextBoxBase)
                 .Select(child => child.Width).DefaultIfEmpty().Max();
-            volumePanel.ColumnStyles[2].Width = label + Math.Max(spinner, 20 * DeviceDpi / 96)
-                + _volumeValue.Margin.Horizontal + 10 * DeviceDpi / 96;
+            volumePanel.ColumnStyles[2].Width = label + Math.Max(spinner, _volumeValue.LogicalToDeviceUnits(20))
+                + _volumeValue.Margin.Horizontal + _volumeValue.LogicalToDeviceUnits(10);
+
+            var volumeHeight = _volumeValue.PreferredHeight + _volumeValue.Margin.Vertical + volumePanel.Margin.Vertical;
+            root.RowStyles[2].Height = Math.Max(_volumeValue.LogicalToDeviceUnits(VolumeRowHeight), volumeHeight);
+            var contentHeight = (int)Math.Ceiling(root.RowStyles[0].Height + root.RowStyles[1].Height + root.RowStyles[2].Height)
+                + root.Padding.Vertical;
+            _collapsedHeight = Math.Max(_volumeValue.LogicalToDeviceUnits(DefaultCollapsedHeight), Height - ClientSize.Height + contentHeight);
+            MinimumSize = new Size(MinimumSize.Width, _collapsedHeight);
+            UpdatePreferredHeight();
         }
-        _volumeValue.FontChanged += (_, _) => FitVolumeInput();
-        _volumeValue.DpiChangedAfterParent += (_, _) => FitVolumeInput();
-        FitVolumeInput();
         volumePanel.Controls.Add(new Label { Text = "%", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 3, 0);
 
         root.Controls.Add(_nameLabel, 0, 0);
@@ -195,6 +203,9 @@ public sealed class SoundCard : UserControl
         root.SetColumnSpan(_detailsPanel, 4);
 
         Controls.Add(root);
+        _volumeValue.FontChanged += (_, _) => FitVolumeInput();
+        _volumeValue.DpiChangedAfterParent += (_, _) => FitVolumeInput();
+        FitVolumeInput();
 
         playButton.Click += (_, _) =>
         {
@@ -718,9 +729,9 @@ public sealed class SoundCard : UserControl
         {
             if (!_detailsPanel.Visible)
             {
-                if (Height != CollapsedHeight)
+                if (Height != _collapsedHeight)
                 {
-                    Height = CollapsedHeight;
+                    Height = _collapsedHeight;
                 }
 
                 return;
@@ -738,7 +749,7 @@ public sealed class SoundCard : UserControl
             var detailsHeight = _detailsContent.Controls.Cast<Control>()
                 .Select(control => control.Bottom + control.Margin.Bottom).DefaultIfEmpty(0).Max()
                 + _detailsContent.Padding.Bottom;
-            var targetHeight = CollapsedHeight + Math.Max(36, detailsHeight) + 12;
+            var targetHeight = _collapsedHeight + Math.Max(36, detailsHeight) + 12;
             if (Height != targetHeight)
             {
                 Height = targetHeight;

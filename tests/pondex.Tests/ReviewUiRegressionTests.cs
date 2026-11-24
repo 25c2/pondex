@@ -55,7 +55,9 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
             Application.DoEvents();
             grownHeight = header.Height;
             Assert.True(grownHeight > defaultHeight);
-            Assert.True(tabs.Height >= HeaderHeight.Scale(112, root.DeviceDpi));
+            var minimumTabsHeight = HeaderHeight.Scale(112, root.DeviceDpi);
+            Assert.True(tabs.Height >= minimumTabsHeight,
+                $"Tab height {tabs.Height}px is below {minimumTabsHeight}px at {root.DeviceDpi} DPI.");
             Assert.True(preferences.HeaderHeight.HasValue);
             Assert.False(manager.IsDirty);
             form.CloseWithoutSavePromptForSmokeTest();

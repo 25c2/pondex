@@ -392,9 +392,10 @@ public sealed class MainForm : Form
     private void ApplyHeaderHeight(TableLayoutPanel root)
     {
         if (_minimumHeaderHeight == 0 || root.IsDisposed || root.RowCount != 5) { return; }
-        var reserved = (root.GetControlFromPosition(0, 0)?.Height ?? 0)
-            + (root.GetControlFromPosition(0, 4)?.Height ?? 0)
-            + (int)root.RowStyles[2].Height + HeaderHeight.Scale(112, root.DeviceDpi);
+        static int RowHeight(Control? control) => control is null ? 0 : control.Height + control.Margin.Vertical;
+        var reserved = RowHeight(root.GetControlFromPosition(0, 0)) + RowHeight(root.GetControlFromPosition(0, 4))
+            + (int)root.RowStyles[2].Height + HeaderHeight.Scale(112, root.DeviceDpi)
+            + (root.GetControlFromPosition(0, 3)?.Margin.Vertical ?? 0) + root.Padding.Vertical;
         var requested = _dragHeaderHeight is { } drag
             ? (int)Math.Round(drag * 96d / root.DeviceDpi) : _requestedHeaderHeight;
         if (_dragHeaderHeight is null && IsHandleCreated && WindowState == FormWindowState.Normal)

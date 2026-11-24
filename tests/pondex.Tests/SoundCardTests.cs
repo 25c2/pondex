@@ -208,7 +208,11 @@ public sealed class SoundCardTests
         var digits = TextRenderer.MeasureText(edit.Text, edit.Font, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
         Assert.True(edit.ClientSize.Width >= digits.Width + 4);
         Assert.True(numeric.ClientRectangle.Contains(spinner.Bounds));
-        Assert.True(numeric.Parent.ClientRectangle.Contains(numeric.Bounds));
+        Assert.True(numeric.Parent.ClientRectangle.Contains(numeric.Bounds),
+            $"Volume editor {numeric.Bounds} exceeds the volume row {numeric.Parent.ClientRectangle}.");
+        var editorInCard = card.RectangleToClient(numeric.RectangleToScreen(numeric.ClientRectangle));
+        Assert.True(card.ClientRectangle.Contains(editorInCard),
+            $"Volume editor {editorInCard} exceeds the sound card {card.ClientRectangle}.");
         Assert.True(numeric.Parent.ClientRectangle.Contains(label.Bounds));
         Assert.True(numeric.Right <= label.Left);
     });
