@@ -20,6 +20,10 @@ dotnet test pondex.sln --configuration Release --no-build --no-restore
 
 詳細ログの `decoder start` はデコーダの開始時刻、準備枠の使用数、待機時間を記録します。緊急停止の `decoder still occupies slot` はキャンセル後も処理が戻っていない枠を示します。同期デコードはドライバやファイルI/Oから戻るまで枠を保持します。長く止まる素材は本番前に読込確認を行い、強制終了が必要な用途では別プロセスでのデコードを検討してください。
 
+詳細ログの `save_timing` と `play_timing` は単調時計で記録し、`id` が要求単位の識別子です。再生の `play requested` には同じ識別子が `trace` として入ります。各項目の単位はミリ秒です。`total_ms` には区間の隙間やスレッドの再開待ちも含まれます。`to_engine`、`prepare`、`ready_to_start` は複数の区間を含みます。別名保存の `file_dialog_ms` は利用者がパスを選ぶ時間です。途中で失敗・中止した場合は、実際に入った区間だけを記録します。
+
+詳細ログの `output_snapshot` は列挙結果やWindows既定の出力が変化したときに記録します。`output_refused` は再生または出力バインドが拒否された理由の確認に使えます。
+
 CIでは`main`へのpushとPull Requestごとに、依存関係の復元、NuGet脆弱性監査、フォーマット検査、Releaseビルド、テストを実行します。監査フィードを取得できない場合や、低重要度以上の既知の脆弱性が検出された場合も失敗します。
 
 ## Windows x64配布物

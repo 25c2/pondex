@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using pondex.Utility;
 
 namespace pondex.Project;
 
@@ -129,9 +130,14 @@ public sealed class ProjectManager : IDisposable
         }
     }
 
-    public async Task SaveAsync(CancellationToken cancellationToken = default)
+    public Task SaveAsync(CancellationToken cancellationToken = default) => SaveAsync(null, cancellationToken);
+
+    internal async Task SaveAsync(OperationTiming? timing, CancellationToken cancellationToken = default)
     {
-        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(true);
+        using (timing?.Measure("operation_gate"))
+        {
+            await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(true);
+        }
         try
         {
             ProjectModel current;
@@ -145,11 +151,11 @@ public sealed class ProjectManager : IDisposable
                     ?? throw new InvalidOperationException("保存先が未設定です。Save Asを使用してください。");
                 EnsureSafeSavePath(currentPath);
                 stateVersion = _stateVersion;
-                snapshot = _serializer.CreateSnapshot(current);
+                using (timing?.Measure("snapshot")) { snapshot = _serializer.CreateSnapshot(current); }
             }
 
             LastSaveResult = null;
-            LastSaveResult = await SaveWithRevisionAsync(currentPath, snapshot, current.FileRevision, cancellationToken).ConfigureAwait(true);
+            LastSaveResult = await SaveWithRevisionAsync(currentPath, snapshot, current.FileRevision, timing, cancellationToken).ConfigureAwait(true);
 
             var changed = false;
             lock (_stateLock)
@@ -175,36 +181,57 @@ public sealed class ProjectManager : IDisposable
         }
     }
 
-    public async Task SaveAsAsync(string path, CancellationToken cancellationToken = default)
+    public Task SaveAsAsync(string path, CancellationToken cancellationToken = default) => SaveAsAsync(path, null, cancellationToken);
+
+    internal async Task SaveAsAsync(string path, OperationTiming? timing, CancellationToken cancellationToken = default)
     {
-        var newPath = ProjectPath.GetSafeFullPath(path, "保存先パス");
-        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(true);
+        using (timing?.Measure("operation_gate"))
+        {
+            await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(true);
+        }
         try
         {
             ProjectModel current;
             ProjectModel snapshot;
             string? oldPath;
             long stateVersion;
+            Dictionary<Guid, string> approvedPaths;
+            string? revision;
             lock (_stateLock)
             {
                 current = _current;
-                EnsureSafeSavePath(newPath);
+                approvedPaths = new Dictionary<Guid, string>(current.ApprovedSoundPaths);
+                revision = current.FileRevision;
                 oldPath = _currentPath;
                 stateVersion = _stateVersion;
-                snapshot = _serializer.CreateSnapshot(current);
+                using (timing?.Measure("snapshot")) { snapshot = _serializer.CreateSnapshot(current); }
             }
 
-            foreach (var sound in snapshot.Sounds)
+            string newPath;
+            using (timing?.Measure("destination_path"))
             {
-                var resolvedPath = current.ApprovedSoundPaths.TryGetValue(sound.Id, out var approved)
-                    ? approved : ResolveSoundPath(sound, oldPath);
-                sound.File = ProjectPath.ToStoredPath(newPath, resolvedPath);
+                newPath = await Task.Run(() => ProjectPath.GetSafeFullPath(path, "保存先パス"), cancellationToken).ConfigureAwait(true);
+            }
+            lock (_stateLock) { EnsureSafeSavePath(newPath); }
+
+            using (timing?.Measure("rebase_paths"))
+            {
+                await Task.Run(() =>
+                {
+                    foreach (var sound in snapshot.Sounds)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var resolvedPath = approvedPaths.TryGetValue(sound.Id, out var approved)
+                            ? approved : ResolveSoundPath(sound, oldPath);
+                        sound.File = ProjectPath.ToStoredPath(newPath, resolvedPath);
+                    }
+                }, cancellationToken).ConfigureAwait(true);
             }
 
             LastSaveResult = null;
             var sameDestination = string.Equals(newPath, oldPath, StringComparison.OrdinalIgnoreCase);
             LastSaveResult = await SaveWithRevisionAsync(newPath, snapshot,
-                sameDestination ? current.FileRevision : null, cancellationToken).ConfigureAwait(true);
+                sameDestination ? revision : null, timing, cancellationToken).ConfigureAwait(true);
 
             var changed = false;
             lock (_stateLock)
@@ -241,7 +268,7 @@ public sealed class ProjectManager : IDisposable
     }
 
     private Task<ProjectSaveResult> SaveWithRevisionAsync(string path, ProjectModel snapshot, string? expectedRevision,
-        CancellationToken cancellationToken) => Task.Run(() =>
+        OperationTiming? timing, CancellationToken cancellationToken) => Task.Run(() =>
     {
         // Use the canonical destination so separate instances cannot both pass
         // a revision check and then replace the same file.
@@ -251,23 +278,29 @@ public sealed class ProjectManager : IDisposable
         var acquired = false;
         try
         {
-            try
+            using (timing?.Measure("file_gate"))
             {
-                var started = System.Diagnostics.Stopwatch.StartNew();
-                do
+                try
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    acquired = gate.WaitOne(100);
+                    var started = System.Diagnostics.Stopwatch.StartNew();
+                    do
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        acquired = gate.WaitOne(100);
+                    }
+                    while (!acquired && started.Elapsed < TimeSpan.FromSeconds(5));
                 }
-                while (!acquired && started.Elapsed < TimeSpan.FromSeconds(5));
+                catch (AbandonedMutexException) { acquired = true; }
             }
-            catch (AbandonedMutexException) { acquired = true; }
             if (!acquired) { throw new IOException("別のウィンドウが保存中です。時間をおいてやり直してください。"); }
-            if (expectedRevision is not null && !MatchesRevision(path, expectedRevision))
+            using (timing?.Measure("revision_check"))
             {
-                throw new IOException("別のウィンドウまたはアプリがプロジェクトを変更しました。変更を残すには別の名前で保存してください。");
+                if (expectedRevision is not null && !MatchesRevision(path, expectedRevision))
+                {
+                    throw new IOException("別のウィンドウまたはアプリがプロジェクトを変更しました。変更を残すには別の名前で保存してください。");
+                }
             }
-            return _serializer.SaveAsync(path, snapshot, cancellationToken).GetAwaiter().GetResult();
+            return _serializer.SaveAsync(path, snapshot, timing, cancellationToken).GetAwaiter().GetResult();
         }
         finally
         {
@@ -366,15 +399,20 @@ public sealed class ProjectManager : IDisposable
     {
         lock (_stateLock)
         {
-            var path = ResolveSoundPath(sound, _currentPath);
-            if (_current.ApprovedSoundPaths.TryGetValue(sound.Id, out var approved)
-                && !string.Equals(path, approved, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException("音源の参照先が変わりました。「参照…」でファイルを選び直してください。");
-            }
-            return path;
+            return CreatePlaybackPath(sound).Resolve();
         }
     }
+
+    internal PlaybackPath[] SnapshotPlaybackPaths()
+    {
+        lock (_stateLock)
+        {
+            return _current.Sounds.Select(CreatePlaybackPath).ToArray();
+        }
+    }
+
+    private PlaybackPath CreatePlaybackPath(SoundDefinition sound) =>
+        new(sound.File, _currentPath, _current.ApprovedSoundPaths.GetValueOrDefault(sound.Id));
 
     public void MarkDirty() => MarkDirty(shortcutBindingsChanged: true);
 
@@ -391,15 +429,8 @@ public sealed class ProjectManager : IDisposable
 
     public void Dispose() => _operationGate.Dispose();
 
-    private static string ResolveSoundPath(SoundDefinition sound, string? projectPath)
-    {
-        if (projectPath is null)
-        {
-            return ProjectPath.GetSafeFullPath(sound.File, "音源パス");
-        }
-
-        return ProjectPath.Resolve(projectPath, sound.File);
-    }
+    private static string ResolveSoundPath(SoundDefinition sound, string? projectPath) =>
+        PlaybackPath.Resolve(sound.File, projectPath);
 
     private void MarkDirtyLocked()
     {

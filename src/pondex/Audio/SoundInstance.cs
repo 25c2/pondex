@@ -1,6 +1,7 @@
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 using pondex.Project;
+using pondex.Utility;
 
 namespace pondex.Audio;
 
@@ -66,7 +67,15 @@ internal sealed class SoundInstance : IDisposable
         SoundDefinition definition,
         string path,
         WaveFormat mixerFormat,
-        Action completed) => Create(definition, AudioDecoderFactory.Open(path), mixerFormat, completed);
+        Action completed) => CreateMeasured(definition, path, mixerFormat, completed, null);
+
+    internal static SoundInstance CreateMeasured(SoundDefinition definition, string path, WaveFormat mixerFormat,
+        Action completed, OperationTiming? timing)
+    {
+        var decoder = AudioDecoderFactory.Open(path, timing);
+        using var pipeline = timing?.Measure("pipeline");
+        return Create(definition, decoder, mixerFormat, completed);
+    }
 
     internal static SoundInstance Create(SoundDefinition definition, WaveStream decoder, WaveFormat mixerFormat, Action completed)
     {

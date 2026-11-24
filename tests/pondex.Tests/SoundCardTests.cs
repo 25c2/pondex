@@ -1,3 +1,4 @@
+using System.Drawing;
 using pondex.Project;
 using pondex.UI;
 using System.Reflection;
@@ -186,6 +187,31 @@ public sealed class SoundCardTests
 
         Assert.Equal(1.0f, sound.FadeOut.Value);
     }
+
+    [Theory]
+    [InlineData(false, 100)]
+    [InlineData(true, 200)]
+    public void NarrowCard_ThreeDigitVolumeKeepsEditorAndSpinnerVisible(bool boost, int percent) => WinFormsTest.Run(() =>
+    {
+        using var host = new Form();
+        using var card = new SoundCard(new SoundDefinition { AllowVolumeBoost = boost, Volume = percent / 100F }) { Width = 340 };
+        host.Controls.Add(card);
+        host.Show();
+        var numeric = Descendants(card).OfType<NumericUpDown>().Single();
+        using var font = new Font(numeric.Font.FontFamily, numeric.Font.SizeInPoints * 2F);
+        numeric.Font = font;
+        Application.DoEvents();
+        var edit = numeric.Controls.OfType<TextBoxBase>().Single();
+        var spinner = numeric.Controls.Cast<Control>().Single(control => control is not TextBoxBase);
+        var label = numeric.Parent!.Controls.OfType<Label>().Single(control => control.Text == "%");
+        Assert.Equal(percent, numeric.Value);
+        var digits = TextRenderer.MeasureText(edit.Text, edit.Font, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+        Assert.True(edit.ClientSize.Width >= digits.Width + 4);
+        Assert.True(numeric.ClientRectangle.Contains(spinner.Bounds));
+        Assert.True(numeric.Parent.ClientRectangle.Contains(numeric.Bounds));
+        Assert.True(numeric.Parent.ClientRectangle.Contains(label.Bounds));
+        Assert.True(numeric.Right <= label.Left);
+    });
 
     [Fact]
     public void VolumeSliderChange_UpdatesNumericPercentage()

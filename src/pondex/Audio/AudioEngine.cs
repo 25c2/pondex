@@ -24,7 +24,7 @@ public sealed class AudioEngine : IAudioEngine
     private readonly IAppLogger _logger;
     private readonly Func<int, ISampleProvider, IAudioOutput> _outputFactory;
     private readonly IFadePolicy _fadePolicy;
-    private readonly Func<SoundDefinition, string, WaveFormat, Action, SoundInstance> _prepareSound;
+    private readonly Func<SoundDefinition, string, WaveFormat, Action, SoundInstance>? _prepareSound;
     private readonly PlaybackStartDiagnostics _startDiagnostics = new();
     private MixingSampleProvider _mixer;
     private VolumeSampleProvider _masterVolumeProvider;
@@ -58,7 +58,7 @@ public sealed class AudioEngine : IAudioEngine
         _logger = logger;
         _outputFactory = outputFactory;
         _fadePolicy = fadePolicy ?? new SecondsFadePolicy();
-        _prepareSound = prepareSound ?? SoundInstance.Create;
+        _prepareSound = prepareSound;
         (_mixer, _masterVolumeProvider) = CreateMixer();
     }
 
@@ -211,14 +211,26 @@ public sealed class AudioEngine : IAudioEngine
     public Task PlayAsync(SoundDefinition sound, string resolvedPath, CancellationToken cancellationToken = default) =>
         StartPlaybackAsync(sound, resolvedPath, cancellationToken: cancellationToken);
 
-    internal async Task<PlaybackStartResult> StartPlaybackAsync(
+    internal Task<PlaybackStartResult> StartPlaybackAsync(
         SoundDefinition sound, string resolvedPath, Func<CancellationToken, Task>? verifyOutput = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        StartPlaybackMeasuredAsync(sound, resolvedPath, verifyOutput, null, cancellationToken);
+
+    internal async Task<PlaybackStartResult> StartPlaybackMeasuredAsync(
+        SoundDefinition sound, string resolvedPath, Func<CancellationToken, Task>? verifyOutput,
+        OperationTiming? trace, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(sound);
         ArgumentException.ThrowIfNullOrWhiteSpace(resolvedPath);
         var timingRequest = _startDiagnostics.Begin(sound.Id);
+        var reportHere = trace is null;
+        trace ??= _logger.DetailedLoggingEnabled || timingRequest.Attempt > 0 ? new OperationTiming() : null;
+        var reportAsInfo = timingRequest.Attempt > 0 && !_logger.DetailedLoggingEnabled;
+        void SetOutcome(string outcome)
+        {
+            if (trace is not null) { trace.Outcome = outcome; }
+        }
         var diagnosticStarted = Stopwatch.GetTimestamp();
         PlaybackStartTiming? timing = null;
 
@@ -240,7 +252,7 @@ public sealed class AudioEngine : IAudioEngine
         Interlocked.Increment(ref _preparationRequests);
         if (_logger.DetailedLoggingEnabled)
         {
-            _logger.Debug($"play requested: sound={sound.Id} request={requestVersion} path={resolvedPath}");
+            _logger.Debug($"play requested: sound={sound.Id} request={requestVersion} trace={trace?.Id:N} path={resolvedPath}");
             LogSoundSettings(sound);
         }
 
@@ -248,20 +260,23 @@ public sealed class AudioEngine : IAudioEngine
         SoundInstance? completionInstance = null;
         var laneAcquired = false;
         var slotAcquired = false;
+        var outputStartFailed = false;
         try
         {
             var token = preparationCancellation.Token;
             // One decoder per sound, up to four different sounds concurrently.
             // Cancellation removes obsolete waiters before they open any file.
-            await lane.WaitAsync(token).ConfigureAwait(false);
+            using (trace?.Measure("lane_wait")) { await lane.WaitAsync(token).ConfigureAwait(false); }
             laneAcquired = true;
-            await _preparationSlots.WaitAsync(token).ConfigureAwait(false);
+            using (trace?.Measure("slot_wait")) { await _preparationSlots.WaitAsync(token).ConfigureAwait(false); }
             slotAcquired = true;
+            var workerQueued = trace is not null ? Stopwatch.GetTimestamp() : 0;
             // Decoder opens can block in a driver/file system. Keep those bounded
             // workers off the shared pool used by completion and logging tasks.
             prepared = await Task.Factory.StartNew(
                 () =>
                 {
+                    trace?.Record("worker_wait", workerQueued);
                     token.ThrowIfCancellationRequested();
                     var started = Stopwatch.GetTimestamp();
                     var startedAt = DateTimeOffset.Now;
@@ -277,8 +292,11 @@ public sealed class AudioEngine : IAudioEngine
                     while (active > peak && Interlocked.CompareExchange(ref _preparationsPeak, active, peak) != peak);
                     try
                     {
-                        var result = _prepareSound(sound, resolvedPath, MixerFormat,
-                            () => QueueNaturalCompletion(sound.Id, completionInstance));
+                        using var measurement = trace?.Measure("prepare");
+                        void Completed() => QueueNaturalCompletion(sound.Id, completionInstance);
+                        var result = _prepareSound is null
+                            ? SoundInstance.CreateMeasured(sound, resolvedPath, MixerFormat, Completed, trace)
+                            : _prepareSound(sound, resolvedPath, MixerFormat, Completed);
                         Interlocked.Increment(ref _preparationCompleted);
                         return result;
                     }
@@ -297,7 +315,12 @@ public sealed class AudioEngine : IAudioEngine
                 }, token, TaskCreationOptions.LongRunning, TaskScheduler.Default).ConfigureAwait(false);
             completionInstance = prepared;
             prepared.SetReadFailureHandler(exception => QueueSoundReadFailure(sound.Id, completionInstance, exception));
-            if (verifyOutput is not null) { await verifyOutput(token).ConfigureAwait(false); }
+            var ready = trace is not null ? Stopwatch.GetTimestamp() : 0;
+            if (verifyOutput is not null)
+            {
+                using var verify = trace?.Measure("recheck_output");
+                await verifyOutput(token).ConfigureAwait(false);
+            }
             // Stop/device changes are accounted for as superseded requests below;
             // explicit caller cancellation must also dispose a decoder already in flight.
             cancellationToken.ThrowIfCancellationRequested();
@@ -314,7 +337,8 @@ public sealed class AudioEngine : IAudioEngine
                 {
                     Interlocked.Increment(ref _preparationDiscarded);
                     if (_logger.DetailedLoggingEnabled) { _logger.Debug($"play discarded: sound={sound.Id} request={requestVersion} reason=disposed"); }
-                    prepared.Dispose();
+                    SetOutcome(_disposed ? "engine_disposed" : "superseded");
+                    using (trace?.Measure("discard_dispose")) { prepared.Dispose(); }
                     prepared = null;
                     return PlaybackStartResult.Cancelled;
                 }
@@ -324,25 +348,30 @@ public sealed class AudioEngine : IAudioEngine
                 {
                     Interlocked.Increment(ref _preparationDiscarded);
                     if (_logger.DetailedLoggingEnabled) { _logger.Debug($"play discarded: sound={sound.Id} request={requestVersion} current_request={currentVersion} reason=superseded"); }
-                    prepared.Dispose();
+                    SetOutcome(_disposed ? "engine_disposed" : "superseded");
+                    using (trace?.Measure("discard_dispose")) { prepared.Dispose(); }
                     prepared = null;
                     return PlaybackStartResult.Cancelled;
                 }
 
                 // Settings may have changed while the decoder was being prepared.
                 // In particular, never start with a stale volume-boost permission.
-                prepared.ApplyLiveSettings(sound);
-                EnsureOutputCreated();
-
-                StopCore(sound.Id, PlaybackEndReason.Replaced);
-                _instances.Add(sound.Id, prepared);
-                _mixer.AddMixerInput(prepared.Output);
+                using (trace?.Measure("apply_live_settings")) { prepared.ApplyLiveSettings(sound); }
+                using (trace?.Measure("output_open")) { EnsureOutputCreated(); }
+                using (trace?.Measure("mixer_register"))
+                {
+                    StopCore(sound.Id, PlaybackEndReason.Replaced);
+                    _instances.Add(sound.Id, prepared);
+                    _mixer.AddMixerInput(prepared.Output);
+                }
                 try
                 {
-                    EnsureOutputStarted();
+                    using (trace?.Measure("output_start")) { EnsureOutputStarted(); }
+                    trace?.Record("ready_to_start", ready);
                 }
                 catch
                 {
+                    outputStartFailed = true;
                     _mixer.RemoveMixerInput(prepared.Output);
                     _instances.Remove(sound.Id);
                     throw;
@@ -368,11 +397,13 @@ public sealed class AudioEngine : IAudioEngine
                 _logger.Info(string.Create(CultureInfo.InvariantCulture,
                     $"再生開始計測: {sound.Id} attempt={timing.Attempt} prepare_ms={timing.PreparationMilliseconds:F3} start_ms={timing.StartMilliseconds:F3}（内部処理時間。実際の出音遅延ではありません）"));
             }
+            SetOutcome("started");
             return PlaybackStartResult.Started;
         }
         catch (OperationCanceledException)
         {
-            prepared?.Dispose();
+            SetOutcome(cancellationToken.IsCancellationRequested ? "cancelled" : "superseded");
+            using (trace?.Measure("discard_dispose")) { prepared?.Dispose(); }
             Interlocked.Increment(ref _preparationDiscarded);
             if (_logger.DetailedLoggingEnabled) { _logger.Debug($"play cancelled: sound={sound.Id} request={requestVersion}"); }
             if (cancellationToken.IsCancellationRequested) { throw; }
@@ -380,39 +411,52 @@ public sealed class AudioEngine : IAudioEngine
         }
         catch (Exception exception)
         {
-            prepared?.Dispose();
+            var missing = exception is FileNotFoundException or DirectoryNotFoundException;
+            SetOutcome($"{(missing ? "missing" : "failed")}_{exception.GetType().Name}");
+            using (trace?.Measure("discard_dispose")) { prepared?.Dispose(); }
             Interlocked.Increment(ref _preparationFailed);
             lock (_sync)
             {
-                if (_disposed || _soundOperationVersions.GetValueOrDefault(sound.Id) != requestVersion)
+                // Output recovery can invalidate request versions after Play throws.
+                // Still report an actual start failure from the committed request.
+                if (_disposed || (!outputStartFailed && _soundOperationVersions.GetValueOrDefault(sound.Id) != requestVersion))
                 {
                     Interlocked.Increment(ref _preparationDiscarded);
                     if (_logger.DetailedLoggingEnabled) { _logger.Debug($"play discarded: sound={sound.Id} request={requestVersion} reason=obsolete_prepare_failure"); }
+                    SetOutcome("superseded");
                     return PlaybackStartResult.Cancelled;
                 }
             }
             var message = $"音源「{sound.Name}」を再生できません。";
             _logger.Error(message, exception);
             PlaybackFailed?.Invoke(this, new SoundErrorEventArgs(sound.Id, message, exception));
-            return exception is FileNotFoundException or DirectoryNotFoundException
-                ? PlaybackStartResult.Missing : PlaybackStartResult.Failed;
+            return missing ? PlaybackStartResult.Missing : PlaybackStartResult.Failed;
         }
         finally
         {
-            if (slotAcquired) { _preparationSlots.Release(); }
-            if (laneAcquired) { lane.Release(); }
-            lock (_sync)
+            using (trace?.Measure("request_cleanup"))
             {
-                if (_preparationCancellations.GetValueOrDefault(sound.Id) == preparationCancellation)
+                if (slotAcquired) { _preparationSlots.Release(); }
+                if (laneAcquired) { lane.Release(); }
+                lock (_sync)
                 {
-                    _preparationCancellations.Remove(sound.Id);
+                    if (_preparationCancellations.GetValueOrDefault(sound.Id) == preparationCancellation)
+                    {
+                        _preparationCancellations.Remove(sound.Id);
+                    }
+                    if (!_preparationCancellations.ContainsKey(sound.Id) && lane.CurrentCount == 1)
+                    {
+                        _preparationLanes.Remove(sound.Id);
+                    }
                 }
-                if (!_preparationCancellations.ContainsKey(sound.Id) && lane.CurrentCount == 1)
-                {
-                    _preparationLanes.Remove(sound.Id);
-                }
+                preparationCancellation.Dispose();
             }
-            preparationCancellation.Dispose();
+            if (trace is not null && reportHere)
+            {
+                var line = $"play_timing sound={sound.Id} origin=engine {trace.Format()}";
+                if (reportAsInfo) { _logger.Info(line); }
+                else { _logger.Debug(line); }
+            }
         }
     }
 

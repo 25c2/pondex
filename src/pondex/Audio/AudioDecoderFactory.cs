@@ -2,18 +2,22 @@ using NAudio.Vorbis;
 using NAudio.Wave;
 using NLayer.NAudioSupport;
 using pondex.Project;
+using pondex.Utility;
 
 namespace pondex.Audio;
 
 internal static class AudioDecoderFactory
 {
-    public static WaveStream Open(string path)
+    public static WaveStream Open(string path, OperationTiming? timing = null)
     {
-        var safePath = ProjectPath.GetSafeFullPath(path, "音源パス");
-        if (!File.Exists(safePath))
+        string safePath;
+        using (timing?.Measure("decoder_path"))
         {
-            throw new FileNotFoundException("音声ファイルが見つかりません。", safePath);
+            safePath = ProjectPath.GetSafeFullPath(path, "音源パス");
+            if (!File.Exists(safePath)) { throw new FileNotFoundException("音声ファイルが見つかりません。", safePath); }
         }
+
+        using var open = timing?.Measure("decoder_open_init");
 
         return Path.GetExtension(safePath).ToLowerInvariant() switch
         {

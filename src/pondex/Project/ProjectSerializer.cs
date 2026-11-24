@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using pondex.Utility;
 
 namespace pondex.Project;
 
@@ -81,22 +82,32 @@ public sealed class ProjectSerializer
         }
     }
 
-    public async Task<ProjectSaveResult> SaveAsync(string path, ProjectModel model, CancellationToken cancellationToken = default)
+    public Task<ProjectSaveResult> SaveAsync(string path, ProjectModel model, CancellationToken cancellationToken = default) =>
+        SaveAsync(path, model, null, cancellationToken);
+
+    internal async Task<ProjectSaveResult> SaveAsync(string path, ProjectModel model, OperationTiming? timing,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(model);
-        ValidateAndNormalize(model);
+        using (timing?.Measure("normalize")) { ValidateAndNormalize(model); }
 
-        var fullPath = ProjectPath.GetSafeFullPath(path, "保存先パス");
-        var directory = Path.GetDirectoryName(fullPath)
-            ?? throw new ArgumentException("保存先フォルダを特定できません。", nameof(path));
-        Directory.CreateDirectory(directory);
+        string fullPath, directory;
+        using (timing?.Measure("ensure_destination"))
+        {
+            fullPath = ProjectPath.GetSafeFullPath(path, "保存先パス");
+            directory = Path.GetDirectoryName(fullPath)
+                ?? throw new ArgumentException("保存先フォルダを特定できません。", nameof(path));
+            Directory.CreateDirectory(directory);
+        }
 
         var tempPath = Path.Combine(directory, $".pondex-{Guid.NewGuid():N}.tmp");
         var temporaryBackupPath = tempPath + ".bak";
         var backupPath = fullPath + ".bak";
         var ownsTempFile = false;
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(model, _options);
+        byte[] bytes;
+        using (timing?.Measure("serialize")) { bytes = JsonSerializer.SerializeToUtf8Bytes(model, _options); }
+        if (timing is not null) { timing.Bytes = bytes.Length; }
         if (bytes.LongLength > ProjectLimits.MaxFileBytes)
         {
             throw new ProjectFormatException(
@@ -105,30 +116,41 @@ public sealed class ProjectSerializer
 
         try
         {
-            await using (var stream = new FileStream(
-                tempPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                bufferSize: 64 * 1024,
-                FileOptions.Asynchronous | FileOptions.WriteThrough))
+            FileStream stream;
+            using (timing?.Measure("temp_open"))
             {
-                ownsTempFile = true;
-                await stream.WriteAsync(bytes, cancellationToken);
-                await stream.FlushAsync(cancellationToken);
+                stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                    bufferSize: 64 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough);
+            }
+            ownsTempFile = true;
+            try
+            {
+                using (timing?.Measure("temp_write")) { await stream.WriteAsync(bytes, cancellationToken); }
+                using (timing?.Measure("flush")) { await stream.FlushAsync(cancellationToken); }
+            }
+            finally
+            {
+                using (timing?.Measure("temp_close")) { await stream.DisposeAsync(); }
             }
 
-            await ValidateTemporaryFileAsync(tempPath, cancellationToken);
+            using (timing?.Measure("readback"))
+            {
+                await ValidateTemporaryFileAsync(tempPath, cancellationToken);
+            }
             cancellationToken.ThrowIfCancellationRequested();
 
             if (File.Exists(fullPath))
             {
-                File.Replace(tempPath, fullPath, temporaryBackupPath, ignoreMetadataErrors: true);
+                if (timing is not null) { timing.Destination = "replace"; }
+                using (timing?.Measure("commit"))
+                {
+                    File.Replace(tempPath, fullPath, temporaryBackupPath, ignoreMetadataErrors: true);
+                }
                 // The project is committed. A failed backup rotation must not turn this into a failed save.
                 // Rename rather than copy/delete so an existing backup survives a failed rotation.
                 try
                 {
-                    File.Move(temporaryBackupPath, backupPath, overwrite: true);
+                    using (timing?.Measure("backup")) { File.Move(temporaryBackupPath, backupPath, overwrite: true); }
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
@@ -140,13 +162,15 @@ public sealed class ProjectSerializer
             }
             else
             {
-                File.Move(tempPath, fullPath);
+                if (timing is not null) { timing.Destination = "new"; }
+                using (timing?.Measure("commit")) { File.Move(tempPath, fullPath); }
             }
 
             return new ProjectSaveResult { FileRevision = Convert.ToHexString(SHA256.HashData(bytes)) };
         }
         finally
         {
+            using var cleanup = timing?.Measure("temp_cleanup");
             if (ownsTempFile && File.Exists(tempPath))
             {
                 try

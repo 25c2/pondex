@@ -21,6 +21,91 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
     private static readonly AudioDeviceSnapshot Initial = new(
         [AudioDeviceInfo.Default, new AudioDeviceInfo(0, "Console", "console"), new AudioDeviceInfo(1, "Speakers", "speakers")], new(0, "console-endpoint"));
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void HeaderGrip_DragClampsKeepsControlCentersAndRestoresWithoutEditingProject(bool dark) => WinFormsTest.Run(() =>
+    {
+        using var directory = new TestDirectory();
+        var preferences = new UiPreferences(directory.Path);
+        using var manager = new ProjectManager(new ProjectSerializer());
+        manager.Current.Settings.DarkMode = dark;
+        using var engine = new AudioEngine(new Logger(), (_, _) => new Output());
+        MainForm Create() => new(manager, engine, new AudioDeviceManager(() => Initial), new TriggerEngine(), new Logger(),
+            directory.Path, null, new UiPreferences(directory.Path));
+        int grownHeight;
+        using (var form = Create())
+        {
+            Initialize(form);
+            var grip = Descendants(form).OfType<HeaderResizeGrip>().Single();
+            var root = (TableLayoutPanel)grip.Parent!;
+            var header = (TableLayoutPanel)root.GetControlFromPosition(0, 1)!;
+            var tabs = (TabControl)root.GetControlFromPosition(0, 3)!;
+            var defaultHeight = header.Height;
+            var master = Descendants(header).OfType<TrackBar>().Single();
+            var controls = master.Parent!.Controls.Cast<Control>().ToArray();
+            var centers = controls.Select(control => control.Top + control.Height / 2).ToArray();
+            Assert.InRange(centers.Max() - centers.Min(), 0, 2);
+
+            void Mouse(string method, int y) => typeof(HeaderResizeGrip).GetMethod(method, BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(grip, [new MouseEventArgs(MouseButtons.Left, 1, 5, y, 0)]);
+            Mouse("OnMouseDown", 2);
+            Mouse("OnMouseMove", 2000);
+            Mouse("OnMouseUp", 2);
+            Application.DoEvents();
+            grownHeight = header.Height;
+            Assert.True(grownHeight > defaultHeight);
+            Assert.True(tabs.Height >= HeaderHeight.Scale(112, root.DeviceDpi));
+            Assert.True(preferences.HeaderHeight.HasValue);
+            Assert.False(manager.IsDirty);
+            form.CloseWithoutSavePromptForSmokeTest();
+        }
+
+        using var restored = Create();
+        Initialize(restored);
+        var restoredGrip = Descendants(restored).OfType<HeaderResizeGrip>().Single();
+        var restoredRoot = (TableLayoutPanel)restoredGrip.Parent!;
+        var restoredHeader = (TableLayoutPanel)restoredRoot.GetControlFromPosition(0, 1)!;
+        Assert.InRange(restoredHeader.Height, grownHeight - 2, grownHeight + 2);
+        typeof(HeaderResizeGrip).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(restoredGrip, [new KeyEventArgs(Keys.Home)]);
+        Assert.True(restoredHeader.Height < grownHeight);
+        Assert.Null(preferences.HeaderHeight);
+        Assert.False(manager.IsDirty);
+        restored.CloseWithoutSavePromptForSmokeTest();
+    });
+
+    [Fact]
+    public void OutputRefresh_RemainsResponsiveAndClearsSelectionAfterHotplug() => WinFormsTest.Run(() =>
+    {
+        var refresh = new TaskCompletionSource<AudioDeviceSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stopped = false;
+        using var dialog = new SettingsDialog(new ProjectSettings { OutputDevice = "console" }, Initial.Devices);
+        dialog.ConfigureOutputRefresh(Initial, () => refresh.Task, () => stopped = true);
+        dialog.Show();
+        var refreshButton = Descendants(dialog).OfType<Button>().Single(button => button.Text == "更新");
+        var emergency = Descendants(dialog).OfType<Button>().Single(button => button.Text == "緊急停止");
+        refreshButton.PerformClick();
+        Assert.False(refreshButton.Enabled);
+        emergency.PerformClick();
+        Assert.True(stopped);
+        var changed = Initial with { Devices = [AudioDeviceInfo.Default, Initial.Devices[2]], DefaultOutput = new(1, "speakers-endpoint") };
+        refresh.SetResult(changed);
+        var deadline = Stopwatch.StartNew();
+        while (!refreshButton.Enabled && deadline.Elapsed < TimeSpan.FromSeconds(5)) { Application.DoEvents(); }
+        Assert.True(refreshButton.Enabled);
+        Assert.Equal(changed, dialog.OutputSnapshot);
+        var combo = Descendants(dialog).OfType<ComboBox>().Single();
+        Assert.Equal(-1, combo.SelectedIndex);
+        Assert.False(dialog.OutputSelectionExplicit);
+        Assert.False(((Button)dialog.AcceptButton!).Enabled);
+        combo.SelectedValue = 1;
+        typeof(ComboBox).GetMethod("OnSelectionChangeCommitted", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(combo, [EventArgs.Empty]);
+        Assert.True(dialog.OutputSelectionExplicit);
+        Assert.True(((Button)dialog.AcceptButton!).Enabled);
+    });
+
     [Fact]
     public void ProjectRuntimeReset_ZeroEventCanFireOnImmediateStartBeforeNextTimerTick() => WinFormsTest.Run(() =>
     {

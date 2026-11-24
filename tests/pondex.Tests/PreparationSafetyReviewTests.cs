@@ -28,7 +28,8 @@ public sealed class PreparationSafetyReviewTests
         var sound = new SoundDefinition();
         var starts = 0;
         engine.PlaybackStarted += (_, _) => starts++;
-        var first = engine.PlayAsync(sound, path);
+        var firstTiming = new OperationTiming();
+        var first = engine.StartPlaybackMeasuredAsync(sound, path, null, firstTiming);
         var rest = new List<Task>();
         try
         {
@@ -37,6 +38,10 @@ public sealed class PreparationSafetyReviewTests
         }
         finally { release.Set(); }
         await Task.WhenAll(rest.Prepend(first)).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(PlaybackStartResult.Cancelled, await first);
+        Assert.Equal("superseded", firstTiming.Outcome);
+        Assert.Contains(" discard_dispose_ms=", firstTiming.Format());
+        Assert.Contains(" request_cleanup_ms=", firstTiming.Format());
         Assert.Equal(2, prepared);
         Assert.Equal(1, starts);
         Assert.Equal(200, engine.PreparationStatistics.Requested);
@@ -133,9 +138,12 @@ public sealed class PreparationSafetyReviewTests
         var opens = 0;
         using var engine = new AudioEngine(new Logger(), (_, _) => { opens++; return new Output(); });
         var sound = new SoundDefinition();
-        var result = await engine.StartPlaybackAsync(sound, path,
-            _ => Task.FromException(new IOException("Output identity changed")));
+        var refused = new OperationTiming();
+        var result = await engine.StartPlaybackMeasuredAsync(sound, path,
+            _ => Task.FromException(new IOException("Output identity changed")), refused);
         Assert.Equal(PlaybackStartResult.Failed, result);
+        Assert.Equal("failed_IOException", refused.Outcome);
+        Assert.Contains(" recheck_output_ms=", refused.Format());
         Assert.Equal(0, opens);
         Assert.Empty(engine.GetActiveSoundIds());
 

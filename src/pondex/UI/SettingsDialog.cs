@@ -7,6 +7,13 @@ public sealed class SettingsDialog : Form
 {
     private readonly ToolTip _toolTip = new();
     private readonly ComboBox _deviceCombo;
+    private readonly Button _refreshDevices;
+    private readonly Button _okButton;
+    private readonly Button _emergencyStop;
+    private readonly Label _outputLabel;
+    private bool _requireOutputSelection;
+    private bool _refreshingDevices;
+    private bool _outputRefreshFailed;
     private readonly CheckBox _backgroundInputCheck;
     private readonly CheckBox _silentLoopCheck;
     private readonly CheckBox _fadeOutOnStopCheck;
@@ -20,6 +27,7 @@ public sealed class SettingsDialog : Form
     public SettingsDialog(ProjectSettings settings, IReadOnlyList<AudioDeviceInfo> devices, bool requireOutputSelection = false)
     {
         Text = "設定";
+        _requireOutputSelection = requireOutputSelection;
         AutoScaleMode = AutoScaleMode.Dpi;
         FormBorderStyle = FormBorderStyle.Sizable;
         StartPosition = FormStartPosition.CenterParent;
@@ -71,12 +79,27 @@ public sealed class SettingsDialog : Form
             _deviceCombo.SelectedValue = -1;
         }
 
-        _deviceCombo.SelectionChangeCommitted += (_, _) => OutputSelectionExplicit = _deviceCombo.SelectedIndex >= 0;
+        _deviceCombo.SelectionChangeCommitted += (_, _) =>
+        {
+            OutputSelectionExplicit = _deviceCombo.SelectedIndex >= 0;
+            UpdateOutputConfirmation();
+        };
         if (requireOutputSelection)
         {
-            Shown += (_, _) => _deviceCombo.SelectedIndex = -1;
+            Shown += (_, _) =>
+            {
+                _deviceCombo.SelectedIndex = -1;
+                _deviceCombo.Focus();
+            };
             _deviceCombo.AccessibleName = "出力デバイスを選び直す";
         }
+
+        var outputControls = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+        outputControls.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        outputControls.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _refreshDevices = new Button { Text = "更新", AutoSize = true, Anchor = AnchorStyles.Top, Visible = false };
+        outputControls.Controls.Add(_deviceCombo, 0, 0);
+        outputControls.Controls.Add(_refreshDevices, 1, 0);
 
         _backgroundInputCheck = new CheckBox
         {
@@ -126,8 +149,9 @@ public sealed class SettingsDialog : Form
         root.Controls.Add(_projectNameText, 1, 0);
         root.Controls.Add(new Label { Text = "テーマ色", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
         root.Controls.Add(_themeColorText, 1, 1);
-        root.Controls.Add(new Label { Text = requireOutputSelection ? "出力（要選択）" : "出力デバイス", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 2);
-        root.Controls.Add(_deviceCombo, 1, 2);
+        _outputLabel = new Label { Text = requireOutputSelection ? "出力（要選択）" : "出力デバイス", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
+        root.Controls.Add(_outputLabel, 0, 2);
+        root.Controls.Add(outputControls, 1, 2);
         root.Controls.Add(new Label { Text = "キー入力", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 3);
         root.Controls.Add(_backgroundInputCheck, 1, 3);
         root.Controls.Add(new Label { Text = "出力保持", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 4);
@@ -161,16 +185,84 @@ public sealed class SettingsDialog : Form
             Padding = new Padding(8),
             FlowDirection = FlowDirection.RightToLeft
         };
-        var okButton = new Button { Text = "OK", DialogResult = DialogResult.OK, AutoSize = true, MinimumSize = new Size(116, 36) };
+        _okButton = new Button { Text = "OK", DialogResult = DialogResult.OK, AutoSize = true, MinimumSize = new Size(116, 36) };
         var cancelButton = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, AutoSize = true, MinimumSize = new Size(116, 36) };
-        buttons.Controls.Add(okButton);
+        _emergencyStop = new Button { Text = "緊急停止", AutoSize = true, Visible = false, Tag = UiTheme.DangerButtonRole };
+        buttons.Controls.Add(_okButton);
         buttons.Controls.Add(cancelButton);
+        buttons.Controls.Add(_emergencyStop);
         var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
         scroll.Controls.Add(root);
         Controls.Add(scroll);
         Controls.Add(buttons);
-        AcceptButton = okButton;
+        AcceptButton = _okButton;
         CancelButton = cancelButton;
+        UpdateOutputConfirmation();
+    }
+
+    internal AudioDeviceSnapshot? OutputSnapshot { get; private set; }
+
+    internal void ConfigureOutputRefresh(AudioDeviceSnapshot snapshot, Func<Task<AudioDeviceSnapshot>> capture, Action emergencyStop)
+    {
+        OutputSnapshot = snapshot;
+        _refreshDevices.Visible = true;
+        _emergencyStop.Visible = true;
+        _emergencyStop.Click += (_, _) => emergencyStop();
+        _refreshDevices.Click += async (_, _) => await RefreshOutputAsync(capture);
+        var timer = new System.Windows.Forms.Timer { Interval = 2000 };
+        timer.Tick += async (_, _) => await RefreshOutputAsync(capture);
+        Disposed += (_, _) => timer.Dispose();
+        Shown += (_, _) => timer.Start();
+    }
+
+    private async Task RefreshOutputAsync(Func<Task<AudioDeviceSnapshot>> capture)
+    {
+        if (_refreshingDevices || IsDisposed || Disposing) { return; }
+        _refreshingDevices = true;
+        _refreshDevices.Enabled = false;
+        UpdateOutputConfirmation();
+        try
+        {
+            var snapshot = await capture();
+            if (IsDisposed || Disposing) { return; }
+            var changed = OutputSnapshot is null || AudioDeviceSnapshotChanges.Differ(OutputSnapshot, snapshot);
+            OutputSnapshot = snapshot;
+            _outputRefreshFailed = false;
+            if (changed)
+            {
+                _deviceCombo.DataSource = snapshot.Devices.ToList();
+                _deviceCombo.SelectedIndex = -1;
+                OutputSelectionExplicit = false;
+                _requireOutputSelection = true;
+            }
+            UpdateOutputConfirmation();
+        }
+        catch (Exception) when (!IsDisposed && !Disposing)
+        {
+            _outputRefreshFailed = true;
+            _deviceCombo.Enabled = false;
+            _deviceCombo.SelectedIndex = -1;
+            _requireOutputSelection = true;
+            OutputSelectionExplicit = false;
+        }
+        catch (Exception) when (IsDisposed || Disposing) { }
+        finally
+        {
+            _refreshingDevices = false;
+            if (!IsDisposed && !Disposing)
+            {
+                _refreshDevices.Enabled = true;
+                UpdateOutputConfirmation();
+            }
+        }
+    }
+
+    private void UpdateOutputConfirmation()
+    {
+        _outputLabel.Text = _outputRefreshFailed ? "出力（確認失敗）"
+            : _requireOutputSelection && !OutputSelectionExplicit ? "出力（要選択）" : "出力デバイス";
+        _deviceCombo.Enabled = !_outputRefreshFailed;
+        _okButton.Enabled = !_refreshingDevices && !_outputRefreshFailed && (!_requireOutputSelection || OutputSelectionExplicit);
     }
 
     internal bool OutputSelectionExplicit { get; private set; }

@@ -51,7 +51,12 @@ public sealed class RecentProjectStore
         try
         {
             var fullPath = ProjectPath.GetSafeFullPath(path, "履歴のプロジェクトパス");
-            var items = Load(includeUnavailable: true)
+            var existing = Load(includeUnavailable: true);
+            if (File.Exists(_path) && existing.Count > 0 && string.Equals(existing[0], fullPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+            var items = existing
                 .Where(item => !string.Equals(item, fullPath, StringComparison.OrdinalIgnoreCase))
                 .Prepend(fullPath)
                 .Take(10)

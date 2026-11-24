@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using pondex.Audio;
 using pondex.Diagnostics;
 using pondex.Project;
@@ -21,7 +23,9 @@ internal static class Program
         var localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var userDirectory = Path.Combine(localApplicationData, "pondex");
         var storage = AppStoragePaths.Resolve(AppContext.BaseDirectory, userDirectory, Path.GetTempPath());
-        var (logger, logDirectory) = CreateLogger(storage);
+        var uiPreferences = new UiPreferences(Path.Combine(userDirectory, "UI"));
+        var (logger, logDirectory, localLogFailed) = CreateLogger(storage,
+            uiPreferences.UseLocalLogs ? Path.Combine(userDirectory, "Logs") : null);
         logger.Info($"pondexを起動しました。ログ: {logger.CurrentLogPath}");
 
         Application.ThreadException += (_, eventArgs) =>
@@ -74,6 +78,15 @@ internal static class Program
                 return result.Success ? 0 : 2;
             }
 
+            var firstInstance = true;
+            using var instance = smokeTest ? null : OpenInstanceMarker(out firstInstance);
+            if (!firstInstance && MessageBox.Show(
+                "同じユーザーで pondex が既に起動しています。音声出力が重なったり、同じプロジェクトの保存が競合したりする場合があります。複数起動しますか？",
+                "pondex", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+            {
+                return 0;
+            }
+
             using var audioEngine = smokeTest
                 ? new AudioEngine(logger, static (_, _) => new SmokeTestAudioOutput())
                 : new AudioEngine(logger);
@@ -88,10 +101,15 @@ internal static class Program
                 logDirectory,
                 new RecentProjectStore(Path.Combine(storage.DataDirectory, "recent-projects.json"),
                     Path.Combine(userDirectory, "recent-projects.json"), AppContext.BaseDirectory,
-                    additionalLegacyPaths: [AppStoragePaths.GetLegacyHistoryPath(localApplicationData)]));
+                    additionalLegacyPaths: [AppStoragePaths.GetLegacyHistoryPath(localApplicationData)]),
+                uiPreferences);
             if (logger.CurrentLogPath is null)
             {
                 mainForm.Shown += (_, _) => mainForm.ReportLoggingUnavailable();
+            }
+            if (localLogFailed)
+            {
+                mainForm.Shown += (_, _) => mainForm.ReportLocalLogFallback();
             }
             if (smokeTest)
             {
@@ -121,21 +139,38 @@ internal static class Program
         }
     }
 
-    private static (FileLogger Logger, string Directory) CreateLogger(AppStoragePaths storage)
+    private static Mutex OpenInstanceMarker(out bool firstInstance)
     {
+        var user = $"{Environment.UserDomainName}\\{Environment.UserName}";
+        var userHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(user)));
+        return new Mutex(false, $@"Local\pondex-{userHash}", out firstInstance);
+    }
+
+    private static (FileLogger Logger, string Directory, bool LocalLogFailed) CreateLogger(AppStoragePaths storage, string? localDirectory)
+    {
+        Exception? localFailure = null;
+        if (localDirectory is not null)
+        {
+            try { return (new FileLogger(localDirectory), localDirectory, false); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                localFailure = exception;
+            }
+        }
+
         try
         {
             var logger = storage.CanWrite ? new FileLogger(storage.LogDirectory) : new FileLogger(TextWriter.Null, 1);
+            if (localFailure is not null) { logger.Error("ローカルログを開始できません。", localFailure); }
             if (!storage.IsPortable)
             {
                 logger.Warning($"実行フォルダへ書き込めないため、保存先を切り替えました: {storage.DataDirectory}");
             }
-            return (logger, storage.LogDirectory);
+            return (logger, storage.LogDirectory, localFailure is not null);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // A destination may become unavailable after the probe (USB removal, full disk).
-            return (new FileLogger(TextWriter.Null, 1), storage.LogDirectory);
+            return (new FileLogger(TextWriter.Null, 1), storage.LogDirectory, localFailure is not null);
         }
     }
 

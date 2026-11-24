@@ -90,6 +90,8 @@ public sealed class SoundCard : UserControl
             Font = new Font(Font, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleLeft
         };
+        _toolTip.SetToolTip(_nameLabel, _nameLabel.Text);
+        _nameLabel.TextChanged += (_, _) => _toolTip.SetToolTip(_nameLabel, _nameLabel.Text);
         _stateLabel = new Label
         {
             Text = "停止中",
@@ -148,6 +150,17 @@ public sealed class SoundCard : UserControl
         volumePanel.Controls.Add(new Label { Text = "音量", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter }, 0, 0);
         volumePanel.Controls.Add(_volumeTrack, 1, 0);
         volumePanel.Controls.Add(_volumeValue, 2, 0);
+        void FitVolumeInput()
+        {
+            var label = TextRenderer.MeasureText("200", _volumeValue.Font, Size.Empty, TextFormatFlags.SingleLine).Width;
+            var spinner = _volumeValue.Controls.Cast<Control>().Where(child => child is not TextBoxBase)
+                .Select(child => child.Width).DefaultIfEmpty().Max();
+            volumePanel.ColumnStyles[2].Width = label + Math.Max(spinner, 20 * DeviceDpi / 96)
+                + _volumeValue.Margin.Horizontal + 10 * DeviceDpi / 96;
+        }
+        _volumeValue.FontChanged += (_, _) => FitVolumeInput();
+        _volumeValue.DpiChangedAfterParent += (_, _) => FitVolumeInput();
+        FitVolumeInput();
         volumePanel.Controls.Add(new Label { Text = "%", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 3, 0);
 
         root.Controls.Add(_nameLabel, 0, 0);

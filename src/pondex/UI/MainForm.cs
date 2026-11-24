@@ -18,6 +18,11 @@ public sealed class MainForm : Form
     private readonly IAppLogger _logger;
     private readonly string _logDirectory;
     private readonly RecentProjectStore _recentProjects;
+    private readonly UiPreferences? _uiPreferences;
+    private int? _requestedHeaderHeight;
+    private int _minimumHeaderHeight;
+    private int? _dragHeaderHeight;
+    private HeaderResizeGrip _headerGrip = null!;
     private readonly Stopwatch _stopwatch = new();
     private long _shortcutBindingsVersion = -1;
     private readonly Dictionary<Guid, SoundCard> _soundCards = [];
@@ -65,6 +70,7 @@ public sealed class MainForm : Form
     private ToolStripMenuItem _disableEditLockItem = null!;
     private Button _addSoundButton = null!;
     private AudioOutputBinding? _outputBinding;
+    private AudioDeviceSnapshot? _lastOutputSnapshot;
     private Task _outputConfigurationTask = Task.CompletedTask;
     private Task _deviceCheckTask = Task.CompletedTask;
     private long _outputConfigurationVersion;
@@ -72,6 +78,8 @@ public sealed class MainForm : Form
     private readonly Dictionary<Guid, PlaybackState> _pendingPlayback = [];
     private bool _settingsDialogOpening;
     private CancellationTokenSource? _diagnosticCancellation;
+    private CancellationTokenSource? _preflightCancellation;
+    private ToolStripMenuItem _preflightMenuItem = null!;
     private ToolStripButton _cancelDiagnosticButton = null!;
     private (DateTimeOffset WallTime, long Timestamp)? _previousClockTick;
     private bool _systemSuspended;
@@ -86,6 +94,13 @@ public sealed class MainForm : Form
         IAppLogger logger,
         string logDirectory,
         RecentProjectStore? recentProjects = null)
+        : this(projectManager, audioEngine, deviceManager, triggerEngine, logger, logDirectory, recentProjects, null)
+    {
+    }
+
+    internal MainForm(ProjectManager projectManager, IAudioEngine audioEngine, AudioDeviceManager deviceManager,
+        TriggerEngine triggerEngine, IAppLogger logger, string logDirectory,
+        RecentProjectStore? recentProjects, UiPreferences? uiPreferences)
     {
         UiTheme.ConfigureApplicationColors(projectManager.Current.Settings.DarkMode);
         _projectManager = projectManager;
@@ -95,6 +110,8 @@ public sealed class MainForm : Form
         _triggerEngine = triggerEngine;
         _logger = logger;
         _logDirectory = Path.GetFullPath(logDirectory);
+        _uiPreferences = uiPreferences;
+        _requestedHeaderHeight = uiPreferences?.HeaderHeight;
         _recentProjects = recentProjects ?? new RecentProjectStore(Path.Combine(_logDirectory, "recent-projects.json"));
 
         Text = "pondex";
@@ -114,10 +131,11 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4
+            RowCount = 5
         };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 104));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 9));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(menu, 0, 0);
@@ -130,6 +148,37 @@ public sealed class MainForm : Form
             out _masterVolume,
             out _masterMute);
         root.Controls.Add(header, 0, 1);
+        _deviceLabel.Click += async (_, _) => await ShowSettings();
+        _deviceLabel.Cursor = Cursors.Hand;
+        _deviceLabel.AccessibleDescription = "クリックして出力デバイスの設定を開く";
+        _headerGrip = new HeaderResizeGrip();
+        root.Controls.Add(_headerGrip, 0, 2);
+        _headerToolTip.SetToolTip(_headerGrip, "ドラッグで高さを調整。ダブルクリックで標準に戻します。");
+        _headerGrip.ResizedBy += delta =>
+        {
+            _dragHeaderHeight = (int)root.RowStyles[1].Height + delta;
+            ApplyHeaderHeight(root);
+        };
+        _headerGrip.ResizeFinished += () =>
+        {
+            if (_dragHeaderHeight is null) { return; }
+            _requestedHeaderHeight = (int)Math.Round(root.RowStyles[1].Height * 96d / root.DeviceDpi);
+            _dragHeaderHeight = null;
+            SaveHeaderHeight();
+        };
+        _headerGrip.ResetRequested += () =>
+        {
+            _dragHeaderHeight = null;
+            _requestedHeaderHeight = null;
+            ApplyHeaderHeight(root);
+            SaveHeaderHeight();
+        };
+        root.SizeChanged += (_, _) => ApplyHeaderHeight(root);
+        root.DpiChangedAfterParent += (_, _) =>
+        {
+            root.RowStyles[2].Height = HeaderHeight.Scale(9, root.DeviceDpi);
+            ApplyHeaderHeight(root);
+        };
 
         _tabs = new ThemedTabControl
         {
@@ -164,7 +213,7 @@ public sealed class MainForm : Form
         triggersTab.Controls.Add(_triggerPanel);
         _tabs.TabPages.Add(soundsTab);
         _tabs.TabPages.Add(triggersTab);
-        root.Controls.Add(_tabs, 0, 2);
+        root.Controls.Add(_tabs, 0, 3);
 
         var statusStrip = new StatusStrip
         {
@@ -223,7 +272,9 @@ public sealed class MainForm : Form
         _disableEditLockItem = new ToolStripMenuItem("ロックを解除", null, (_, _) => SetEditingLocked(false)) { Enabled = false };
         _editLockButton.DropDownItems.AddRange([_enableEditLockItem, _disableEditLockItem]);
         statusStrip.Items.Add(_editLockButton);
-        root.Controls.Add(statusStrip, 0, 3);
+        root.Controls.Add(statusStrip, 0, 4);
+        statusStrip.SizeChanged += (_, _) => ApplyHeaderHeight(root);
+        menu.SizeChanged += (_, _) => ApplyHeaderHeight(root);
         Controls.Add(root);
 
         _shortcutDispatcher = new ShortcutDispatcher(
@@ -238,7 +289,9 @@ public sealed class MainForm : Form
             () => _projectManager.Current.GroupShortcuts,
             IsEditingText,
             ExecuteShortcuts);
-        _messageFilter = new ShortcutMessageFilter(_shortcutDispatcher.OnKeyChanged,
+        _messageFilter = new ShortcutMessageFilter((key, down, repeat) =>
+            (!down || !_headerGrip.Focused || key is not (Keys.Up or Keys.Down or Keys.Home))
+                && _shortcutDispatcher.OnKeyChanged(key, down, repeat),
             hwnd => Control.FromChildHandle(hwnd)?.FindForm() is { } form
                 && (form == this || form.Owner == this));
         Application.AddMessageFilter(_messageFilter);
@@ -309,6 +362,7 @@ public sealed class MainForm : Form
         var groupShortcuts = new ToolStripMenuItem("グループキー(&G)…", null, (_, _) => ShowGroupShortcuts());
         var soundOrder = new ToolStripMenuItem("並び替え(&L)…", null, (_, _) => ShowSoundOrder());
         var diagnostics = new ToolStripMenuItem("動作診断(&D)…", null, async (_, _) => await RunSelfTestAsync());
+        _preflightMenuItem = new ToolStripMenuItem("音源の事前チェック…", null, async (_, _) => await ToggleSoundPreflightAsync());
         var timings = new ToolStripMenuItem("再生開始を計測") { CheckOnClick = true };
         timings.CheckedChanged += (_, _) =>
         {
@@ -317,10 +371,11 @@ public sealed class MainForm : Form
                 ? "再生開始の内部処理時間を計測します。実際の出音遅延ではありません。"
                 : "再生開始の計測を終了しました。", false);
         };
+        var logLocation = new ToolStripMenuItem("ログの保存先…", null, (_, _) => ShowLogLocation()) { Enabled = _uiPreferences is not null };
         var emergencyStop = new ToolStripMenuItem("緊急停止", null, (_, _) => EmergencyStopAll()) { Name = "emergencyStopMenuItem" };
         operations.DropDownItems.AddRange(
             [stopAllItem, muteMenuItem, new ToolStripSeparator(), soundOrder, groupShortcuts,
-                new ToolStripSeparator(), diagnostics, timings, new ToolStripSeparator(), emergencyStop]);
+                new ToolStripSeparator(), diagnostics, _preflightMenuItem, timings, logLocation, new ToolStripSeparator(), emergencyStop]);
 
         var settings = new ToolStripMenuItem("設定(&S)", null, async (_, _) => await ShowSettings());
         var help = new ToolStripMenuItem("ヘルプ(&H)");
@@ -332,6 +387,35 @@ public sealed class MainForm : Form
         _editingCommands.AddRange([newItem, openItem, addItem, recentMenu, soundOrder, groupShortcuts, settings, diagnostics, muteMenuItem]);
         menu.Items.AddRange([file, operations, settings, help]);
         return menu;
+    }
+
+    private void ApplyHeaderHeight(TableLayoutPanel root)
+    {
+        if (_minimumHeaderHeight == 0 || root.IsDisposed || root.RowCount != 5) { return; }
+        var reserved = (root.GetControlFromPosition(0, 0)?.Height ?? 0)
+            + (root.GetControlFromPosition(0, 4)?.Height ?? 0)
+            + (int)root.RowStyles[2].Height + HeaderHeight.Scale(112, root.DeviceDpi);
+        var requested = _dragHeaderHeight is { } drag
+            ? (int)Math.Round(drag * 96d / root.DeviceDpi) : _requestedHeaderHeight;
+        if (_dragHeaderHeight is null && IsHandleCreated && WindowState == FormWindowState.Normal)
+        {
+            var measured = _minimumHeaderHeight + reserved + Height - ClientSize.Height;
+            var workingHeight = Screen.FromControl(this).WorkingArea.Height;
+            var minHeight = Math.Min(workingHeight, Math.Max(HeaderHeight.Scale(320, root.DeviceDpi), measured));
+            if (MinimumSize.Height != minHeight) { MinimumSize = new Size(MinimumSize.Width, minHeight); }
+        }
+        var height = HeaderHeight.Clamp(requested, _minimumHeaderHeight, root.ClientSize.Height, reserved, root.DeviceDpi);
+        if (root.RowStyles[1].Height != height) { root.RowStyles[1].Height = height; }
+    }
+
+    private void SaveHeaderHeight()
+    {
+        try { _uiPreferences?.SaveHeaderHeight(_requestedHeaderHeight); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _logger.Warning("ヘッダーの高さを保存できませんでした。");
+            SetStatus("ヘッダーの高さを保存できませんでした。", true);
+        }
     }
 
     private TableLayoutPanel BuildHeader(
@@ -362,7 +446,7 @@ public sealed class MainForm : Form
         projectLabel = HeaderLabel("新しいプロジェクト", 11, FontStyle.Bold);
         deviceLabel = HeaderLabel("出力: Windows 既定", 10, FontStyle.Regular);
         clockModeLabel = HeaderLabel("時計", 10, FontStyle.Bold);
-        clockLabel = HeaderLabel("00:00:00", 20, FontStyle.Bold);
+        clockLabel = HeaderLabel("00:00:00", 16, FontStyle.Bold);
         clockLabel.TextAlign = ContentAlignment.MiddleCenter;
         clockLabel.AutoEllipsis = false;
 
@@ -392,7 +476,8 @@ public sealed class MainForm : Form
             TickStyle = TickStyle.None,
             AutoSize = false,
             Value = 100,
-            Dock = DockStyle.Fill
+            Anchor = AnchorStyles.Left | AnchorStyles.Right,
+            Height = 25
         };
         masterVolume = masterVolumeControl;
         var masterVolumeValue = new NumericUpDown
@@ -417,7 +502,7 @@ public sealed class MainForm : Form
             ForeColor = Color.White,
             Appearance = Appearance.Button,
             AutoSize = false,
-            Dock = DockStyle.Fill,
+            Anchor = AnchorStyles.Left | AnchorStyles.Right,
             TextAlign = ContentAlignment.MiddleCenter,
             Font = UiTheme.CreateFont(10F, FontStyle.Bold),
             BackColor = Color.FromArgb(58, 63, 68),
@@ -488,10 +573,15 @@ public sealed class MainForm : Form
             });
         }
         var arrangingHeader = false;
-        void ArrangeHeader()
+        var arrangedWidth = -1;
+        var arrangedDpi = -1;
+        void ArrangeHeader(bool force = false)
         {
-            if (arrangingHeader || header.IsDisposed || header.Disposing) { return; }
+            if (arrangingHeader || header.IsDisposed || header.Disposing
+                || (!force && arrangedWidth == header.ClientSize.Width && arrangedDpi == header.DeviceDpi)) { return; }
             arrangingHeader = true;
+            arrangedWidth = header.ClientSize.Width;
+            arrangedDpi = header.DeviceDpi;
             try
             {
                 var scale = header.DeviceDpi / 96F;
@@ -504,6 +594,9 @@ public sealed class MainForm : Form
                 var numericWidth = textWidth + Math.Max(spinnerWidth, (int)Math.Ceiling(20 * scale)) + (int)Math.Ceiling(8 * scale);
                 masterVolumeValue.MinimumSize = new Size(numericWidth, 0);
                 masterVolumeValue.Width = numericWidth;
+                masterVolumeControl.Height = HeaderHeight.Scale(25, header.DeviceDpi);
+                masterMuteControl.Height = Math.Max(HeaderHeight.Scale(25, header.DeviceDpi),
+                    TextRenderer.MeasureText("ミュート中", masterMuteControl.Font).Height + HeaderHeight.Scale(4, header.DeviceDpi));
                 var sliderWidth = (int)Math.Ceiling(80 * scale);
                 var muteWidth = TextRenderer.MeasureText("ミュート中", masterMuteControl.Font,
                     Size.Empty, TextFormatFlags.SingleLine).Width + (int)Math.Ceiling(16 * scale);
@@ -535,20 +628,20 @@ public sealed class MainForm : Form
                 static int RequiredHeight(Control control) => control.GetPreferredSize(Size.Empty).Height + control.Margin.Vertical;
                 compactClock.RowStyles[0].Height = Math.Max(22 * scale, RequiredHeight(clockModeLabelControl));
                 float[] compactHeights = [
-                    Math.Max(24 * scale, Math.Max(RequiredHeight(projectLabelControl), RequiredHeight(deviceLabelControl))),
+                    Math.Max(22 * scale, Math.Max(RequiredHeight(projectLabelControl), RequiredHeight(deviceLabelControl))),
                     Math.Max(32 * scale, MasterRowHeight()),
-                    Math.Max(48 * scale, Math.Max(RequiredHeight(clockModeLabelControl) + RequiredHeight(clockLabelControl), RequiredHeight(modeButton))),
+                    Math.Max(42 * scale, Math.Max(compactClock.RowStyles[0].Height + RequiredHeight(clockLabelControl), RequiredHeight(modeButton))),
                     Math.Max(32 * scale, Math.Max(RequiredHeight(addButton), Math.Max(RequiredHeight(startButton), RequiredHeight(resetButton))))
                 ];
-                int MasterRowHeight() => new Control[] { masterCaption, masterVolumeValue, masterUnit, masterMuteControl }.Max(RequiredHeight);
-                var wideRowHeight = Math.Max(32 * scale, new Control[] {
+                int MasterRowHeight() => Math.Max(
+                    new Control[] { masterCaption, masterVolumeValue, masterUnit }.Max(RequiredHeight),
+                    Math.Max(masterVolumeControl.Height + masterVolumeControl.Margin.Vertical,
+                        masterMuteControl.Height + masterMuteControl.Margin.Vertical));
+                var wideRowHeight = Math.Max(Math.Max(30 * scale, MasterRowHeight() / 2f), new Control[] {
                     clockLabelControl, clockModeLabelControl, modeButton, startButton, resetButton, addButton }.Max(RequiredHeight));
-                var desiredHeight = (compact ? compactHeights.Sum() : 2 * wideRowHeight) + header.Padding.Vertical + header.Margin.Vertical;
-                if (header.Parent is TableLayoutPanel parent && parent.RowStyles[1].Height != desiredHeight)
-                {
-                    parent.RowStyles[1].Height = desiredHeight;
-                    QueueHeaderLayout();
-                }
+                _minimumHeaderHeight = (int)Math.Ceiling(compact ? compactHeights.Sum() : 2 * wideRowHeight)
+                    + header.Padding.Vertical + header.Margin.Vertical;
+                if (header.Parent is TableLayoutPanel parent) { ApplyHeaderHeight(parent); }
                 if (compactLayout == compact)
                 {
                     if (compact)
@@ -558,6 +651,8 @@ public sealed class MainForm : Form
                     else
                     {
                         for (var column = 0; column < wideColumns.Length; column++) { header.ColumnStyles[column + 1].Width = wideColumns[column]; }
+                        header.RowStyles[0].Height = wideRowHeight;
+                        header.RowStyles[1].Height = wideRowHeight;
                     }
                     return;
                 }
@@ -605,8 +700,8 @@ public sealed class MainForm : Form
                         header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, width));
                     }
 
-                    header.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-                    header.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+                    header.RowStyles.Add(new RowStyle(SizeType.Absolute, wideRowHeight));
+                    header.RowStyles.Add(new RowStyle(SizeType.Absolute, wideRowHeight));
                     header.Controls.Add(projectLabelControl, 0, 0);
                     header.SetColumnSpan(projectLabelControl, 1);
                     header.Controls.Add(deviceLabelControl, 0, 1);
@@ -630,15 +725,15 @@ public sealed class MainForm : Form
             finally { arrangingHeader = false; }
         }
 
-        masterCaption.FontChanged += (_, _) => ArrangeHeader();
-        masterVolumeValue.FontChanged += (_, _) => ArrangeHeader();
-        masterUnit.FontChanged += (_, _) => ArrangeHeader();
-        masterMuteControl.FontChanged += (_, _) => ArrangeHeader();
-        clockLabelControl.FontChanged += (_, _) => ArrangeHeader();
-        header.DpiChangedAfterParent += (_, _) => ArrangeHeader();
-        header.Layout += (_, _) => ArrangeHeader();
+        foreach (var control in new Control[] { masterCaption, masterVolumeValue, masterUnit, masterMuteControl,
+            clockLabelControl, clockModeLabelControl, projectLabelControl, deviceLabelControl, addButton, stopAllButton,
+            modeButton, startButton, resetButton })
+        {
+            control.FontChanged += (_, _) => ArrangeHeader(force: true);
+        }
+        header.DpiChangedAfterParent += (_, _) => ArrangeHeader(force: true);
         header.SizeChanged += (_, _) => ArrangeHeader();
-        header.ParentChanged += (_, _) => ArrangeHeader();
+        header.ParentChanged += (_, _) => ArrangeHeader(force: true);
         header.HandleCreated += (_, _) => QueueHeaderLayout();
         header.Disposed += (_, _) => compactClock.Dispose();
         header.Disposed += (_, _) => compactStopwatchButtons.Dispose();
@@ -805,6 +900,7 @@ public sealed class MainForm : Form
 
     private void ResetProjectRuntime()
     {
+        CancelSoundPreflight();
         var wasSuspended = _triggerEngine.IsSuspended;
         InvalidatePendingPlayback();
         _triggerEngine.Suspend();
@@ -857,6 +953,7 @@ public sealed class MainForm : Form
             return;
         }
 
+        CancelSoundPreflight();
         try
         {
             SetProjectOperationBusy(true);
@@ -922,14 +1019,20 @@ public sealed class MainForm : Form
             return false;
         }
 
+        var timing = _logger.DetailedLoggingEnabled ? new OperationTiming() : null;
+        var savingProject = _projectManager.Current;
+        var soundCount = savingProject.Sounds.Count;
+        var saveAs = forceSaveAs || _projectManager.CurrentPath is null || _projectManager.RequiresSaveAs;
         try
         {
-            var savingProject = _projectManager.Current;
-            EndTextEditing();
-            _ = _masterVolumeValue.Value;
-            _savingProject = true;
-            SetProjectOperationBusy(true);
-            if (forceSaveAs || _projectManager.CurrentPath is null || _projectManager.RequiresSaveAs)
+            using (timing?.Measure("ui_commit"))
+            {
+                EndTextEditing();
+                _ = _masterVolumeValue.Value;
+                _savingProject = true;
+                SetProjectOperationBusy(true);
+            }
+            if (saveAs)
             {
                 using var dialog = new SaveFileDialog
                 {
@@ -938,35 +1041,38 @@ public sealed class MainForm : Form
                     AddExtension = true,
                     FileName = SanitizeFileName(_projectManager.Current.Project.Name) + ".pondex"
                 };
-                if (dialog.ShowDialog(this) != DialogResult.OK)
+                using (timing?.Measure("file_dialog"))
                 {
-                    return false;
+                    if (dialog.ShowDialog(this) != DialogResult.OK) { return false; }
                 }
 
-                if (_logger.DetailedLoggingEnabled) { _logger.Debug($"project save_as requested: path={dialog.FileName}"); }
-                await _projectManager.SaveAsAsync(dialog.FileName);
+                await _projectManager.SaveAsAsync(dialog.FileName, timing);
             }
             else
             {
-                if (_logger.DetailedLoggingEnabled) { _logger.Debug($"project save requested: path={_projectManager.CurrentPath}"); }
-                await _projectManager.SaveAsync();
-            }
-
-            if (!ReferenceEquals(savingProject, _projectManager.Current) || _projectManager.IsDirty)
-            {
-                if (_logger.DetailedLoggingEnabled) { _logger.Debug("project save incomplete: changes remain or project replaced"); }
-                SetStatus("保存中の変更が残っています。もう一度保存してください。終了・切替は中止しました。", true);
-                return false;
+                await _projectManager.SaveAsync(timing);
             }
 
             if (_projectManager.CurrentPath is { } savedPath)
             {
-                _recentProjects.Add(savedPath);
+                using (timing?.Measure("recent"))
+                {
+                    await Task.Run(() => _recentProjects.Add(savedPath));
+                }
             }
+            if (!ReferenceEquals(savingProject, _projectManager.Current) || _projectManager.IsDirty)
+            {
+                if (timing is not null) { timing.Outcome = "saved_dirty"; }
+                SetStatus("保存中の変更が残っています。もう一度保存してください。終了・切替は中止しました。", true);
+                return false;
+            }
+
+            using var uiFeedback = timing?.Measure("ui_feedback");
             _logger.Info($"プロジェクトを保存しました: {_projectManager.CurrentPath}");
-            RefreshRecentMenu();
+            if (timing is not null) { timing.Outcome = "saved"; }
             if (_projectManager.LastSaveResult is { BackupWarning: { } warning } result)
             {
+                if (timing is not null) { timing.Outcome = "saved_backup_warning"; }
                 _logger.Warning($"{warning} 復旧用バックアップ: {result.RecoveryBackupPath}");
                 SetStatus($"保存しました（バックアップ整理に失敗）。復旧用: {result.RecoveryBackupPath}", true);
             }
@@ -976,16 +1082,25 @@ public sealed class MainForm : Form
             }
             return true;
         }
+        catch (OperationCanceledException) { return false; }
         catch (Exception exception)
         {
+            if (timing is not null) { timing.Outcome = "failed"; }
             _logger.Error("プロジェクトを保存できません。", exception);
             SetStatus($"保存できません: {exception.Message}", true);
             return false;
         }
         finally
         {
-            _savingProject = false;
-            SetProjectOperationBusy(false);
+            using (timing?.Measure("ui_unlock"))
+            {
+                _savingProject = false;
+                SetProjectOperationBusy(false);
+            }
+            if (timing is not null)
+            {
+                _logger.Debug($"save_timing mode={(saveAs ? "save_as" : "save")} destination={timing.Destination} bytes={timing.Bytes} sounds={soundCount} {timing.Format()}");
+            }
         }
     }
 
@@ -1474,28 +1589,126 @@ public sealed class MainForm : Form
         }
     }
 
-    private async Task<PlaybackStartResult> PlaySoundAsync(Guid soundId)
+    private async Task ToggleSoundPreflightAsync()
     {
-        if (_diagnosticCancellation is not null || _systemSuspended) { return PlaybackStartResult.Cancelled; }
+        if (_preflightCancellation is not null)
+        {
+            CancelSoundPreflight();
+            return;
+        }
+        if (_projectOperationInProgress || _diagnosticCancellation is not null
+            || _systemSuspended || _pendingPlayback.Count > 0) { return; }
+
+        var paths = _projectManager.SnapshotPlaybackPaths();
+        if (paths.Length == 0)
+        {
+            SetStatus("事前チェックする音源がありません。", false);
+            return;
+        }
+
+        using var cancellation = new CancellationTokenSource();
+        _preflightCancellation = cancellation;
+        _preflightMenuItem.Text = "音源の事前チェックを中止";
+        SetStatus($"音源の読み取りを確認中 0 / {paths.Length}", false);
+        var progress = new Progress<int>(count =>
+        {
+            if (ReferenceEquals(_preflightCancellation, cancellation) && !cancellation.IsCancellationRequested)
+            {
+                SetStatus($"音源の読み取りを確認中 {count} / {paths.Length}", false);
+            }
+        });
+        try
+        {
+            var failed = await Task.Run(() => SoundPreflight.Check(paths, progress, cancellation.Token));
+            if (!cancellation.IsCancellationRequested)
+            {
+                SetStatus($"音源の読み取り確認: 成功 {paths.Length - failed} 件、失敗 {failed} 件。", failed > 0);
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        finally
+        {
+            _preflightCancellation = null;
+            if (!IsDisposed && !Disposing) { _preflightMenuItem.Text = "音源の事前チェック…"; }
+        }
+    }
+
+    private void CancelSoundPreflight()
+    {
+        if (_preflightCancellation is not { IsCancellationRequested: false } cancellation) { return; }
+        cancellation.Cancel();
+        if (!IsDisposed && !Disposing && !_cleanupCompleted)
+        {
+            SetStatus("音源の事前チェックを取り消しました。", false);
+        }
+    }
+
+    private Task<PlaybackStartResult> PlaySoundAsync(Guid soundId) =>
+        PlaySoundFromAsync(soundId, "mouse", Stopwatch.GetTimestamp());
+
+    private async Task<PlaybackStartResult> PlaySoundFromAsync(Guid soundId, string origin, long processedAt)
+    {
+        CancelSoundPreflight();
+        var detailed = _logger.DetailedLoggingEnabled;
+        var timing = detailed || _audioEngine.PlaybackTimingEnabled ? new OperationTiming(processedAt) : null;
+        try
+        {
+            return await PlaySoundCoreAsync(soundId, timing, processedAt);
+        }
+        finally
+        {
+            if (timing is not null)
+            {
+                var line = $"play_timing sound={soundId} origin={origin} {timing.Format()}";
+                if (detailed) { _logger.Debug(line); }
+                else { _logger.Info(line); }
+            }
+        }
+    }
+
+    private async Task<PlaybackStartResult> PlaySoundCoreAsync(Guid soundId, OperationTiming? timing, long processedAt)
+    {
+        void SetOutcome(string outcome)
+        {
+            if (timing is not null) { timing.Outcome = outcome; }
+        }
+
+        if (_diagnosticCancellation is not null || _systemSuspended)
+        {
+            SetOutcome("diagnostic_or_suspended");
+            return PlaybackStartResult.Cancelled;
+        }
         var generation = Interlocked.Read(ref _playbackGeneration);
         var version = _uiPlayVersions.GetValueOrDefault(soundId) + 1;
         _uiPlayVersions[soundId] = version;
         bool IsCurrent() => !IsDisposed && !Disposing && generation == Interlocked.Read(ref _playbackGeneration)
             && _uiPlayVersions.GetValueOrDefault(soundId) == version;
         SetPendingPlayback(soundId, PlaybackState.CheckingOutput);
-        await _outputConfigurationTask;
-        await _resumeOutputCheck;
-        await CheckSelectedDeviceAvailability(force: true);
-        if (!IsCurrent()) { return PlaybackStartResult.Cancelled; }
+        using (timing?.Measure("output_config"))
+        {
+            await _outputConfigurationTask;
+            await _resumeOutputCheck;
+        }
+        using (timing?.Measure("output_probe"))
+        {
+            await CheckSelectedDeviceAvailability(force: true);
+        }
+        if (!IsCurrent())
+        {
+            SetOutcome(_outputUnavailable ? "output_unavailable" : "superseded_before_prepare");
+            return PlaybackStartResult.Cancelled;
+        }
         if (_outputUnavailable)
         {
+            SetOutcome("output_unavailable");
             CompletePlaybackDisplay(soundId, PlaybackState.Failed);
-            SetStatus("出力先を設定で選び直してください。", true);
+            SetStatus("このPCで出力先を選び直してください。", true);
             return PlaybackStartResult.Failed;
         }
         var sound = _projectManager.Current.Sounds.FirstOrDefault(item => item.Id == soundId);
         if (sound is null)
         {
+            SetOutcome("sound_removed");
             CompletePlaybackDisplay(soundId, PlaybackState.Stopped);
             return PlaybackStartResult.Cancelled;
         }
@@ -1503,10 +1716,12 @@ public sealed class MainForm : Form
         string path;
         try
         {
+            using var pathTiming = timing?.Measure("resolve_path");
             path = _projectManager.ResolvePlaybackPath(sound);
         }
         catch (Exception exception)
         {
+            SetOutcome("path_rejected");
             CompletePlaybackDisplay(soundId, PlaybackState.Failed);
             _logger.Error($"音源のパスを解決できません: {sound.Name} ({sound.Id})", exception);
             SetStatus($"パスを解決できません: {sound.Name} — {exception.Message}", true);
@@ -1517,17 +1732,26 @@ public sealed class MainForm : Form
         var result = PlaybackStartResult.Started;
         var binding = _outputBinding;
         var outputChanged = false;
+        timing?.Record("to_engine", processedAt);
         if (_audioEngine is AudioEngine engine && binding is not null)
         {
-            result = await engine.StartPlaybackAsync(sound, path, async token =>
+            result = await engine.StartPlaybackMeasuredAsync(sound, path, async token =>
             {
                 if (!engine.NeedsOutputOpen || await ProbeBoundOutputAsync(binding, token)) { return; }
                 outputChanged = true;
                 throw new InvalidOperationException("再生準備中に出力先を確認できなくなりました。");
-            });
-            if (outputChanged) { MarkOutputChanged(binding); }
+            }, timing);
+            if (outputChanged)
+            {
+                MarkOutputChanged(binding);
+                SetOutcome("output_changed_during_prepare");
+            }
         }
-        else { await _audioEngine.PlayAsync(sound, path); }
+        else
+        {
+            await _audioEngine.PlayAsync(sound, path);
+            SetOutcome("started");
+        }
 
         if (IsCurrent())
         {
@@ -1545,6 +1769,7 @@ public sealed class MainForm : Form
             });
             return result;
         }
+        if (timing?.Outcome == "started") { SetOutcome("superseded_after_commit"); }
         return PlaybackStartResult.Cancelled;
     }
 
@@ -1625,6 +1850,7 @@ public sealed class MainForm : Form
 
     private void StopForEmergency(bool invalidateConfiguration)
     {
+        CancelSoundPreflight();
         if (invalidateConfiguration) { _outputConfigurationVersion++; }
         _diagnosticCancellation?.Cancel();
         if (_logger.DetailedLoggingEnabled) { _logger.Debug("automatic triggers suspended: emergency stop"); }
@@ -1648,7 +1874,10 @@ public sealed class MainForm : Form
         SetStatus("緊急停止・イベント休止中", false, "手動再生は可能です。「イベント再開」で自動イベントを再開します。");
     }
 
-    private void ExecuteShortcuts(IReadOnlyList<ShortcutCommand> commands)
+    private void ExecuteShortcuts(IReadOnlyList<ShortcutCommand> commands) =>
+        ExecuteShortcutsCore(commands, Stopwatch.GetTimestamp());
+
+    private void ExecuteShortcutsCore(IReadOnlyList<ShortcutCommand> commands, long processedAt)
     {
         if (IsDisposed || Disposing)
         {
@@ -1663,7 +1892,7 @@ public sealed class MainForm : Form
             {
                 if (generation == Interlocked.Read(ref _playbackGeneration))
                 {
-                    ExecuteShortcuts(commandSnapshot);
+                    ExecuteShortcutsCore(commandSnapshot, processedAt);
                 }
             });
             return;
@@ -1680,7 +1909,7 @@ public sealed class MainForm : Form
             .ToArray();
         if (playIds.Length > 1)
         {
-            PlayShortcutBatch(playIds);
+            PlayShortcutBatch(playIds, processedAt);
             return;
         }
 
@@ -1689,7 +1918,7 @@ public sealed class MainForm : Form
             switch (command.Type)
             {
                 case ShortcutCommandType.Play when command.SoundId is { } playId:
-                    _ = PlaySoundAsync(playId);
+                    _ = PlaySoundFromAsync(playId, "shortcut", processedAt);
                     break;
                 case ShortcutCommandType.PlayExclusive when command.SoundId is { } exclusiveId:
                     var target = _projectManager.Current.Sounds.FirstOrDefault(sound => sound.Id == exclusiveId);
@@ -1701,7 +1930,7 @@ public sealed class MainForm : Form
                             StopSound(peer.Id, immediately: true);
                         }
                     }
-                    _ = PlaySoundAsync(exclusiveId);
+                    _ = PlaySoundFromAsync(exclusiveId, "shortcut", processedAt);
                     break;
                 case ShortcutCommandType.Stop when command.SoundId is { } stopId:
                     StopSound(stopId);
@@ -1713,11 +1942,11 @@ public sealed class MainForm : Form
         }
     }
 
-    private void PlayShortcutBatch(IReadOnlyCollection<Guid> soundIds)
+    private void PlayShortcutBatch(IReadOnlyCollection<Guid> soundIds, long processedAt)
     {
         foreach (var soundId in soundIds)
         {
-            _ = PlaySoundAsync(soundId);
+            _ = PlaySoundFromAsync(soundId, "shortcut", processedAt);
         }
     }
 
@@ -1734,17 +1963,24 @@ public sealed class MainForm : Form
         if (!CanEditProject()) { return; }
         var openingProject = _projectManager.Current;
         AudioDeviceSnapshot snapshot;
-        try { snapshot = await _deviceManager.CaptureSnapshotAsync().WaitAsync(TimeSpan.FromSeconds(2)); }
+        try { snapshot = await CaptureOutputSnapshotAsync("settings_open"); }
         catch (Exception exception)
         {
             if (IsDisposed || Disposing) { return; }
             _logger.Error("出力デバイスの一覧を確認できません。", exception);
-            SetStatus("出力デバイスの確認に失敗しました。接続を確認してから設定を開き直してください。", true);
-            return;
+            if (_outputBinding is { } binding) { MarkOutputChanged(binding); }
+            snapshot = new AudioDeviceSnapshot([], null);
+            ShowOutputReselection("出力一覧を取得できません。接続を確認して設定画面で更新してください。");
         }
         if (IsDisposed || Disposing || !ReferenceEquals(openingProject, _projectManager.Current) || !CanEditProject()) { return; }
-        var devices = snapshot.Devices;
-        using var dialog = new SettingsDialog(_projectManager.Current.Settings, devices, _outputUnavailable);
+        if (_outputBinding is { } current && !current.Matches(snapshot)) { MarkOutputChanged(current); }
+        using var dialog = new SettingsDialog(_projectManager.Current.Settings, snapshot.Devices, _outputUnavailable || snapshot.Devices.Count == 0);
+        dialog.ConfigureOutputRefresh(snapshot, async () =>
+        {
+            var refreshed = await CaptureOutputSnapshotAsync("settings_refresh");
+            if (_outputBinding is { } active && !active.Matches(refreshed)) { MarkOutputChanged(active); }
+            return refreshed;
+        }, EmergencyStopAll);
         dialog.SetProjectMetadata(_projectManager.Current.Project);
         UiTheme.Apply(dialog, _projectManager.Current.Settings.DarkMode);
         if (dialog.ShowDialog(this) != DialogResult.OK)
@@ -1752,9 +1988,10 @@ public sealed class MainForm : Form
             return;
         }
 
+        snapshot = dialog.OutputSnapshot ?? snapshot;
         var settings = _projectManager.Current.Settings;
         var selectedDevice = dialog.OutputSelectionExplicit
-            ? devices.FirstOrDefault(device => device.DeviceNumber == dialog.SelectedDeviceNumber)
+            ? snapshot.Devices.FirstOrDefault(device => device.DeviceNumber == dialog.SelectedDeviceNumber)
             : null;
         var selectedId = selectedDevice?.SelectionId ?? settings.OutputDevice;
         var selectedBinding = selectedDevice is null ? null : AudioOutputBinding.Create(selectedId, snapshot);
@@ -1780,6 +2017,10 @@ public sealed class MainForm : Form
             projectName,
             dialog.ThemeColor,
             dialog.DetailedLogging);
+        if (selectedDevice is not null && _logger.DetailedLoggingEnabled)
+        {
+            _logger.Debug($"output_selection previous={settings.OutputDevice} requested={selectedId} number={selectedDevice.DeviceNumber}");
+        }
         settings.OutputDevice = selectedId;
         settings.BackgroundInput = dialog.BackgroundInput;
         settings.SilentLoop = dialog.SilentLoop;
@@ -2206,7 +2447,7 @@ public sealed class MainForm : Form
         _outputUnavailable = true;
         try
         {
-            var snapshot = await _deviceManager.CaptureSnapshotAsync().WaitAsync(TimeSpan.FromSeconds(2));
+            var snapshot = await CaptureOutputSnapshotAsync("configure");
             if (IsDisposed || Disposing || version != _outputConfigurationVersion
                 || _systemSuspended || !ReferenceEquals(settings, _projectManager.Current.Settings)) { return; }
             if (expectedBinding is not null && !expectedBinding.Matches(snapshot))
@@ -2218,6 +2459,10 @@ public sealed class MainForm : Form
             if (_outputBinding is not null && _outputBinding != binding) { StopForEmergency(invalidateConfiguration: false); }
             _audioEngine.SelectOutputDevice(binding.Device.DeviceNumber);
             _audioEngine.SilentLoopEnabled = settings.SilentLoop;
+            if (_logger.DetailedLoggingEnabled)
+            {
+                _logger.Debug($"output_bound previous={_outputBinding?.Device.SelectionId ?? "none"} current={binding.Device.SelectionId} number={binding.Device.DeviceNumber}");
+            }
             _outputBinding = binding;
             _outputUnavailable = false;
             _deviceLabel.Text = settings.OutputDevice == "default"
@@ -2230,8 +2475,11 @@ public sealed class MainForm : Form
             _outputUnavailable = true;
             EmergencyStopAll();
             _logger.Error("出力デバイスを使用できません。", exception);
-            _deviceLabel.Text = "出力: エラー（設定を確認）";
-            SetStatus(exception.Message, true);
+            if (_logger.DetailedLoggingEnabled)
+            {
+                _logger.Debug($"output_refused source=configure configured={settings.OutputDevice} reason={exception.GetType().Name}");
+            }
+            ShowOutputReselection(exception.Message);
         }
     }
 
@@ -2245,19 +2493,49 @@ public sealed class MainForm : Form
         return _deviceCheckTask = CheckBoundOutputAsync(binding);
     }
 
+    private async Task<AudioDeviceSnapshot> CaptureOutputSnapshotAsync(string source)
+    {
+        var snapshot = await _deviceManager.CaptureSnapshotAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        if (_logger.DetailedLoggingEnabled
+            && (_lastOutputSnapshot is null || AudioDeviceSnapshotChanges.Differ(_lastOutputSnapshot, snapshot)))
+        {
+            _logger.Debug($"output_snapshot source={source} {AudioDeviceSnapshotChanges.Describe(_lastOutputSnapshot, snapshot)}");
+        }
+        _lastOutputSnapshot = snapshot;
+        return snapshot;
+    }
+
     private async Task<bool> ProbeBoundOutputAsync(AudioOutputBinding binding, CancellationToken cancellationToken = default)
     {
         try
         {
-            return binding.Matches(await _deviceManager.CaptureSnapshotAsync()
-                .WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false));
+            var snapshot = await _deviceManager.CaptureSnapshotAsync()
+                .WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+            if (binding.Matches(snapshot)) { return true; }
+            if (_logger.DetailedLoggingEnabled)
+            {
+                _logger.Debug($"output_refused source=pre_start reason=binding_changed previous={binding.Device.SelectionId} {AudioDeviceSnapshotChanges.Describe(null, snapshot)}");
+            }
+            return false;
         }
-        catch (Exception) when (!cancellationToken.IsCancellationRequested) { return false; }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            if (_logger.DetailedLoggingEnabled) { _logger.Debug($"output_refused source=pre_start reason={exception.GetType().Name}"); }
+            return false;
+        }
     }
 
     private async Task CheckBoundOutputAsync(AudioOutputBinding binding)
     {
-        if (!await ProbeBoundOutputAsync(binding)) { MarkOutputChanged(binding); }
+        try
+        {
+            if (binding.Matches(await CaptureOutputSnapshotAsync("availability"))) { return; }
+        }
+        catch (Exception exception)
+        {
+            if (_logger.DetailedLoggingEnabled) { _logger.Debug($"output_refused source=availability reason={exception.GetType().Name}"); }
+        }
+        MarkOutputChanged(binding);
     }
 
     private void MarkOutputChanged(AudioOutputBinding binding)
@@ -2265,9 +2543,20 @@ public sealed class MainForm : Form
         if (IsDisposed || Disposing || !ReferenceEquals(binding, _outputBinding) || _outputUnavailable) { return; }
         _outputUnavailable = true;
         EmergencyStopAll();
-        _deviceLabel.Text = "出力: 切断・変更検出（設定で選び直す）";
         _logger.Warning("出力デバイスまたはWindows既定出力の変更を検出し、安全停止しました。");
-        SetStatus("出力先が変化しました。設定で出力先を確認して選び直してください。", true);
+        if (_logger.DetailedLoggingEnabled)
+        {
+            _logger.Debug($"output_refused source=availability reason=binding_unavailable previous={binding.Device.SelectionId}");
+        }
+        ShowOutputReselection("出力先の切断または変更を検出しました。");
+    }
+
+    private void ShowOutputReselection(string detail)
+    {
+        const string guidance = "このPCで出力先を選び直してください。";
+        _deviceLabel.Text = "出力: 要再選択";
+        _headerToolTip.SetToolTip(_deviceLabel, $"{guidance} クリックで設定を開きます。");
+        SetStatus($"{guidance} {detail}", true);
     }
 
     private void UpdateClockDisplay()
@@ -2289,6 +2578,7 @@ public sealed class MainForm : Form
 
     private void OnTriggerFired(object? sender, TriggerFiredEventArgs eventArgs)
     {
+        var processedAt = Stopwatch.GetTimestamp();
         if (!eventArgs.IsCurrent || _triggerEngine.IsSuspended || (_projectOperationInProgress && !_savingProject)) { return; }
         var trigger = eventArgs.Trigger;
         var targetIds = (string.IsNullOrWhiteSpace(trigger.TargetGroup)
@@ -2310,7 +2600,7 @@ public sealed class MainForm : Form
         if (trigger.Action == TriggerAction.Play)
         {
             var cue = string.IsNullOrWhiteSpace(trigger.Memo) ? "再生イベント" : trigger.Memo;
-            _ = TrackTriggerPlaybackAsync(cue, targetIds);
+            _ = TrackTriggerPlaybackAsync(cue, targetIds, processedAt);
             return;
         }
 
@@ -2334,11 +2624,11 @@ public sealed class MainForm : Form
         }} {targetIds.Length}件", false);
     }
 
-    private async Task TrackTriggerPlaybackAsync(string cue, Guid[] targets)
+    private async Task TrackTriggerPlaybackAsync(string cue, Guid[] targets, long processedAt)
     {
         var generation = Interlocked.Read(ref _playbackGeneration);
         SetStatus($"イベント「{cue}」: 再生要求 {targets.Length}件", false);
-        var results = await Task.WhenAll(targets.Select(PlaySoundAsync));
+        var results = await Task.WhenAll(targets.Select(id => PlaySoundFromAsync(id, "trigger", processedAt)));
         if (IsDisposed || Disposing || generation != Interlocked.Read(ref _playbackGeneration)) { return; }
         var started = results.Count(result => result == PlaybackStartResult.Started);
         var failed = results.Count(result => result is PlaybackStartResult.Failed or PlaybackStartResult.Missing);
@@ -2393,7 +2683,7 @@ public sealed class MainForm : Form
             return;
         }
 
-        SetStatus($"{eventArgs.Message} {eventArgs.Exception.Message}", true);
+        if (!_outputUnavailable) { SetStatus($"{eventArgs.Message} {eventArgs.Exception.Message}", true); }
     }
 
     private void OnOutputDeviceFallback(object? sender, OutputDeviceFallbackEventArgs eventArgs)
@@ -2416,8 +2706,7 @@ public sealed class MainForm : Form
         // Even a legacy/recovered notification must never authorize automatic rerouting.
         _outputUnavailable = true;
         EmergencyStopAll();
-        _deviceLabel.Text = "出力: エラー（設定で選び直す）";
-        SetStatus("音声出力デバイス異常を検出しました。接続とWindowsの設定を確認し、出力先を選び直してください。", true);
+        ShowOutputReselection("音声出力デバイス異常を検出しました。接続とWindowsの設定を確認してください。");
     }
 
     private void UpdateProjectHeader()
@@ -2572,6 +2861,7 @@ public sealed class MainForm : Form
         }
 
         _cleanupCompleted = true;
+        CancelSoundPreflight();
         if (_diagnosticCancellation is not null)
         {
             _diagnosticCancellation.Cancel();
@@ -2597,6 +2887,7 @@ public sealed class MainForm : Form
 
     private void OnProjectChanged(object? sender, EventArgs eventArgs)
     {
+        CancelSoundPreflight();
         var version = _projectManager.ShortcutBindingsVersion;
         if (_shortcutBindingsVersion != version)
         {
@@ -2716,6 +3007,38 @@ public sealed class MainForm : Form
         }
     }
 
+    private void ShowLogLocation()
+    {
+        if (_uiPreferences is null) { return; }
+        var nextLocal = _uiPreferences.UseLocalLogs;
+        var actualPath = _logger is FileLogger { CurrentLogPath: null } or FileLogger { Diagnostics.IsDisabled: true }
+            ? $"記録できません（保存先: {_logDirectory}）" : _logDirectory;
+        var next = nextLocal ? "ローカル（このPC）" : "ポータブル（通常は実行フォルダ）";
+        var change = nextLocal ? "ポータブルに戻しますか？" : "このPCのローカルフォルダに変更しますか？";
+        var answer = MessageBox.Show(this,
+            $"現在のログ保存先\n{actualPath}\n\n次回起動時の設定: {next}\n{change}\n変更は次回起動時に適用されます。共有PCに記録したログは、アプリを取り出した後もそのPCに残ります。",
+            "ログの保存先", MessageBoxButtons.YesNo, MessageBoxIcon.Information, MessageBoxDefaultButton.Button2);
+        if (answer != DialogResult.Yes) { return; }
+
+        try
+        {
+            _uiPreferences.SaveUseLocalLogs(!nextLocal);
+            SetStatus("ログ保存先の変更は次回起動時に適用されます。", false);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _logger.Error("ログ保存先の設定を保存できません。", exception);
+            SetStatus("ログ保存先の設定を保存できませんでした。", true);
+        }
+    }
+
+    internal void ReportLocalLogFallback()
+    {
+        var detail = $"ローカルログを開始できません。現在の保存先: {_logDirectory}";
+        if (_loggingFailureShown) { detail = "ローカルログも通常のログ保存先も利用できません。"; }
+        SetStatus(detail, true);
+    }
+
     private void ShowHelp()
     {
         using var dialog = new HelpDialog();
@@ -2726,6 +3049,8 @@ public sealed class MainForm : Form
     private void ApplyDisplayTheme(bool darkMode)
     {
         _darkMode = darkMode;
+        _headerGrip.BackColor = darkMode ? Color.FromArgb(39, 43, 47) : SystemColors.ControlLight;
+        _headerGrip.ForeColor = darkMode ? Color.Silver : SystemColors.ControlDarkDark;
         UiTheme.ConfigureApplicationColors(darkMode);
         UiTheme.Apply(this, darkMode);
         _triggerPanel.ApplyDarkMode(darkMode);

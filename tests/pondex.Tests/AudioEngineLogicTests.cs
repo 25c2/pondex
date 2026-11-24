@@ -34,13 +34,25 @@ public sealed class AudioEngineLogicTests
             Assert.Contains($"play requested: sound={sound.Id}", output);
             Assert.Contains($"path={path}", output);
             Assert.Contains("prepare_ms=", output);
+            var timing = Assert.Single(output.Split('\n'), line => line.Contains("play_timing ", StringComparison.Ordinal));
+            var requestId = timing.Split(' ').Single(field => field.StartsWith("id=", StringComparison.Ordinal))[3..];
+            Assert.Contains($"trace={requestId}", output);
+            Assert.Contains("outcome=started", timing);
+            foreach (var phase in new[] { "lane_wait", "slot_wait", "worker_wait", "decoder_path", "decoder_open_init", "pipeline", "mixer_register", "output_start", "request_cleanup" })
+            {
+                Assert.Contains($" {phase}_ms=", timing);
+            }
             Assert.Contains("device=2", output);
             Assert.Contains("pitch=1.25", output);
             Assert.Contains($"pause: sound={sound.Id}", output);
             Assert.Contains($"resume: sound={sound.Id}", output);
             Assert.Contains("reason=Stopped", output);
         }
-        else { Assert.DoesNotContain("[DEBUG]", output); }
+        else
+        {
+            Assert.DoesNotContain("[DEBUG]", output);
+            Assert.DoesNotContain("play_timing", output);
+        }
     }
 
     [Fact]
