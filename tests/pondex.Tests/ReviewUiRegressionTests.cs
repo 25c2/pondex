@@ -92,7 +92,9 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
         using var form = CreateForm(manager, engine, trigger, () => Initial, directory.Path);
         Initialize(form);
         var sound = new SoundDefinition();
-        Pump(engine.PlayAsync(sound, CreateWave(directory)));
+        var play = engine.StartPlaybackAsync(sound, CreateWave(directory));
+        Pump(play);
+        Assert.Equal(PlaybackStartResult.Started, play.GetAwaiter().GetResult());
         Assert.Contains(sound.Id, engine.GetActiveSoundIds());
 
         var handled = (bool)Method("HandleWindowShortcut").Invoke(form, [Keys.Control | Keys.Shift | Keys.R, true, false])!;
@@ -465,6 +467,7 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
         public void Play() => PlaybackState = NAudio.Wave.PlaybackState.Playing;
         public void Stop()
         {
+            if (PlaybackState != NAudio.Wave.PlaybackState.Playing) { return; }
             entered.Set();
             if (!release.Wait(TimeSpan.FromSeconds(10))) { throw new TimeoutException(); }
             PlaybackState = NAudio.Wave.PlaybackState.Stopped;

@@ -86,7 +86,7 @@ public sealed class MainForm : Form
     private ToolStripMenuItem _preflightResultsMenuItem = null!;
     private ToolStripMenuItem? _runningPreflightMenuItem;
     private SoundCheckResult? _preflightResult;
-    private bool _preflightUserCancelled;
+    private const string PreflightCancelling = "中止中（現在のファイルの処理が終わるまで待機）";
     private ToolStripButton _cancelDiagnosticButton = null!;
     private (DateTimeOffset WallTime, long Timestamp)? _previousClockTick;
     private bool _systemSuspended;
@@ -1623,9 +1623,7 @@ public sealed class MainForm : Form
     {
         if (_preflightCancellation is not null)
         {
-            _preflightUserCancelled = true;
             CancelSoundPreflight();
-            SetStatus("中止中（現在のファイルの処理が終わるまで待機）", false);
             return;
         }
         if (_manualEmergencyStopping || _projectOperationInProgress || _diagnosticCancellation is not null
@@ -1640,7 +1638,6 @@ public sealed class MainForm : Form
 
         using var cancellation = new CancellationTokenSource();
         _preflightCancellation = cancellation;
-        _preflightUserCancelled = false;
         _preflightResult = null;
         _preflightResultsMenuItem.Enabled = false;
         _runningPreflightMenuItem = mode == SoundCheckMode.Read ? _preflightMenuItem : _decodeCheckMenuItem;
@@ -1671,7 +1668,7 @@ public sealed class MainForm : Form
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
-            if (_preflightUserCancelled && !IsDisposed && !Disposing)
+            if (!IsDisposed && !Disposing && !_cleanupCompleted && _statusLabel.Text == PreflightCancelling)
             {
                 SetStatus("音源の確認を中止しました。", false);
             }
@@ -1698,6 +1695,7 @@ public sealed class MainForm : Form
             menu.Text = "中止中（処理の終了待ち）";
             menu.Enabled = false;
         }
+        if (!IsDisposed && !Disposing && !_cleanupCompleted) { SetStatus(PreflightCancelling, false); }
     }
 
     private void ShowSoundPreflightResult()
