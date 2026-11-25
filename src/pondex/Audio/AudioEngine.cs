@@ -25,6 +25,7 @@ public sealed class AudioEngine : IAudioEngine
     private readonly Func<int, ISampleProvider, IAudioOutput> _outputFactory;
     private readonly IFadePolicy _fadePolicy;
     private readonly Func<SoundDefinition, string, WaveFormat, Action, SoundInstance>? _prepareSound;
+    private int _emergencyStopRequested;
     private readonly PlaybackStartDiagnostics _startDiagnostics = new();
     private MixingSampleProvider _mixer;
     private VolumeSampleProvider _masterVolumeProvider;
@@ -216,13 +217,25 @@ public sealed class AudioEngine : IAudioEngine
         CancellationToken cancellationToken = default) =>
         StartPlaybackMeasuredAsync(sound, resolvedPath, verifyOutput, null, cancellationToken);
 
-    internal async Task<PlaybackStartResult> StartPlaybackMeasuredAsync(
+    internal Task<PlaybackStartResult> StartPlaybackMeasuredAsync(
         SoundDefinition sound, string resolvedPath, Func<CancellationToken, Task>? verifyOutput,
         OperationTiming? trace, CancellationToken cancellationToken = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(resolvedPath);
+        return StartPlaybackCoreAsync(sound, resolvedPath, null, verifyOutput, trace, cancellationToken);
+    }
+
+    internal Task<PlaybackStartResult> StartProjectPlaybackAsync(
+        SoundDefinition sound, string storedPath, Func<string> resolvePath,
+        Func<CancellationToken, Task>? verifyOutput, OperationTiming? trace) =>
+        StartPlaybackCoreAsync(sound, storedPath, resolvePath, verifyOutput, trace, CancellationToken.None);
+
+    private async Task<PlaybackStartResult> StartPlaybackCoreAsync(
+        SoundDefinition sound, string path, Func<string>? resolvePath, Func<CancellationToken, Task>? verifyOutput,
+        OperationTiming? trace, CancellationToken cancellationToken)
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(sound);
-        ArgumentException.ThrowIfNullOrWhiteSpace(resolvedPath);
         var timingRequest = _startDiagnostics.Begin(sound.Id);
         var reportHere = trace is null;
         trace ??= _logger.DetailedLoggingEnabled || timingRequest.Attempt > 0 ? new OperationTiming() : null;
@@ -240,6 +253,11 @@ public sealed class AudioEngine : IAudioEngine
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+            if (Volatile.Read(ref _emergencyStopRequested) != 0)
+            {
+                SetOutcome("emergency_stop");
+                return PlaybackStartResult.Cancelled;
+            }
             requestVersion = NextOperationVersion(sound.Id);
             preparationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             _preparationCancellations[sound.Id] = preparationCancellation;
@@ -252,7 +270,7 @@ public sealed class AudioEngine : IAudioEngine
         Interlocked.Increment(ref _preparationRequests);
         if (_logger.DetailedLoggingEnabled)
         {
-            _logger.Debug($"play requested: sound={sound.Id} request={requestVersion} trace={trace?.Id:N} path={resolvedPath}");
+            _logger.Debug($"play requested: sound={sound.Id} request={requestVersion} trace={trace?.Id:N} path={path}");
             LogSoundSettings(sound);
         }
 
@@ -293,9 +311,17 @@ public sealed class AudioEngine : IAudioEngine
                     try
                     {
                         using var measurement = trace?.Measure("prepare");
+                        var resolvedPath = path;
+                        if (resolvePath is not null)
+                        {
+                            using var pathTiming = trace?.Measure("resolve_path");
+                            resolvedPath = resolvePath();
+                            token.ThrowIfCancellationRequested();
+                        }
+
                         void Completed() => QueueNaturalCompletion(sound.Id, completionInstance);
                         var result = _prepareSound is null
-                            ? SoundInstance.CreateMeasured(sound, resolvedPath, MixerFormat, Completed, trace)
+                            ? SoundInstance.CreateMeasured(sound, resolvedPath, MixerFormat, Completed, trace, resolvePath is not null)
                             : _prepareSound(sound, resolvedPath, MixerFormat, Completed);
                         Interlocked.Increment(ref _preparationCompleted);
                         return result;
@@ -343,8 +369,8 @@ public sealed class AudioEngine : IAudioEngine
                     return PlaybackStartResult.Cancelled;
                 }
 
-                if (!_soundOperationVersions.TryGetValue(sound.Id, out var currentVersion)
-                    || currentVersion != requestVersion)
+                var currentVersion = _soundOperationVersions.GetValueOrDefault(sound.Id);
+                if (Volatile.Read(ref _emergencyStopRequested) != 0 || currentVersion != requestVersion)
                 {
                     Interlocked.Increment(ref _preparationDiscarded);
                     if (_logger.DetailedLoggingEnabled) { _logger.Debug($"play discarded: sound={sound.Id} request={requestVersion} current_request={currentVersion} reason=superseded"); }
@@ -460,6 +486,16 @@ public sealed class AudioEngine : IAudioEngine
         }
     }
 
+    internal async Task RunPreflightDecodeAsync(Action decode, CancellationToken cancellationToken)
+    {
+        await _preparationSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await Task.Run(decode, cancellationToken).ConfigureAwait(false);
+        }
+        finally { _preparationSlots.Release(); }
+    }
+
     internal void CancelPendingPlayback(Guid soundId)
     {
         lock (_sync) { NextOperationVersion(soundId); }
@@ -561,6 +597,16 @@ public sealed class AudioEngine : IAudioEngine
 
             StopOutputWhenIdle();
         }
+    }
+
+    internal Task RequestEmergencyStopAsync()
+    {
+        Interlocked.Exchange(ref _emergencyStopRequested, 1);
+        return Task.Run(() =>
+        {
+            try { EmergencyStopAll(); }
+            finally { Interlocked.Exchange(ref _emergencyStopRequested, 0); }
+        });
     }
 
     public void EmergencyStopAll()

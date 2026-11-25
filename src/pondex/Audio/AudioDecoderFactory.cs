@@ -8,62 +8,43 @@ namespace pondex.Audio;
 
 internal static class AudioDecoderFactory
 {
-    public static WaveStream Open(string path, OperationTiming? timing = null)
+    public static WaveStream Open(string path, OperationTiming? timing = null, bool alreadyResolved = false)
     {
         string safePath;
         using (timing?.Measure("decoder_path"))
         {
-            safePath = ProjectPath.GetSafeFullPath(path, "音源パス");
-            if (!File.Exists(safePath)) { throw new FileNotFoundException("音声ファイルが見つかりません。", safePath); }
+            safePath = alreadyResolved ? path : ProjectPath.GetSafeFullPath(path, "音源パス");
         }
 
         using var open = timing?.Measure("decoder_open_init");
-
-        return Path.GetExtension(safePath).ToLowerInvariant() switch
-        {
-            ".wav" => OpenOwned(safePath, static stream => new WaveFileReader(stream)),
-            ".mp3" => OpenOwned(safePath, static stream => new ManagedMpegStream(stream, closeOnDispose: false)),
-            ".ogg" => OpenOgg(safePath),
-            ".opus" => new OpusWaveReader(safePath),
-            ".aif" or ".aiff" => OpenOwned(safePath, static stream => new AiffFileReader(stream)),
-            ".flac" or ".m4a" or ".aac" or ".wma" => new MediaFoundationReader(safePath),
-            _ => throw new NotSupportedException($"未対応の音声形式です: {Path.GetExtension(safePath)}")
-        };
-    }
-
-    private static WaveStream OpenOgg(string path)
-    {
-        var header = OggIdentification.ReadPacket(path);
-        if (header.AsSpan().StartsWith("OpusHead"u8))
-        {
-            return new OpusWaveReader(path);
-        }
-
-        if (!header.AsSpan().StartsWith("\x01vorbis"u8))
-        {
-            throw new NotSupportedException("Oggコンテナ内の音声形式を判別できません。VorbisまたはOpusを指定してください。");
-        }
-
-        return OpenOwned(path, static stream => new VorbisWaveReader(stream, closeOnDispose: false));
-    }
-
-    private static OwnedWaveStream OpenOwned(string path, Func<Stream, WaveStream> factory)
-    {
-        var stream = new FileStream(
-            path,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read | FileShare.Delete,
-            bufferSize: 64 * 1024,
-            FileOptions.SequentialScan);
+        var stream = ProjectPath.OpenVerifiedRead(safePath);
         try
         {
-            return new OwnedWaveStream(factory(stream), stream);
+            var decoder = Path.GetExtension(safePath).ToLowerInvariant() switch
+            {
+                ".wav" => new WaveFileReader(stream),
+                ".mp3" => new ManagedMpegStream(stream, closeOnDispose: false),
+                ".ogg" => OpenOgg(stream),
+                ".opus" => new OpusWaveReader(stream),
+                ".aif" or ".aiff" => new AiffFileReader(stream),
+                ".flac" or ".m4a" or ".aac" or ".wma" => new StreamMediaFoundationReader(stream),
+                _ => throw new NotSupportedException($"未対応の音声形式です: {Path.GetExtension(safePath)}")
+            };
+            return new OwnedWaveStream(decoder, stream);
         }
         catch
         {
             stream.Dispose();
             throw;
         }
+    }
+
+    private static WaveStream OpenOgg(Stream stream)
+    {
+        var header = OggIdentification.ReadPacket(stream);
+        stream.Position = 0;
+        if (header.AsSpan().StartsWith("OpusHead"u8)) { return new OpusWaveReader(stream, header); }
+        if (header.AsSpan().StartsWith("\x01vorbis"u8)) { return new VorbisWaveReader(stream, closeOnDispose: false); }
+        throw new NotSupportedException("Oggコンテナ内の音声形式を判別できません。VorbisまたはOpusを指定してください。");
     }
 }

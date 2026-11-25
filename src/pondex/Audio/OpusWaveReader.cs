@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using Concentus.Structs;
 using Concentus.Oggfile;
 using NAudio.Wave;
+using pondex.Project;
 
 namespace pondex.Audio;
 
@@ -10,12 +11,11 @@ internal sealed class OpusWaveReader : WaveStream
     private const int SampleRate = 48_000;
     private static ReadOnlySpan<byte> OpusHeaderSignature => "OpusHead"u8;
 
-    private readonly string _path;
+    private readonly Stream _stream;
     private readonly int _channels;
     private readonly int _preSkipFrames;
     private readonly double _outputGain;
     private readonly long _length;
-    private FileStream? _stream;
     private Concentus.Structs.OpusDecoder? _decoder;
     private OpusOggReadStream? _reader;
     private byte[]? _packetBytes;
@@ -25,15 +25,15 @@ internal sealed class OpusWaveReader : WaveStream
     private bool _disposed;
     private byte[]? _pendingPacket;
 
-    public OpusWaveReader(string path)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        _path = Path.GetFullPath(path);
-        (_channels, _preSkipFrames, _outputGain) = ReadIdentificationHeader(_path);
-        WaveFormat = new WaveFormat(SampleRate, 16, _channels);
+    public OpusWaveReader(string path) : this(ProjectPath.OpenVerifiedRead(ProjectPath.GetSafeFullPath(path))) { }
 
+    internal OpusWaveReader(Stream stream, byte[]? header = null)
+    {
+        _stream = stream;
         try
         {
+            (_channels, _preSkipFrames, _outputGain) = ReadIdentificationHeader(header ?? OggIdentification.ReadPacket(stream));
+            WaveFormat = new WaveFormat(SampleRate, 16, _channels);
             OpenReader();
             var granuleFrames = _reader!.GranuleCount;
             if (granuleFrames <= _preSkipFrames)
@@ -46,7 +46,8 @@ internal sealed class OpusWaveReader : WaveStream
         }
         catch
         {
-            DisposeReader();
+            try { DisposeReader(); }
+            finally { _stream.Dispose(); }
             throw;
         }
     }
@@ -113,15 +114,15 @@ internal sealed class OpusWaveReader : WaveStream
         if (disposing && !_disposed)
         {
             _disposed = true;
-            DisposeReader();
+            try { DisposeReader(); }
+            finally { _stream.Dispose(); }
         }
 
         base.Dispose(disposing);
     }
 
-    private static (int Channels, int PreSkipFrames, double OutputGain) ReadIdentificationHeader(string path)
+    private static (int Channels, int PreSkipFrames, double OutputGain) ReadIdentificationHeader(byte[] buffer)
     {
-        var buffer = OggIdentification.ReadPacket(path);
         if (buffer.Length < 19 || !buffer.AsSpan().StartsWith(OpusHeaderSignature))
         {
             throw new InvalidDataException("Ogg Opus識別ヘッダーが見つかりません。");
@@ -243,30 +244,22 @@ internal sealed class OpusWaveReader : WaveStream
 
     private void OpenReader()
     {
-        FileStream? stream = null;
         Concentus.Structs.OpusDecoder? decoder = null;
         OpusOggReadStream? reader = null;
         try
         {
-            stream = new FileStream(
-                _path,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read | FileShare.Delete,
-                bufferSize: 64 * 1024,
-                FileOptions.RandomAccess);
+            _stream.Position = 0;
             // The recommended factory probes native DLLs in the working directory.
             // This offline distribution deliberately uses the managed decoder only.
 #pragma warning disable CS0618
             decoder = new Concentus.Structs.OpusDecoder(SampleRate, _channels);
 #pragma warning restore CS0618
-            reader = new OpusOggReadStream(decoder, stream);
+            reader = new OpusOggReadStream(decoder, new ReaderView(_stream));
             if (!reader.HasNextPacket && !string.IsNullOrWhiteSpace(reader.LastError))
             {
                 throw new InvalidDataException($"Ogg Opus音源を初期化できません: {reader.LastError}");
             }
 
-            _stream = stream;
             _decoder = decoder;
             _reader = reader;
         }
@@ -274,7 +267,6 @@ internal sealed class OpusWaveReader : WaveStream
         {
             reader?.Close();
             decoder?.Dispose();
-            stream?.Dispose();
             throw;
         }
     }
@@ -293,7 +285,21 @@ internal sealed class OpusWaveReader : WaveStream
         _reader = null;
         _decoder?.Dispose();
         _decoder = null;
-        _stream?.Dispose();
-        _stream = null;
+    }
+
+    // Concentus closes each container reader. Keep the verified file open through seeks.
+    private sealed class ReaderView(Stream source) : Stream
+    {
+        public override bool CanRead => source.CanRead;
+        public override bool CanSeek => source.CanSeek;
+        public override bool CanWrite => false;
+        public override long Length => source.Length;
+        public override long Position { get => source.Position; set => source.Position = value; }
+        public override int Read(byte[] buffer, int offset, int count) => source.Read(buffer, offset, count);
+        public override int Read(Span<byte> buffer) => source.Read(buffer);
+        public override long Seek(long offset, SeekOrigin origin) => source.Seek(offset, origin);
+        public override void Flush() { }
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
     }
 }

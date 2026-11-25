@@ -4,10 +4,8 @@ internal static class OggIdentification
 {
     // Only the first identification packet is needed. Never search comments or audio
     // payloads for signatures, and bound work on an untrusted container header.
-    internal static byte[] ReadPacket(string path)
+    internal static byte[] ReadPacket(Stream stream)
     {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
-            FileShare.Read | FileShare.Delete);
         Span<byte> header = stackalloc byte[27];
         stream.ReadExactly(header);
         if (!header[..4].SequenceEqual("OggS"u8) || header[4] != 0 || (header[5] & 3) != 2)

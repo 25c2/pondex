@@ -153,6 +153,7 @@ public sealed class TriggerDialog : Form
         Definition.Action = action;
         Definition.TargetSoundId = target.SoundId ?? Guid.Empty;
         Definition.TargetGroup = target.Group ?? string.Empty;
+        Definition.TargetGroupOnHold = false;
         Definition.Parameters = new TriggerParameters
         {
             ExtensionData = Definition.Parameters.ExtensionData,

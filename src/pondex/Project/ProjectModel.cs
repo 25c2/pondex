@@ -174,6 +174,9 @@ public sealed class TriggerDefinition
     public Guid TargetSoundId { get; set; }
 
     public string TargetGroup { get; set; } = string.Empty;
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool TargetGroupOnHold { get; set; }
 }
 
 public sealed class TriggerParameters

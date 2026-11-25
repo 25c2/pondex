@@ -117,6 +117,10 @@ internal static class Program
             }
 
             Application.Run(mainForm);
+            if (!uiPreferences.PendingHeaderWrite.Wait(TimeSpan.FromSeconds(1)))
+            {
+                logger.Warning("終了までにヘッダー設定の書き込みが完了しませんでした。");
+            }
             return 0;
         }
         catch (Exception exception)

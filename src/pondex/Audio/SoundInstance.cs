@@ -70,9 +70,9 @@ internal sealed class SoundInstance : IDisposable
         Action completed) => CreateMeasured(definition, path, mixerFormat, completed, null);
 
     internal static SoundInstance CreateMeasured(SoundDefinition definition, string path, WaveFormat mixerFormat,
-        Action completed, OperationTiming? timing)
+        Action completed, OperationTiming? timing, bool alreadyResolved = false)
     {
-        var decoder = AudioDecoderFactory.Open(path, timing);
+        var decoder = AudioDecoderFactory.Open(path, timing, alreadyResolved);
         using var pipeline = timing?.Measure("pipeline");
         return Create(definition, decoder, mixerFormat, completed);
     }

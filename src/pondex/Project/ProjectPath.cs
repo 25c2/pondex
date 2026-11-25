@@ -1,3 +1,7 @@
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
 namespace pondex.Project;
 
 public enum ProjectPathKind
@@ -71,6 +75,48 @@ public static class ProjectPath
         EnsureNotRemoteOrDevice(path, displayName);
         return ResolveLocalLinks(Path.GetFullPath(path), displayName, 0);
     }
+
+    internal static FileStream OpenVerifiedRead(string resolvedPath, int bufferSize = 64 * 1024,
+        FileOptions options = FileOptions.None)
+    {
+        var stream = new FileStream(resolvedPath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, bufferSize, options);
+        try
+        {
+            var finalPath = OperatingSystem.IsWindows()
+                ? GetWindowsFilePath(stream.SafeFileHandle) : GetSafeFullPath(resolvedPath, "音源パス");
+            if (!string.Equals(finalPath, resolvedPath,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("開いた音源の参照先が変わりました。「参照…」で選び直してください。");
+            }
+            return stream;
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+    }
+
+    private static string GetWindowsFilePath(SafeFileHandle handle)
+    {
+        var buffer = new char[512];
+        var length = GetFinalPathNameByHandle(handle, buffer, (uint)buffer.Length, 0);
+        if (length >= buffer.Length && length <= 32768)
+        {
+            buffer = new char[length];
+            length = GetFinalPathNameByHandle(handle, buffer, (uint)buffer.Length, 0);
+        }
+        if (length == 0 || length >= buffer.Length)
+        {
+            throw new IOException("開いた音源のパスを確認できません。", new Win32Exception(Marshal.GetLastWin32Error()));
+        }
+        var finalPath = new string(buffer, 0, (int)length);
+        return finalPath.StartsWith(@"\\?\", StringComparison.Ordinal) ? finalPath[4..] : finalPath;
+    }
+
+    [DllImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", ExactSpelling = true, SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern uint GetFinalPathNameByHandle(SafeFileHandle handle, [Out] char[] path, uint capacity, uint flags);
 
     public static bool IsRemoteOrDevice(string path)
     {

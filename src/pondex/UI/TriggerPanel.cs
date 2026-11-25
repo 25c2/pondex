@@ -87,7 +87,7 @@ public sealed class TriggerPanel : UserControl
                 return;
             }
 
-            if (_editingLocked)
+            if (_editingLocked || row.Definition.TargetGroupOnHold)
             {
                 _refreshing = true;
                 try
@@ -210,6 +210,11 @@ public sealed class TriggerPanel : UserControl
             return;
         }
 
+        if (selected.TargetGroupOnHold)
+        {
+            MessageBox.Show(this, "保留中のイベントは「編集」で対象を選び直してください。", "イベントトリガ");
+            return;
+        }
         selected.Enabled = !selected.Enabled;
         Changed();
     }
@@ -295,7 +300,7 @@ public sealed class TriggerPanel : UserControl
             Memo = memo;
             Condition = condition;
             Action = action;
-            Target = target;
+            Target = definition.TargetGroupOnHold ? $"{target}（保留）" : target;
         }
 
         public TriggerDefinition Definition { get; }

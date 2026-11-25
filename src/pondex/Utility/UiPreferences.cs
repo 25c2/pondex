@@ -4,6 +4,50 @@ namespace pondex.Utility;
 
 internal sealed class UiPreferences(string directory)
 {
+    private readonly object _headerSync = new();
+    private int? _nextHeaderHeight;
+    private long _headerVersion;
+    private Task? _headerWrite;
+
+    internal Task PendingHeaderWrite
+    {
+        get { lock (_headerSync) { return _headerWrite ?? Task.CompletedTask; } }
+    }
+
+    internal void QueueHeaderHeight(int? value, Action<Exception> onFailure)
+    {
+        lock (_headerSync)
+        {
+            _nextHeaderHeight = value;
+            _headerVersion++;
+            _headerWrite ??= Task.Run(() => WriteLatestHeaderHeightAsync(onFailure));
+        }
+    }
+
+    private async Task WriteLatestHeaderHeightAsync(Action<Exception> onFailure)
+    {
+        while (true)
+        {
+            long version;
+            lock (_headerSync) { version = _headerVersion; }
+            await Task.Delay(180).ConfigureAwait(false);
+            int? height;
+            lock (_headerSync)
+            {
+                if (version != _headerVersion) { continue; }
+                height = _nextHeaderHeight;
+            }
+            try { SaveHeaderHeight(height); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { onFailure(exception); }
+            lock (_headerSync)
+            {
+                if (version != _headerVersion) { continue; }
+                _headerWrite = null;
+                return;
+            }
+        }
+    }
+
     internal int? HeaderHeight
     {
         get => Read<int>("header-height.json") is >= 1 and <= 4096 and var height ? height : null;

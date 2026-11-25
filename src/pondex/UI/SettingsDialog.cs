@@ -66,10 +66,10 @@ public sealed class SettingsDialog : Form
         _deviceCombo = new ComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
-            DisplayMember = nameof(AudioDeviceInfo.Name),
-            ValueMember = nameof(AudioDeviceInfo.DeviceNumber),
+            DisplayMember = nameof(DeviceChoice.DisplayName),
+            ValueMember = nameof(DeviceChoice.DeviceNumber),
             Dock = DockStyle.Fill,
-            DataSource = devices.ToList()
+            DataSource = GetDeviceChoices(devices)
         };
         var selectedDevice = AudioDeviceManager.FindConfiguredDevice(devices, settings.OutputDevice)
             ?? AudioDeviceInfo.Default;
@@ -230,7 +230,7 @@ public sealed class SettingsDialog : Form
             _outputRefreshFailed = false;
             if (changed)
             {
-                _deviceCombo.DataSource = snapshot.Devices.ToList();
+                _deviceCombo.DataSource = GetDeviceChoices(snapshot.Devices);
                 _deviceCombo.SelectedIndex = -1;
                 OutputSelectionExplicit = false;
                 _requireOutputSelection = true;
@@ -255,6 +255,17 @@ public sealed class SettingsDialog : Form
                 UpdateOutputConfirmation();
             }
         }
+    }
+
+    private sealed record DeviceChoice(int DeviceNumber, string DisplayName);
+
+    private static DeviceChoice[] GetDeviceChoices(IReadOnlyList<AudioDeviceInfo> devices)
+    {
+        var duplicateNames = devices.GroupBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() > 1).Select(group => group.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return devices.Select(device => new DeviceChoice(device.DeviceNumber,
+            device.DeviceNumber >= 0 && duplicateNames.Contains(device.Name)
+                ? $"{device.Name}（番号 {device.DeviceNumber}）" : device.Name)).ToArray();
     }
 
     private void UpdateOutputConfirmation()

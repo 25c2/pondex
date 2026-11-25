@@ -203,8 +203,9 @@ internal static class UiTheme
             status.BorderSides = darkMode ? ToolStripStatusLabelBorderSides.None : ToolStripStatusLabelBorderSides.Top;
         }
 
-        item.BackColor = darkMode ? DarkSurface : SystemColors.Control;
-        item.ForeColor = darkMode ? DarkForeground : SystemColors.ControlText;
+        var danger = item.Tag as string == DangerButtonRole;
+        item.BackColor = danger ? Color.FromArgb(175, 42, 48) : darkMode ? DarkSurface : SystemColors.Control;
+        item.ForeColor = danger ? Color.White : darkMode ? DarkForeground : SystemColors.ControlText;
         if (item is ToolStripDropDownItem dropDown)
         {
             ApplyToolStrip(dropDown.DropDown, darkMode);

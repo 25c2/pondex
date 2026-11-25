@@ -112,7 +112,8 @@ public sealed class TriggerEngine
     {
         lock (_sync)
         {
-            _originals = triggers.ToDictionary(trigger => Snapshot(trigger), trigger => trigger);
+            _originals = triggers.Where(trigger => !trigger.TargetGroupOnHold)
+                .ToDictionary(Snapshot, trigger => trigger);
             _triggers = _originals.Keys.ToArray();
             _dispatchGeneration++;
             if (!preserveRuntimeState)
@@ -129,7 +130,7 @@ public sealed class TriggerEngine
             }
 
             var triggerIds = triggers
-                .Where(trigger => trigger.Enabled)
+                .Where(trigger => trigger.Enabled && !trigger.TargetGroupOnHold)
                 .Select(trigger => trigger.Id)
                 .ToHashSet();
             _latchedTriggers.RemoveWhere(triggerId => !triggerIds.Contains(triggerId));

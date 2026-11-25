@@ -1,11 +1,16 @@
+using NAudio.Wave;
 using pondex.Audio;
 using pondex.Project;
 using pondex.Utility;
+using pondex.Trigger;
 
 namespace pondex.Tests;
 
 public sealed class Beta9FeedbackTests
 {
+    private static readonly string[] UnreadableNames = ["changed", "empty", "missing"];
+    private static readonly string[] UndecodableNames = ["non-audio", "changed", "empty", "missing"];
+
     [Theory]
     [InlineData(96)]
     [InlineData(120)]
@@ -92,28 +97,132 @@ public sealed class Beta9FeedbackTests
     }
 
     [Fact]
-    public void Preflight_UsesApprovedPathAndReportsMissingEmptyOrCancelled()
+    public async Task Preflight_SeparatesReadingFromDecodingAndIdentifiesFailures()
     {
         using var directory = new TestDirectory();
+        var wave = directory.GetPath("valid.wav");
+        using (var writer = new WaveFileWriter(wave, WaveFormat.CreateIeeeFloatWaveFormat(44100, 1)))
+        {
+            writer.WriteSample(0.05F);
+        }
         var readable = directory.GetPath("readable.wav");
         var empty = directory.GetPath("empty.wav");
-        File.WriteAllBytes(readable, [10, 20, 30]);
-        File.WriteAllBytes(empty, []);
-        PlaybackPath[] paths =
+        await File.WriteAllBytesAsync(readable, [10, 20, 30]);
+        await File.WriteAllBytesAsync(empty, []);
+        (string Name, PlaybackPath Path)[] sources =
         [
-            new(readable, null, readable),
-            new(readable, null, empty),
-            new(empty, null, empty),
-            new(directory.GetPath("missing.wav"), null, null)
+            ("valid", new(wave, null, wave)),
+            ("non-audio", new(readable, null, readable)),
+            ("changed", new(readable, null, empty)),
+            ("empty", new(empty, null, empty)),
+            ("missing", new(directory.GetPath("missing.wav"), null, null))
         ];
         var progress = new InlineProgress();
-        Assert.Equal(3, SoundPreflight.Check(paths, progress, CancellationToken.None));
-        Assert.Equal(paths.Length, progress.Last);
-        Assert.Equal(new byte[] { 10, 20, 30 }, File.ReadAllBytes(readable));
+        var read = await SoundPreflight.CheckAsync(sources, SoundCheckMode.Read, progress, CancellationToken.None);
+        Assert.Equal(UnreadableNames, read.Failures.Select(failure => failure.Name));
+        Assert.Contains("空", read.Failures[1].Reason);
+        Assert.Contains("見つかりません", read.Failures[2].Reason);
+        Assert.Equal(sources.Length, progress.Last);
 
+        var decode = await SoundPreflight.CheckAsync(sources, SoundCheckMode.Decode, null, CancellationToken.None);
+        Assert.Equal(UndecodableNames, decode.Failures.Select(failure => failure.Name));
+        Assert.Equal(new byte[] { 10, 20, 30 }, await File.ReadAllBytesAsync(readable));
+    }
+
+    [Fact]
+    public async Task CancellingPreflight_DoesNotReturnResultsBeforeRunningCheckExits()
+    {
+        var active = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var cancellation = new CancellationTokenSource();
+        var check = SoundPreflight.CheckAsync([("blocked", default)], SoundCheckMode.Decode, null, cancellation.Token,
+            async (_, _) =>
+            {
+                active.SetResult();
+                await release.Task;
+            });
+        await active.Task.WaitAsync(TimeSpan.FromSeconds(5));
         cancellation.Cancel();
-        Assert.Throws<OperationCanceledException>(() => SoundPreflight.Check(paths, null, cancellation.Token));
+        Assert.False(check.IsCompleted);
+        release.SetResult();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await check);
+    }
+
+    [Fact]
+    public async Task SaveAs_RejectsChangedOrNewlyCreatedDestinationAfterApproval()
+    {
+        using var directory = new TestDirectory();
+        var target = directory.GetPath("existing.pondex");
+        var newTarget = directory.GetPath("new.pondex");
+        var serializer = new ProjectSerializer();
+        using var manager = new ProjectManager(serializer);
+        await serializer.SaveAsync(target, new ProjectModel { Project = new ProjectMetadata { Name = "old" } });
+        var approvedOld = await ProjectSaveDestination.CaptureAsync(target);
+        var approvedNew = await ProjectSaveDestination.CaptureAsync(newTarget);
+        await serializer.SaveAsync(target, new ProjectModel { Project = new ProjectMetadata { Name = "other window" } });
+        await serializer.SaveAsync(newTarget, new ProjectModel { Project = new ProjectMetadata { Name = "new owner" } });
+
+        await Assert.ThrowsAsync<IOException>(() => manager.SaveAsAsync(approvedOld, null));
+        await Assert.ThrowsAsync<IOException>(() => manager.SaveAsAsync(approvedNew, null));
+        Assert.Equal("other window", (await serializer.LoadAsync(target)).Project.Name);
+        Assert.Equal("new owner", (await serializer.LoadAsync(newTarget)).Project.Name);
+        Assert.Null(manager.CurrentPath);
+
+        await manager.SaveAsAsync(await ProjectSaveDestination.CaptureAsync(target), null);
+        Assert.Equal(target, manager.CurrentPath);
+    }
+
+    [Fact]
+    public async Task HeldGroupEvent_ReloadsWithoutWarningsAndNeedsExplicitRepair()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("show.pondex");
+        var serializer = new ProjectSerializer();
+        var source = new ProjectModel();
+        source.Triggers.Add(new TriggerDefinition
+        {
+            Enabled = true,
+            TargetGroup = "old",
+            TargetGroupOnHold = true,
+            TriggerType = TriggerType.StopwatchElapsed,
+            Parameters = new TriggerParameters { Elapsed = TimeSpan.Zero }
+        });
+        await serializer.SaveAsync(path, source);
+        using var manager = new ProjectManager(serializer);
+        Assert.True(await manager.OpenAsync(path, (_, _) => true));
+        Assert.False(manager.RequiresSaveAs);
+        var trigger = Assert.Single(manager.Current.Triggers);
+        Assert.True(trigger.TargetGroupOnHold);
+        Assert.False(trigger.Enabled);
+        var runtime = new TriggerEngine();
+        var now = DateTimeOffset.Now;
+        trigger.Enabled = true;
+        runtime.SetTriggers(manager.Current.Triggers);
+        Assert.Empty(runtime.Tick(now, TimeSpan.Zero, true));
+
+        trigger.TargetGroup = "new";
+        trigger.TargetGroupOnHold = false;
+        manager.Current.Sounds.Add(new SoundDefinition { Group = "new", File = "cue.wav" });
+        manager.MarkDirty();
+        runtime.SetTriggers(manager.Current.Triggers);
+        Assert.Single(runtime.Tick(now, TimeSpan.Zero, true));
+        await manager.SaveAsync();
+        Assert.False((await serializer.LoadAsync(path)).Triggers[0].TargetGroupOnHold);
+    }
+
+    [Fact]
+    public async Task HeaderPreferenceQueue_PersistsLatestHeightAndReset()
+    {
+        using var directory = new TestDirectory();
+        var preferences = new UiPreferences(directory.Path);
+        static void Fail(Exception error) => throw new InvalidOperationException("UI preference write failed", error);
+        preferences.QueueHeaderHeight(190, Fail);
+        preferences.QueueHeaderHeight(200, Fail);
+        await preferences.PendingHeaderWrite.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Equal(200, preferences.HeaderHeight);
+        preferences.QueueHeaderHeight(null, Fail);
+        await preferences.PendingHeaderWrite.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Null(preferences.HeaderHeight);
     }
 
     [Fact]

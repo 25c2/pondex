@@ -207,6 +207,21 @@ public sealed class AudioAuditRegressionTests
     }
 
     [Fact]
+    public void OpusSeek_ReusesTheOpenedFileAfterItsNameIsReplaced()
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("tone.opus");
+        File.WriteAllBytes(path, Convert.FromBase64String(AudioSelfTestFixtures.OpusBase64));
+        using var decoder = AudioDecoderFactory.Open(path);
+        var expected = ReadBytes(decoder);
+        File.Move(path, directory.GetPath("original.opus"));
+        File.WriteAllBytes(path, [1, 2, 3]);
+
+        decoder.Position = 0;
+        Assert.Equal(expected, ReadBytes(decoder));
+    }
+
+    [Fact]
     public void Opus_HeaderGainIsAppliedAndInvalidLengthDoesNotLeakFile()
     {
         using var directory = new TestDirectory();

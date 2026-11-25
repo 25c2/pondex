@@ -155,7 +155,8 @@ public sealed class ProjectManager : IDisposable
             }
 
             LastSaveResult = null;
-            LastSaveResult = await SaveWithRevisionAsync(currentPath, snapshot, current.FileRevision, timing, cancellationToken).ConfigureAwait(true);
+            var destination = new ProjectSaveDestination(currentPath, current.FileRevision);
+            LastSaveResult = await SaveWithRevisionAsync(destination, snapshot, timing, cancellationToken).ConfigureAwait(true);
 
             var changed = false;
             lock (_stateLock)
@@ -185,6 +186,16 @@ public sealed class ProjectManager : IDisposable
 
     internal async Task SaveAsAsync(string path, OperationTiming? timing, CancellationToken cancellationToken = default)
     {
+        ProjectSaveDestination destination;
+        using (timing?.Measure("destination_path"))
+        {
+            destination = await ProjectSaveDestination.CaptureAsync(path, cancellationToken).ConfigureAwait(true);
+        }
+        await SaveAsAsync(destination, timing, cancellationToken).ConfigureAwait(true);
+    }
+
+    internal async Task SaveAsAsync(ProjectSaveDestination destination, OperationTiming? timing, CancellationToken cancellationToken = default)
+    {
         using (timing?.Measure("operation_gate"))
         {
             await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(true);
@@ -207,11 +218,7 @@ public sealed class ProjectManager : IDisposable
                 using (timing?.Measure("snapshot")) { snapshot = _serializer.CreateSnapshot(current); }
             }
 
-            string newPath;
-            using (timing?.Measure("destination_path"))
-            {
-                newPath = await Task.Run(() => ProjectPath.GetSafeFullPath(path, "保存先パス"), cancellationToken).ConfigureAwait(true);
-            }
+            var newPath = destination.Path;
             lock (_stateLock) { EnsureSafeSavePath(newPath); }
 
             using (timing?.Measure("rebase_paths"))
@@ -230,8 +237,11 @@ public sealed class ProjectManager : IDisposable
 
             LastSaveResult = null;
             var sameDestination = string.Equals(newPath, oldPath, StringComparison.OrdinalIgnoreCase);
-            LastSaveResult = await SaveWithRevisionAsync(newPath, snapshot,
-                sameDestination ? revision : null, timing, cancellationToken).ConfigureAwait(true);
+            if (sameDestination && !string.Equals(revision, destination.Revision, StringComparison.Ordinal))
+            {
+                throw new IOException("別のウィンドウまたはアプリがプロジェクトを変更しました。変更を残すには別の名前で保存してください。");
+            }
+            LastSaveResult = await SaveWithRevisionAsync(destination, snapshot, timing, cancellationToken).ConfigureAwait(true);
 
             var changed = false;
             lock (_stateLock)
@@ -267,9 +277,10 @@ public sealed class ProjectManager : IDisposable
         }
     }
 
-    private Task<ProjectSaveResult> SaveWithRevisionAsync(string path, ProjectModel snapshot, string? expectedRevision,
+    private Task<ProjectSaveResult> SaveWithRevisionAsync(ProjectSaveDestination destination, ProjectModel snapshot,
         OperationTiming? timing, CancellationToken cancellationToken) => Task.Run(() =>
     {
+        var path = destination.Path;
         // Use the canonical destination so separate instances cannot both pass
         // a revision check and then replace the same file.
         var lockId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
@@ -293,28 +304,13 @@ public sealed class ProjectManager : IDisposable
                 catch (AbandonedMutexException) { acquired = true; }
             }
             if (!acquired) { throw new IOException("別のウィンドウが保存中です。時間をおいてやり直してください。"); }
-            using (timing?.Measure("revision_check"))
-            {
-                if (expectedRevision is not null && !MatchesRevision(path, expectedRevision))
-                {
-                    throw new IOException("別のウィンドウまたはアプリがプロジェクトを変更しました。変更を残すには別の名前で保存してください。");
-                }
-            }
-            return _serializer.SaveAsync(path, snapshot, timing, cancellationToken).GetAwaiter().GetResult();
+            return _serializer.SaveAsync(path, snapshot, timing, cancellationToken, destination).GetAwaiter().GetResult();
         }
         finally
         {
             if (acquired) { gate.ReleaseMutex(); }
         }
     }, cancellationToken);
-
-    private static bool MatchesRevision(string path, string expected)
-    {
-        if (!File.Exists(path)) { return false; }
-        using var stream = File.OpenRead(path);
-        return stream.Length <= ProjectLimits.MaxFileBytes
-            && string.Equals(Convert.ToHexString(SHA256.HashData(stream)), expected, StringComparison.Ordinal);
-    }
 
     private void EnsureSafeSavePath(string path)
     {
@@ -395,19 +391,18 @@ public sealed class ProjectManager : IDisposable
         }
     }
 
-    internal string ResolvePlaybackPath(SoundDefinition sound)
+    internal string ResolvePlaybackPath(SoundDefinition sound) => SnapshotPlaybackPath(sound).Resolve();
+
+    internal PlaybackPath SnapshotPlaybackPath(SoundDefinition sound)
     {
-        lock (_stateLock)
-        {
-            return CreatePlaybackPath(sound).Resolve();
-        }
+        lock (_stateLock) { return CreatePlaybackPath(sound); }
     }
 
-    internal PlaybackPath[] SnapshotPlaybackPaths()
+    internal (string Name, PlaybackPath Path)[] SnapshotPlaybackPaths()
     {
         lock (_stateLock)
         {
-            return _current.Sounds.Select(CreatePlaybackPath).ToArray();
+            return _current.Sounds.Select(sound => (sound.Name, CreatePlaybackPath(sound))).ToArray();
         }
     }
 

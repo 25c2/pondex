@@ -71,6 +71,8 @@ public sealed class MainForm : Form
     private Button _addSoundButton = null!;
     private AudioOutputBinding? _outputBinding;
     private AudioDeviceSnapshot? _lastOutputSnapshot;
+    private bool _manualEmergencyStopping;
+    private Task _manualEmergencyStopTask = Task.CompletedTask;
     private Task _outputConfigurationTask = Task.CompletedTask;
     private Task _deviceCheckTask = Task.CompletedTask;
     private long _outputConfigurationVersion;
@@ -80,6 +82,11 @@ public sealed class MainForm : Form
     private CancellationTokenSource? _diagnosticCancellation;
     private CancellationTokenSource? _preflightCancellation;
     private ToolStripMenuItem _preflightMenuItem = null!;
+    private ToolStripMenuItem _decodeCheckMenuItem = null!;
+    private ToolStripMenuItem _preflightResultsMenuItem = null!;
+    private ToolStripMenuItem? _runningPreflightMenuItem;
+    private SoundCheckResult? _preflightResult;
+    private bool _preflightUserCancelled;
     private ToolStripButton _cancelDiagnosticButton = null!;
     private (DateTimeOffset WallTime, long Timestamp)? _previousClockTick;
     private bool _systemSuspended;
@@ -236,11 +243,13 @@ public sealed class MainForm : Form
         statusStrip.Items.Add(_statusLabel);
         var emergencyButton = new ToolStripButton("緊急停止")
         {
-            ForeColor = Color.DarkRed,
-            ToolTipText = "すべて即時停止し、イベントも休止します。確認画面は出ません。",
+            Tag = UiTheme.DangerButtonRole,
+            DisplayStyle = ToolStripItemDisplayStyle.Text,
+            Font = UiTheme.CreateFont(10F, FontStyle.Bold),
+            ToolTipText = "Ctrl+Shift+Rで全音源を緊急停止し、イベントも休止します。",
             AccessibleName = "緊急停止"
         };
-        emergencyButton.Click += (_, _) => EmergencyStopAll();
+        emergencyButton.Click += (_, _) => QueueEmergencyStop();
         statusStrip.Items.Add(emergencyButton);
         _cancelDiagnosticButton = new ToolStripButton("診断をキャンセル") { Visible = false };
         _cancelDiagnosticButton.Click += (_, _) =>
@@ -252,9 +261,10 @@ public sealed class MainForm : Form
         _resumeTriggersButton = new ToolStripButton("イベント再開") { DisplayStyle = ToolStripItemDisplayStyle.Text, Visible = false };
         _resumeTriggersButton.Click += async (_, _) =>
         {
+            if (_manualEmergencyStopping) { return; }
             var check = _resumeOutputCheck;
             await check;
-            if (IsDisposed || Disposing || _systemSuspended || check != _resumeOutputCheck
+            if (IsDisposed || Disposing || _manualEmergencyStopping || _systemSuspended || check != _resumeOutputCheck
                 || _diagnosticCancellation is not null) { return; }
             if (_outputUnavailable) { SetStatus("設定で出力先を確認してから再開してください。", true); return; }
             _triggerEngine.Resume(DateTimeOffset.Now, _stopwatch.Elapsed, _stopwatch.IsRunning);
@@ -290,11 +300,8 @@ public sealed class MainForm : Form
             () => _projectManager.Current.GroupShortcuts,
             IsEditingText,
             ExecuteShortcuts);
-        _messageFilter = new ShortcutMessageFilter((key, down, repeat) =>
-            (!down || !_headerGrip.Focused || key is not (Keys.Up or Keys.Down or Keys.Home))
-                && _shortcutDispatcher.OnKeyChanged(key, down, repeat),
-            hwnd => Control.FromChildHandle(hwnd)?.FindForm() is { } form
-                && (form == this || form.Owner == this));
+        _messageFilter = new ShortcutMessageFilter(HandleWindowShortcut,
+            hwnd => Control.FromChildHandle(hwnd)?.FindForm() is { } form && IsOwnedWindow(form));
         Application.AddMessageFilter(_messageFilter);
         _globalHook.KeyChanged += OnGlobalKeyChanged;
 
@@ -363,7 +370,9 @@ public sealed class MainForm : Form
         var groupShortcuts = new ToolStripMenuItem("グループキー(&G)…", null, (_, _) => ShowGroupShortcuts());
         var soundOrder = new ToolStripMenuItem("並び替え(&L)…", null, (_, _) => ShowSoundOrder());
         var diagnostics = new ToolStripMenuItem("動作診断(&D)…", null, async (_, _) => await RunSelfTestAsync());
-        _preflightMenuItem = new ToolStripMenuItem("音源の事前チェック…", null, async (_, _) => await ToggleSoundPreflightAsync());
+        _preflightMenuItem = new ToolStripMenuItem("音源ファイルの読み取り確認…", null, async (_, _) => await ToggleSoundPreflightAsync(SoundCheckMode.Read));
+        _decodeCheckMenuItem = new ToolStripMenuItem("音源のデコード確認…", null, async (_, _) => await ToggleSoundPreflightAsync(SoundCheckMode.Decode));
+        _preflightResultsMenuItem = new ToolStripMenuItem("音源の確認結果…", null, (_, _) => ShowSoundPreflightResult()) { Enabled = false };
         var timings = new ToolStripMenuItem("再生開始を計測") { CheckOnClick = true };
         timings.CheckedChanged += (_, _) =>
         {
@@ -373,10 +382,10 @@ public sealed class MainForm : Form
                 : "再生開始の計測を終了しました。", false);
         };
         var logLocation = new ToolStripMenuItem("ログの保存先…", null, (_, _) => ShowLogLocation()) { Enabled = _uiPreferences is not null };
-        var emergencyStop = new ToolStripMenuItem("緊急停止", null, (_, _) => EmergencyStopAll()) { Name = "emergencyStopMenuItem" };
+        var emergencyStop = new ToolStripMenuItem("緊急停止", null, (_, _) => QueueEmergencyStop()) { Name = "emergencyStopMenuItem", ShortcutKeyDisplayString = "Ctrl+Shift+R" };
         operations.DropDownItems.AddRange(
             [stopAllItem, muteMenuItem, new ToolStripSeparator(), soundOrder, groupShortcuts,
-                new ToolStripSeparator(), diagnostics, _preflightMenuItem, timings, logLocation, new ToolStripSeparator(), emergencyStop]);
+                new ToolStripSeparator(), diagnostics, _preflightMenuItem, _decodeCheckMenuItem, _preflightResultsMenuItem, timings, logLocation, new ToolStripSeparator(), emergencyStop]);
 
         var settings = new ToolStripMenuItem("設定(&S)", null, async (_, _) => await ShowSettings());
         var help = new ToolStripMenuItem("ヘルプ(&H)");
@@ -410,15 +419,11 @@ public sealed class MainForm : Form
         if (root.RowStyles[1].Height != height) { root.RowStyles[1].Height = height; }
     }
 
-    private void SaveHeaderHeight()
+    private void SaveHeaderHeight() => _uiPreferences?.QueueHeaderHeight(_requestedHeaderHeight, exception =>
     {
-        try { _uiPreferences?.SaveHeaderHeight(_requestedHeaderHeight); }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            _logger.Warning("ヘッダーの高さを保存できませんでした。");
-            SetStatus("ヘッダーの高さを保存できませんでした。", true);
-        }
-    }
+        _logger.Error("ヘッダーの高さを保存できませんでした。", exception);
+        TryBeginInvoke(() => SetStatus("ヘッダーの高さを保存できませんでした。", true));
+    });
 
     private TableLayoutPanel BuildHeader(
         out Label projectLabel,
@@ -457,7 +462,7 @@ public sealed class MainForm : Form
         var stopAllButton = HeaderButton("■ 全停止", Color.FromArgb(220, 65, 65));
         _stopAllButton = stopAllButton;
         addButton.Tag = UiTheme.AccentButtonRole;
-        stopAllButton.Tag = UiTheme.DangerButtonRole;
+        stopAllButton.Tag = UiTheme.StopButtonRole;
         stopAllButton.ForeColor = Color.White;
         stopAllButton.Font = new Font(Font.FontFamily, 14, FontStyle.Bold);
         var modeButton = HeaderButton("時計 / SW", SystemColors.Control);
@@ -777,7 +782,7 @@ public sealed class MainForm : Form
         };
         masterVolumeControl.ValueChanged += (_, _) =>
         {
-            if (_editingLocked && !_applyingProjectSettings) { RestoreMasterVolume(); return; }
+            if ((_editingLocked || _manualEmergencyStopping) && !_applyingProjectSettings) { RestoreMasterVolume(); return; }
             if (masterVolumeValue.Value != masterVolumeControl.Value)
             {
                 masterVolumeValue.Value = masterVolumeControl.Value;
@@ -795,7 +800,7 @@ public sealed class MainForm : Form
         };
         masterVolumeValue.ValueChanged += (_, _) =>
         {
-            if (_editingLocked && !_applyingProjectSettings) { RestoreMasterVolume(); return; }
+            if ((_editingLocked || _manualEmergencyStopping) && !_applyingProjectSettings) { RestoreMasterVolume(); return; }
             var value = decimal.ToInt32(masterVolumeValue.Value);
             if (masterVolumeControl.Value != value)
             {
@@ -804,7 +809,7 @@ public sealed class MainForm : Form
         };
         masterMuteControl.CheckedChanged += (_, _) =>
         {
-            if (_editingLocked && !_applyingProjectSettings)
+            if ((_editingLocked || _manualEmergencyStopping) && !_applyingProjectSettings)
             {
                 masterMuteControl.Checked = _projectManager.Current.Settings.MasterMute;
                 return;
@@ -853,12 +858,12 @@ public sealed class MainForm : Form
             SetStatus("編集ロック中です。変更するには画面下のロックを解除してください。", true);
             return false;
         }
-        return !_projectOperationInProgress && _diagnosticCancellation is null;
+        return !_manualEmergencyStopping && !_projectOperationInProgress && _diagnosticCancellation is null;
     }
 
     private void SetEditingLocked(bool locked)
     {
-        if (_projectOperationInProgress || _diagnosticCancellation is not null || _editingLocked == locked) { return; }
+        if (_manualEmergencyStopping || _projectOperationInProgress || _diagnosticCancellation is not null || _editingLocked == locked) { return; }
         if (locked)
         {
             EndTextEditing();
@@ -874,10 +879,10 @@ public sealed class MainForm : Form
 
     private void ApplyEditingLock()
     {
-        var editable = !_editingLocked && !_projectOperationInProgress && _diagnosticCancellation is null;
+        var editable = !_manualEmergencyStopping && !_editingLocked && !_projectOperationInProgress && _diagnosticCancellation is null;
         foreach (var command in _editingCommands) { command.Enabled = editable; }
         _addSoundButton.Enabled = editable;
-        var masterEditable = !_editingLocked && !_projectOperationInProgress;
+        var masterEditable = !_manualEmergencyStopping && !_editingLocked && !_projectOperationInProgress;
         _masterVolume.Enabled = masterEditable;
         _masterVolumeValue.Enabled = masterEditable;
         _masterMute.Enabled = masterEditable;
@@ -905,6 +910,8 @@ public sealed class MainForm : Form
     private void ResetProjectRuntime()
     {
         CancelSoundPreflight();
+        _preflightResult = null;
+        _preflightResultsMenuItem.Enabled = false;
         var wasSuspended = _triggerEngine.IsSuspended;
         InvalidatePendingPlayback();
         _triggerEngine.Suspend();
@@ -970,8 +977,9 @@ public sealed class MainForm : Form
                 return;
             }
 
+            await _manualEmergencyStopTask;
             ResetProjectRuntime();
-            _recentProjects.Add(path);
+            await Task.Run(() => _recentProjects.Add(path));
             _logger.Info($"プロジェクトを開きました: {path}");
             ApplyProjectSettings();
             if (_logger.DetailedLoggingEnabled)
@@ -1043,6 +1051,7 @@ public sealed class MainForm : Form
                     Filter = "pondexプロジェクト (*.pondex)|*.pondex",
                     DefaultExt = "pondex",
                     AddExtension = true,
+                    OverwritePrompt = false,
                     FileName = SanitizeFileName(_projectManager.Current.Project.Name) + ".pondex"
                 };
                 using (timing?.Measure("file_dialog"))
@@ -1050,7 +1059,21 @@ public sealed class MainForm : Form
                     if (dialog.ShowDialog(this) != DialogResult.OK) { return false; }
                 }
 
-                await _projectManager.SaveAsAsync(dialog.FileName, timing);
+                ProjectSaveDestination destination;
+                using (timing?.Measure("destination_path"))
+                {
+                    destination = await ProjectSaveDestination.CaptureAsync(dialog.FileName);
+                }
+                if (destination.Revision is not null)
+                {
+                    using var confirmation = timing?.Measure("overwrite_confirmation");
+                    if (MessageBox.Show(this, $"次のファイルを上書きしますか？\n{destination.Path}", "上書き確認",
+                        MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                    {
+                        return false;
+                    }
+                }
+                await _projectManager.SaveAsAsync(destination, timing);
             }
             else
             {
@@ -1257,7 +1280,10 @@ public sealed class MainForm : Form
         card.PlayRequested += async (_, _) => await PlaySoundAsync(sound.Id);
         card.StopRequested += (_, _) => StopSound(sound.Id);
         card.PauseRequested += (_, _) => PauseSound(sound.Id);
-        card.ResumeRequested += (_, _) => _audioEngine.Resume(sound.Id);
+        card.ResumeRequested += (_, _) =>
+        {
+            if (!_manualEmergencyStopping) { _audioEngine.Resume(sound.Id); }
+        };
         card.FileBrowseRequested += (_, _) => BrowseReplacementFile(sound, card);
         card.DeleteRequested += (_, _) => DeleteSound(sound, card);
         card.InvalidKeyRejected += (_, _) =>
@@ -1265,7 +1291,7 @@ public sealed class MainForm : Form
         card.GroupChangeCommitted += (_, eventArgs) => OnSoundGroupChangeCommitted(card, eventArgs);
         card.VolumeFadeRequested += (_, eventArgs) =>
         {
-            _audioEngine.FadeVolume(sound.Id, eventArgs.TargetVolume, eventArgs.Duration);
+            if (!_manualEmergencyStopping) { _audioEngine.FadeVolume(sound.Id, eventArgs.TargetVolume, eventArgs.Duration); }
             _projectManager.MarkDirty(shortcutBindingsChanged: false);
         };
         var displayName = sound.Name;
@@ -1273,7 +1299,7 @@ public sealed class MainForm : Form
         var assignedGroup = sound.Group;
         card.DefinitionChanged += (_, _) =>
         {
-            _audioEngine.ApplyLiveSettings(sound);
+            if (!_manualEmergencyStopping) { _audioEngine.ApplyLiveSettings(sound); }
             if (!string.Equals(displayName, sound.Name, StringComparison.Ordinal))
             {
                 displayName = sound.Name;
@@ -1285,9 +1311,9 @@ public sealed class MainForm : Form
             assignedGroup = sound.Group;
             _projectManager.MarkDirty(shortcutBindingsChanged: bindingsChanged);
         };
-        card.SetEditingLocked(_editingLocked || _projectOperationInProgress);
+        card.SetEditingLocked(_manualEmergencyStopping || _editingLocked || _projectOperationInProgress);
         card.UpdateState(_projectManager.Current.MissingSoundIds.Contains(sound.Id)
-            ? PlaybackState.Missing : _audioEngine.GetState(sound.Id));
+            ? PlaybackState.Missing : _manualEmergencyStopping ? PlaybackState.Stopped : _audioEngine.GetState(sound.Id));
         _soundCards[sound.Id] = card;
         _soundList.Controls.Add(card);
     }
@@ -1566,7 +1592,7 @@ public sealed class MainForm : Form
             // 壊れた旧パスでも参照ダイアログ自体は利用できるようにする。
         }
 
-        if (dialog.ShowDialog(owner ?? this) != DialogResult.OK)
+        if (dialog.ShowDialog(owner ?? this) != DialogResult.OK || !CanEditProject())
         {
             return;
         }
@@ -1593,47 +1619,73 @@ public sealed class MainForm : Form
         }
     }
 
-    private async Task ToggleSoundPreflightAsync()
+    private async Task ToggleSoundPreflightAsync(SoundCheckMode mode)
     {
         if (_preflightCancellation is not null)
         {
+            _preflightUserCancelled = true;
             CancelSoundPreflight();
+            SetStatus("中止中（現在のファイルの処理が終わるまで待機）", false);
             return;
         }
-        if (_projectOperationInProgress || _diagnosticCancellation is not null
+        if (_manualEmergencyStopping || _projectOperationInProgress || _diagnosticCancellation is not null
             || _systemSuspended || _pendingPlayback.Count > 0) { return; }
 
         var paths = _projectManager.SnapshotPlaybackPaths();
         if (paths.Length == 0)
         {
-            SetStatus("事前チェックする音源がありません。", false);
+            SetStatus("確認する音源がありません。", false);
             return;
         }
 
         using var cancellation = new CancellationTokenSource();
         _preflightCancellation = cancellation;
-        _preflightMenuItem.Text = "音源の事前チェックを中止";
-        SetStatus($"音源の読み取りを確認中 0 / {paths.Length}", false);
+        _preflightUserCancelled = false;
+        _preflightResult = null;
+        _preflightResultsMenuItem.Enabled = false;
+        _runningPreflightMenuItem = mode == SoundCheckMode.Read ? _preflightMenuItem : _decodeCheckMenuItem;
+        var runningMenu = _runningPreflightMenuItem;
+        var originalText = runningMenu.Text;
+        runningMenu.Text = "音源の確認を中止";
+        var otherMenu = mode == SoundCheckMode.Read ? _decodeCheckMenuItem : _preflightMenuItem;
+        otherMenu.Enabled = false;
+        var checkName = mode == SoundCheckMode.Read ? "先頭の読み取り" : "デコード";
+        SetStatus($"{checkName}を確認中 0 / {paths.Length}", false);
         var progress = new Progress<int>(count =>
         {
             if (ReferenceEquals(_preflightCancellation, cancellation) && !cancellation.IsCancellationRequested)
             {
-                SetStatus($"音源の読み取りを確認中 {count} / {paths.Length}", false);
+                SetStatus($"{checkName}を確認中 {count} / {paths.Length}", false);
             }
         });
         try
         {
-            var failed = await Task.Run(() => SoundPreflight.Check(paths, progress, cancellation.Token));
+            var result = await SoundPreflight.CheckAsync(paths, mode, progress, cancellation.Token,
+                _audioEngine is AudioEngine engine ? engine.RunPreflightDecodeAsync : null);
             if (!cancellation.IsCancellationRequested)
             {
-                SetStatus($"音源の読み取り確認: 成功 {paths.Length - failed} 件、失敗 {failed} 件。", failed > 0);
+                _preflightResult = result;
+                _preflightResultsMenuItem.Enabled = true;
+                SetStatus($"{result.Summary} 詳細は「音源の確認結果」。", result.Failures.Count > 0);
             }
         }
-        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            if (_preflightUserCancelled && !IsDisposed && !Disposing)
+            {
+                SetStatus("音源の確認を中止しました。", false);
+            }
+        }
         finally
         {
             _preflightCancellation = null;
-            if (!IsDisposed && !Disposing) { _preflightMenuItem.Text = "音源の事前チェック…"; }
+            _runningPreflightMenuItem = null;
+            if (!IsDisposed && !Disposing)
+            {
+                runningMenu.Text = originalText;
+                runningMenu.Enabled = true;
+                otherMenu.Enabled = true;
+            }
         }
     }
 
@@ -1641,10 +1693,36 @@ public sealed class MainForm : Form
     {
         if (_preflightCancellation is not { IsCancellationRequested: false } cancellation) { return; }
         cancellation.Cancel();
-        if (!IsDisposed && !Disposing && !_cleanupCompleted)
+        if (_runningPreflightMenuItem is { } menu)
         {
-            SetStatus("音源の事前チェックを取り消しました。", false);
+            menu.Text = "中止中（処理の終了待ち）";
+            menu.Enabled = false;
         }
+    }
+
+    private void ShowSoundPreflightResult()
+    {
+        if (_preflightResult is not { } result) { return; }
+        using var dialog = new Form
+        {
+            Text = result.Mode == SoundCheckMode.Read ? "先頭の読み取り結果" : "デコード確認結果",
+            ClientSize = new Size(620, 340),
+            AutoScaleMode = AutoScaleMode.Dpi,
+            StartPosition = FormStartPosition.CenterParent
+        };
+        var summary = new Label { Text = result.Summary, Dock = DockStyle.Top, Height = 32, TextAlign = ContentAlignment.MiddleLeft };
+        var details = new TextBox
+        {
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Vertical,
+            Dock = DockStyle.Fill,
+            Text = string.Join(Environment.NewLine, result.Failures.Select(failure => $"{failure.Name} — {failure.Reason}"))
+        };
+        dialog.Controls.Add(details);
+        dialog.Controls.Add(summary);
+        UiTheme.Apply(dialog, _projectManager.Current.Settings.DarkMode);
+        dialog.ShowDialog(this);
     }
 
     private Task<PlaybackStartResult> PlaySoundAsync(Guid soundId) =>
@@ -1677,9 +1755,9 @@ public sealed class MainForm : Form
             if (timing is not null) { timing.Outcome = outcome; }
         }
 
-        if (_diagnosticCancellation is not null || _systemSuspended)
+        if (_diagnosticCancellation is not null || _systemSuspended || _manualEmergencyStopping)
         {
-            SetOutcome("diagnostic_or_suspended");
+            SetOutcome(_manualEmergencyStopping ? "emergency_stop" : "diagnostic_or_suspended");
             return PlaybackStartResult.Cancelled;
         }
         var generation = Interlocked.Read(ref _playbackGeneration);
@@ -1717,21 +1795,7 @@ public sealed class MainForm : Form
             return PlaybackStartResult.Cancelled;
         }
 
-        string path;
-        try
-        {
-            using var pathTiming = timing?.Measure("resolve_path");
-            path = _projectManager.ResolvePlaybackPath(sound);
-        }
-        catch (Exception exception)
-        {
-            SetOutcome("path_rejected");
-            CompletePlaybackDisplay(soundId, PlaybackState.Failed);
-            _logger.Error($"音源のパスを解決できません: {sound.Name} ({sound.Id})", exception);
-            SetStatus($"パスを解決できません: {sound.Name} — {exception.Message}", true);
-            return PlaybackStartResult.Failed;
-        }
-
+        var path = _projectManager.SnapshotPlaybackPath(sound);
         SetPendingPlayback(soundId, PlaybackState.Preparing);
         var result = PlaybackStartResult.Started;
         var binding = _outputBinding;
@@ -1739,7 +1803,7 @@ public sealed class MainForm : Form
         timing?.Record("to_engine", processedAt);
         if (_audioEngine is AudioEngine engine && binding is not null)
         {
-            result = await engine.StartPlaybackMeasuredAsync(sound, path, async token =>
+            result = await engine.StartProjectPlaybackAsync(sound, path.File, path.Resolve, async token =>
             {
                 if (!engine.NeedsOutputOpen || await ProbeBoundOutputAsync(binding, token)) { return; }
                 outputChanged = true;
@@ -1753,8 +1817,26 @@ public sealed class MainForm : Form
         }
         else
         {
-            await _audioEngine.PlayAsync(sound, path);
-            SetOutcome("started");
+            try
+            {
+                string resolved;
+                using (timing?.Measure("resolve_path")) { resolved = await Task.Run(path.Resolve); }
+                if (!IsCurrent())
+                {
+                    SetOutcome("superseded_before_prepare");
+                    return PlaybackStartResult.Cancelled;
+                }
+                await _audioEngine.PlayAsync(sound, resolved);
+                SetOutcome("started");
+            }
+            catch (Exception exception)
+            {
+                if (!IsCurrent()) { return PlaybackStartResult.Cancelled; }
+                _logger.Error($"音源を再生できません: {sound.Name} ({sound.Id})", exception);
+                SetStatus($"音源を再生できません: {sound.Name} — {exception.Message}", true);
+                SetOutcome("failed");
+                result = PlaybackStartResult.Failed;
+            }
         }
 
         if (IsCurrent())
@@ -1789,18 +1871,22 @@ public sealed class MainForm : Form
         if (_soundCards.TryGetValue(soundId, out var card)) { card.UpdateState(state); }
     }
 
-    private void InvalidatePendingPlayback()
+    private void InvalidatePendingPlayback(bool readEngineState = true)
     {
         Interlocked.Increment(ref _playbackGeneration);
         foreach (var soundId in _pendingPlayback.Keys)
         {
-            if (_soundCards.TryGetValue(soundId, out var card)) { card.UpdateState(_audioEngine.GetState(soundId)); }
+            if (_soundCards.TryGetValue(soundId, out var card))
+            {
+                card.UpdateState(readEngineState ? _audioEngine.GetState(soundId) : PlaybackState.Stopped);
+            }
         }
         _pendingPlayback.Clear();
     }
 
     private void PauseSound(Guid soundId)
     {
+        if (_manualEmergencyStopping) { return; }
         // A pending decoder cannot be paused before it joins the mixer.
         // Cancel the pending request before pausing any already playing instance.
         if (_pendingPlayback.ContainsKey(soundId))
@@ -1820,6 +1906,7 @@ public sealed class MainForm : Form
 
     private void StopSound(Guid soundId, bool immediately = false)
     {
+        if (_manualEmergencyStopping) { return; }
         _uiPlayVersions[soundId] = _uiPlayVersions.GetValueOrDefault(soundId) + 1;
         if (immediately) { _audioEngine.StopImmediately(soundId); }
         else { _audioEngine.Stop(soundId); }
@@ -1828,6 +1915,7 @@ public sealed class MainForm : Form
 
     private void StopAll(bool useConfiguredFade = true)
     {
+        if (_manualEmergencyStopping) { return; }
         if (_diagnosticCancellation is not null)
         {
             StopForEmergency(invalidateConfiguration: false);
@@ -1842,6 +1930,7 @@ public sealed class MainForm : Form
 
     private void ToggleMasterMute()
     {
+        if (_manualEmergencyStopping) { return; }
         if (_editingLocked || _projectOperationInProgress) { CanEditProject(); return; }
         _masterMute.Checked = !_masterMute.Checked;
         SetStatus(_masterMute.Checked ? "ミュートしました。" : "ミュートを解除しました。", false);
@@ -1852,7 +1941,49 @@ public sealed class MainForm : Form
         StopForEmergency(invalidateConfiguration: true);
     }
 
-    private void StopForEmergency(bool invalidateConfiguration)
+    private void QueueEmergencyStop()
+    {
+        if (_manualEmergencyStopping) { return; }
+        _manualEmergencyStopping = true;
+        _manualEmergencyStopTask = RunEmergencyStopAsync();
+    }
+
+    private async Task RunEmergencyStopAsync()
+    {
+        var requestedAt = Stopwatch.GetTimestamp();
+        PrepareEmergencyStop(invalidateConfiguration: true, readEngineState: false);
+        _resumeTriggersButton.Enabled = false;
+        ApplyEditingLock();
+        SetStatus("緊急停止中。音声出力を閉じています。", false);
+
+        try
+        {
+            await (_audioEngine is AudioEngine engine ? engine.RequestEmergencyStopAsync() : Task.Run(_audioEngine.EmergencyStopAll));
+        }
+        catch (Exception exception)
+        {
+            _outputUnavailable = true;
+            _logger.Error("緊急停止中に音声出力を終了できませんでした。", exception);
+        }
+        finally
+        {
+            _manualEmergencyStopping = false;
+            if (!IsDisposed && !Disposing)
+            {
+                _resumeTriggersButton.Enabled = _diagnosticCancellation is null;
+                ApplyEditingLock();
+                foreach (var (id, card) in _soundCards) { card.UpdateState(_audioEngine.GetState(id)); }
+                ShowEmergencyStopResult();
+            }
+            if (_logger.DetailedLoggingEnabled)
+            {
+                _logger.Debug(string.Create(CultureInfo.InvariantCulture,
+                    $"emergency_stop completed: elapsed_ms={Stopwatch.GetElapsedTime(requestedAt).TotalMilliseconds:F2}"));
+            }
+        }
+    }
+
+    private void PrepareEmergencyStop(bool invalidateConfiguration, bool readEngineState)
     {
         CancelSoundPreflight();
         if (invalidateConfiguration) { _outputConfigurationVersion++; }
@@ -1860,7 +1991,13 @@ public sealed class MainForm : Form
         if (_logger.DetailedLoggingEnabled) { _logger.Debug("automatic triggers suspended: emergency stop"); }
         _triggerEngine.Suspend();
         _resumeTriggersButton.Visible = true;
-        InvalidatePendingPlayback();
+        InvalidatePendingPlayback(readEngineState);
+    }
+
+    private void StopForEmergency(bool invalidateConfiguration)
+    {
+        PrepareEmergencyStop(invalidateConfiguration, readEngineState: !_manualEmergencyStopping);
+        if (_manualEmergencyStopping) { return; }
         // Keep held-key state so an auto-repeat does not count as a new press after the stop.
         try { _audioEngine.EmergencyStopAll(); }
         catch (Exception exception)
@@ -1868,6 +2005,11 @@ public sealed class MainForm : Form
             _outputUnavailable = true;
             _logger.Error("緊急停止中に音声出力を終了できませんでした。", exception);
         }
+        ShowEmergencyStopResult();
+    }
+
+    private void ShowEmergencyStopResult()
+    {
         if (_audioEngine is AudioEngine { IsOutputFaulted: true }) { _outputUnavailable = true; }
         if (_outputUnavailable)
         {
@@ -1984,13 +2126,14 @@ public sealed class MainForm : Form
             var refreshed = await CaptureOutputSnapshotAsync("settings_refresh");
             if (_outputBinding is { } active && !active.Matches(refreshed)) { MarkOutputChanged(active); }
             return refreshed;
-        }, EmergencyStopAll);
+        }, QueueEmergencyStop);
         dialog.SetProjectMetadata(_projectManager.Current.Project);
         UiTheme.Apply(dialog, _projectManager.Current.Settings.DarkMode);
         if (dialog.ShowDialog(this) != DialogResult.OK)
         {
             return;
         }
+        await _manualEmergencyStopTask;
 
         snapshot = dialog.OutputSnapshot ?? snapshot;
         var settings = _projectManager.Current.Settings;
@@ -2122,7 +2265,9 @@ public sealed class MainForm : Form
 
         if (currentGroup.Length == 0)
         {
-            SetStatus($"グループ「{previousGroup}」を参照する設定が{referenceCount}件残っています。", true);
+            HoldGroupTriggers(_projectManager.Current, previousGroup);
+            RefreshTriggerData(resetEngine: false);
+            SetStatus($"グループ「{previousGroup}」のイベントを保留しました。", true);
             return;
         }
 
@@ -2130,19 +2275,27 @@ public sealed class MainForm : Form
             && string.Equals(sound.Group, currentGroup, StringComparison.OrdinalIgnoreCase));
         if (destinationCount > 0)
         {
-            var result = MessageBox.Show(this,
-                $"「{previousGroup}」の関連設定 {referenceCount}件を「{currentGroup}」へ移すと、対象が1音源から{destinationCount + 1}音源に増えます。\n\n"
-                + "はい: 音源と関連設定を移動\nいいえ: 音源だけ移動し、関連設定の参照先を保留\nキャンセル: 移動を取り消す",
-                "既存グループへの移動", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button3);
-            if (result == DialogResult.Cancel)
+            var moveAll = new TaskDialogButton("関連設定も移す");
+            var moveSound = new TaskDialogButton("音源だけ移す");
+            var cancel = TaskDialogButton.Cancel;
+            var result = TaskDialog.ShowDialog(this, new TaskDialogPage
+            {
+                Caption = "既存グループへの移動",
+                Heading = $"「{currentGroup}」は{destinationCount + 1}音源になります。",
+                Text = $"「{previousGroup}」の関連設定{referenceCount}件を移すと、操作対象が増えます。音源だけ移すと、元のグループのイベントを保留します。",
+                Buttons = { moveAll, moveSound, cancel },
+                DefaultButton = cancel
+            });
+            if (result == cancel)
             {
                 eventArgs.Cancel = true;
                 return;
             }
-            if (result != DialogResult.Yes)
+            if (result == moveSound)
             {
+                HoldGroupTriggers(_projectManager.Current, previousGroup);
                 RefreshTriggerData(resetEngine: false);
-                SetStatus($"音源を移動しました。グループ「{previousGroup}」を参照する設定が{referenceCount}件残っています。", true);
+                SetStatus($"音源を移動し、グループ「{previousGroup}」のイベントを保留しました。", true);
                 return;
             }
         }
@@ -2151,6 +2304,16 @@ public sealed class MainForm : Form
         RefreshTriggerData(resetEngine: false);
         _projectManager.MarkDirty();
         SetStatus($"グループ名の変更に合わせて関連設定を{updated}件更新しました。", false);
+    }
+
+    private static void HoldGroupTriggers(ProjectModel model, string group)
+    {
+        foreach (var trigger in model.Triggers.Where(trigger =>
+            string.Equals(trigger.TargetGroup, group, StringComparison.OrdinalIgnoreCase)))
+        {
+            trigger.TargetGroupOnHold = true;
+            trigger.Enabled = false;
+        }
     }
 
     internal static int RetargetGroupReferences(ProjectModel model, string previousGroup, string currentGroup)
@@ -2164,7 +2327,7 @@ public sealed class MainForm : Form
         }
 
         foreach (var trigger in model.Triggers.Where(trigger =>
-                     string.Equals(trigger.TargetGroup, previousGroup, StringComparison.OrdinalIgnoreCase)))
+                     !trigger.TargetGroupOnHold && string.Equals(trigger.TargetGroup, previousGroup, StringComparison.OrdinalIgnoreCase)))
         {
             trigger.TargetGroup = currentGroup;
             updated++;
@@ -2389,17 +2552,18 @@ public sealed class MainForm : Form
 
     internal static bool ClockWasInterrupted(DateTimeOffset previous, DateTimeOffset now, TimeSpan monotonicElapsed)
     {
-        var wallElapsed = now - previous;
-        return monotonicElapsed >= TimeSpan.FromSeconds(5)
-            || (wallElapsed - monotonicElapsed).Duration() >= TimeSpan.FromSeconds(2)
-            || now.Offset != previous.Offset;
+        return monotonicElapsed >= TimeSpan.FromSeconds(5) || WallClockChanged(previous, now, monotonicElapsed);
     }
 
-    private void StopForClockDiscontinuity(bool verifyOutput)
+    private static bool WallClockChanged(DateTimeOffset previous, DateTimeOffset now, TimeSpan monotonicElapsed) =>
+        ((now - previous) - monotonicElapsed).Duration() >= TimeSpan.FromSeconds(2) || now.Offset != previous.Offset;
+
+    private void StopForClockDiscontinuity(bool verifyOutput, bool uiStalled = false)
     {
         _previousClockTick = null;
         StopForEmergency(invalidateConfiguration: true);
-        SetStatus("スリープまたは時計の変更を検出しました。イベント休止中", false,
+        SetStatus(uiStalled ? "画面の処理が長時間止まったため、再生と自動イベントを停止しました。"
+            : "スリープまたは時計の変更を検出しました。イベント休止中", false,
             "出力先を確認し、「イベント再開」を押してください。経過したイベントは実行されません。");
         if (verifyOutput) { _resumeOutputCheck = VerifyOutputAfterResumeAsync(_outputConfigurationVersion); }
     }
@@ -2425,10 +2589,11 @@ public sealed class MainForm : Form
             && ClockWasInterrupted(previous.WallTime, now, Stopwatch.GetElapsedTime(previous.Timestamp, timestamp)))
         {
             _systemSuspended = false;
-            StopForClockDiscontinuity(verifyOutput: true);
+            StopForClockDiscontinuity(verifyOutput: true,
+                uiStalled: !WallClockChanged(previous.WallTime, now, Stopwatch.GetElapsedTime(previous.Timestamp, timestamp)));
         }
         _previousClockTick = (now, timestamp);
-        if (_systemSuspended) { return; }
+        if (_systemSuspended || _manualEmergencyStopping) { return; }
         _ = CheckSelectedDeviceAvailability();
         if (_projectOperationInProgress && !_savingProject) { return; }
         _triggerEngine.Tick(now, _stopwatch.Elapsed, _stopwatch.IsRunning);
@@ -2585,6 +2750,7 @@ public sealed class MainForm : Form
         var processedAt = Stopwatch.GetTimestamp();
         if (!eventArgs.IsCurrent || _triggerEngine.IsSuspended || (_projectOperationInProgress && !_savingProject)) { return; }
         var trigger = eventArgs.Trigger;
+        if (trigger.TargetGroupOnHold) { return; }
         var targetIds = (string.IsNullOrWhiteSpace(trigger.TargetGroup)
             ? [trigger.TargetSoundId]
             : _projectManager.Current.Sounds
@@ -2668,7 +2834,7 @@ public sealed class MainForm : Form
 
     private void UpdateSoundStateDisplay(SoundStateChangedEventArgs eventArgs)
     {
-        if (!_pendingPlayback.ContainsKey(eventArgs.SoundId) && _soundCards.TryGetValue(eventArgs.SoundId, out var card))
+        if (!_manualEmergencyStopping && !_pendingPlayback.ContainsKey(eventArgs.SoundId) && _soundCards.TryGetValue(eventArgs.SoundId, out var card))
         {
             card.UpdateState(_audioEngine.GetState(eventArgs.SoundId));
         }
@@ -2836,6 +3002,12 @@ public sealed class MainForm : Form
 
     private async void OnFormClosing(object? sender, FormClosingEventArgs eventArgs)
     {
+        if (_manualEmergencyStopping)
+        {
+            eventArgs.Cancel = true;
+            SetStatus("緊急停止中。音声出力を閉じています。", false);
+            return;
+        }
         if (_projectOperationInProgress)
         {
             eventArgs.Cancel = true;
@@ -2909,6 +3081,26 @@ public sealed class MainForm : Form
         _triggerEngine.OnSoundEnded(
             eventArgs.SoundId,
             eventArgs.EndReason == PlaybackEndReason.Natural);
+
+    private bool IsOwnedWindow(Form form)
+    {
+        for (Form? window = form; window is not null; window = window.Owner)
+        {
+            if (window == this) { return true; }
+        }
+        return false;
+    }
+
+    private bool HandleWindowShortcut(Keys key, bool down, bool repeat)
+    {
+        if (key == (Keys.Control | Keys.Shift | Keys.R))
+        {
+            if (down && !repeat) { QueueEmergencyStop(); }
+            return true;
+        }
+        return (!down || !_headerGrip.Focused || key is not (Keys.Up or Keys.Down or Keys.Home))
+            && _shortcutDispatcher.OnKeyChanged(key, down, repeat);
+    }
 
     private void OnGlobalKeyChanged(object? sender, GlobalKeyEventArgs eventArgs)
     {
@@ -3018,11 +3210,17 @@ public sealed class MainForm : Form
         var actualPath = _logger is FileLogger { CurrentLogPath: null } or FileLogger { Diagnostics.IsDisabled: true }
             ? $"記録できません（保存先: {_logDirectory}）" : _logDirectory;
         var next = nextLocal ? "ローカル（このPC）" : "ポータブル（通常は実行フォルダ）";
-        var change = nextLocal ? "ポータブルに戻しますか？" : "このPCのローカルフォルダに変更しますか？";
-        var answer = MessageBox.Show(this,
-            $"現在のログ保存先\n{actualPath}\n\n次回起動時の設定: {next}\n{change}\n変更は次回起動時に適用されます。共有PCに記録したログは、アプリを取り出した後もそのPCに残ります。",
-            "ログの保存先", MessageBoxButtons.YesNo, MessageBoxIcon.Information, MessageBoxDefaultButton.Button2);
-        if (answer != DialogResult.Yes) { return; }
+        var change = new TaskDialogButton(nextLocal ? "ポータブルに変更" : "このPCに変更");
+        var cancel = TaskDialogButton.Cancel;
+        var answer = TaskDialog.ShowDialog(this, new TaskDialogPage
+        {
+            Caption = "ログの保存先",
+            Heading = $"次回起動時の保存先　{next}",
+            Text = $"現在のログ保存先\n{actualPath}\n\n変更は次回起動から有効です。このPCを選ぶと、共有PCでもログがそのPCに残ります。",
+            Buttons = { change, cancel },
+            DefaultButton = cancel
+        });
+        if (answer != change) { return; }
 
         try
         {
@@ -3045,7 +3243,7 @@ public sealed class MainForm : Form
 
     private void ShowHelp()
     {
-        using var dialog = new HelpDialog();
+        using var dialog = new HelpDialog(QueueEmergencyStop);
         UiTheme.Apply(dialog, _projectManager.Current.Settings.DarkMode);
         dialog.ShowDialog(this);
     }

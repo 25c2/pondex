@@ -86,7 +86,7 @@ public sealed class ProjectSerializer
         SaveAsync(path, model, null, cancellationToken);
 
     internal async Task<ProjectSaveResult> SaveAsync(string path, ProjectModel model, OperationTiming? timing,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, ProjectSaveDestination? destination = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(model);
@@ -96,6 +96,7 @@ public sealed class ProjectSerializer
         using (timing?.Measure("ensure_destination"))
         {
             fullPath = ProjectPath.GetSafeFullPath(path, "保存先パス");
+            destination?.VerifyPath(fullPath);
             directory = Path.GetDirectoryName(fullPath)
                 ?? throw new ArgumentException("保存先フォルダを特定できません。", nameof(path));
             Directory.CreateDirectory(directory);
@@ -139,7 +140,14 @@ public sealed class ProjectSerializer
             }
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (File.Exists(fullPath))
+            if (destination is { } approved)
+            {
+                using var revision = timing?.Measure("revision_check");
+                approved.VerifyPath(ProjectPath.GetSafeFullPath(fullPath, "保存先パス"));
+                approved.VerifyRevision();
+            }
+
+            if (destination is { } confirmed ? confirmed.Revision is not null : File.Exists(fullPath))
             {
                 if (timing is not null) { timing.Destination = "replace"; }
                 using (timing?.Measure("commit"))
@@ -442,6 +450,8 @@ public sealed class ProjectSerializer
                 model.LoadWarnings.Add($"イベント「{trigger.Memo}」の操作または条件が不明です。イベントを無効にしました。");
             }
 
+            if (trigger.TargetGroupOnHold) { trigger.Enabled = false; }
+
             var ambiguousTarget = trigger.TargetGroup.Length == 0 && duplicateSoundIds.Contains(trigger.TargetSoundId);
             var ambiguousSource = trigger.Parameters.SourceSoundId is { } candidate && duplicateSoundIds.Contains(candidate);
             if (ambiguousTarget || ambiguousSource)
@@ -452,7 +462,7 @@ public sealed class ProjectSerializer
                 model.LoadWarnings.Add($"イベント「{trigger.Memo}」が重複した音源IDを参照しています。対象を選び直してください。");
             }
 
-            if ((trigger.TargetGroup.Length > 0 && !model.Sounds.Any(sound =>
+            if ((trigger.TargetGroup.Length > 0 && !trigger.TargetGroupOnHold && !model.Sounds.Any(sound =>
                     string.Equals(sound.Group, trigger.TargetGroup, StringComparison.OrdinalIgnoreCase)))
                 || (trigger.TargetGroup.Length == 0 && !soundIds.Contains(trigger.TargetSoundId))
                 || (trigger.TriggerType is TriggerType.SoundEnded or TriggerType.SoundElapsed

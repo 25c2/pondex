@@ -102,6 +102,35 @@ public sealed class PreparationSafetyReviewTests
     }
 
     [Fact]
+    public async Task ProjectPlayback_PathProbeDoesNotStopCurrentAudioAndCannotReviveAfterEmergency()
+    {
+        using var directory = new TestDirectory();
+        var path = CreateWave(directory);
+        using var release = new ManualResetEventSlim();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var engine = new AudioEngine(new Logger(), (_, _) => new Output());
+        var background = new SoundDefinition();
+        await engine.PlayAsync(background, path);
+        var cue = new SoundDefinition();
+        var pending = engine.StartProjectPlaybackAsync(cue, path, () =>
+        {
+            entered.SetResult();
+            if (!release.Wait(TimeSpan.FromSeconds(10))) { throw new TimeoutException(); }
+            return path;
+        }, null, null);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Contains(background.Id, engine.GetActiveSoundIds());
+            await engine.RequestEmergencyStopAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Empty(engine.GetActiveSoundIds());
+        }
+        finally { release.Set(); }
+        Assert.Equal(PlaybackStartResult.Cancelled, await pending);
+        Assert.Empty(engine.GetActiveSoundIds());
+    }
+
+    [Fact]
     public async Task DifferentSounds_CanPrepareConcurrentlyWithinGlobalBound()
     {
         using var directory = new TestDirectory();

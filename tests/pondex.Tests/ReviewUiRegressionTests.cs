@@ -32,7 +32,7 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
         manager.Current.Settings.DarkMode = dark;
         using var engine = new AudioEngine(new Logger(), (_, _) => new Output());
         MainForm Create() => new(manager, engine, new AudioDeviceManager(() => Initial), new TriggerEngine(), new Logger(),
-            directory.Path, null, new UiPreferences(directory.Path));
+            directory.Path, null, preferences);
         int defaultHeight;
         int grownHeight;
         using (var form = Create())
@@ -59,6 +59,7 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
             var minimumTabsHeight = HeaderHeight.Scale(112, root.DeviceDpi);
             Assert.True(tabs.Height >= minimumTabsHeight,
                 $"Tab height {tabs.Height}px is below {minimumTabsHeight}px at {root.DeviceDpi} DPI.");
+            Pump(preferences.PendingHeaderWrite);
             Assert.True(preferences.HeaderHeight.HasValue);
             Assert.False(manager.IsDirty);
             form.CloseWithoutSavePromptForSmokeTest();
@@ -72,11 +73,77 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
         Assert.InRange(restoredHeader.Height, grownHeight - 2, grownHeight + 2);
         typeof(HeaderResizeGrip).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic)!
             .Invoke(restoredGrip, [new KeyEventArgs(Keys.Home)]);
-        Application.DoEvents();
+        Pump(preferences.PendingHeaderWrite);
         Assert.Null(preferences.HeaderHeight);
         Assert.InRange(restoredHeader.Height, defaultHeight - 2, defaultHeight + 2);
         Assert.False(manager.IsDirty);
         restored.CloseWithoutSavePromptForSmokeTest();
+    });
+
+    [Fact]
+    public void EmergencyShortcut_LeavesUiResponsiveWhileOutputStopWaits() => WinFormsTest.Run(() =>
+    {
+        using var directory = new TestDirectory();
+        using var manager = new ProjectManager(new ProjectSerializer());
+        var trigger = new TriggerEngine();
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var engine = new AudioEngine(new Logger(), (_, _) => new BlockingStopOutput(entered, release));
+        using var form = CreateForm(manager, engine, trigger, () => Initial, directory.Path);
+        Initialize(form);
+        var sound = new SoundDefinition();
+        Pump(engine.PlayAsync(sound, CreateWave(directory)));
+        Assert.Contains(sound.Id, engine.GetActiveSoundIds());
+
+        var handled = (bool)Method("HandleWindowShortcut").Invoke(form, [Keys.Control | Keys.Shift | Keys.R, true, false])!;
+        var task = (Task)Field("_manualEmergencyStopTask").GetValue(form)!;
+        try
+        {
+            Assert.True(handled);
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+            Assert.False(task.IsCompleted);
+            Assert.True(trigger.IsSuspended);
+            var dispatched = false;
+            form.BeginInvoke(() => dispatched = true);
+            Application.DoEvents();
+            Assert.True(dispatched);
+        }
+        finally { release.Set(); }
+        Pump(task);
+        Assert.Empty(engine.GetActiveSoundIds());
+        form.CloseWithoutSavePromptForSmokeTest();
+    });
+
+    [Fact]
+    public void ClockTimerGap_SuspendsTriggersAndReportsUiInterruption()
+        => WinFormsTest.Run(() =>
+        {
+            using var directory = new TestDirectory();
+            using var manager = new ProjectManager(new ProjectSerializer());
+            var trigger = new TriggerEngine();
+            using var engine = new AudioEngine(new Logger(), (_, _) => new Output());
+            using var form = CreateForm(manager, engine, trigger, () => Initial, directory.Path);
+            Initialize(form);
+            Field("_previousClockTick").SetValue(form,
+                (DateTimeOffset.Now.AddSeconds(-6), Stopwatch.GetTimestamp() - 6 * Stopwatch.Frequency));
+            Method("UpdateClockAndTriggers").Invoke(form, null);
+            Assert.True(trigger.IsSuspended);
+            var status = (ToolStripStatusLabel)Field("_statusLabel").GetValue(form)!;
+            Assert.Contains("画面の処理が長時間止まったため", status.Text);
+            form.CloseWithoutSavePromptForSmokeTest();
+        });
+
+    [Fact]
+    public void OutputChoices_DistinguishIdenticallyNamedDevices() => WinFormsTest.Run(() =>
+    {
+        using var dialog = new SettingsDialog(new ProjectSettings(),
+            [AudioDeviceInfo.Default, new AudioDeviceInfo(0, "USB", "first"), new AudioDeviceInfo(2, "USB", "second")]);
+        dialog.Show();
+        var combo = Descendants(dialog).OfType<ComboBox>().Single();
+        Assert.Contains(combo.Items.Cast<object>(), item => combo.GetItemText(item) == "USB（番号 0）");
+        Assert.Contains(combo.Items.Cast<object>(), item => combo.GetItemText(item) == "USB（番号 2）");
+        combo.SelectedValue = 2;
+        Assert.Equal(2, dialog.SelectedDeviceNumber);
     });
 
     [Fact]
@@ -391,6 +458,20 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
         public void Warning(string message) { }
         public void Error(string message, Exception? exception = null) { }
     }
+    private sealed class BlockingStopOutput(ManualResetEventSlim entered, ManualResetEventSlim release) : IAudioOutput
+    {
+        public event EventHandler<StoppedEventArgs>? PlaybackStopped { add { } remove { } }
+        public NAudio.Wave.PlaybackState PlaybackState { get; private set; }
+        public void Play() => PlaybackState = NAudio.Wave.PlaybackState.Playing;
+        public void Stop()
+        {
+            entered.Set();
+            if (!release.Wait(TimeSpan.FromSeconds(10))) { throw new TimeoutException(); }
+            PlaybackState = NAudio.Wave.PlaybackState.Stopped;
+        }
+        public void Dispose() { }
+    }
+
     private sealed class Output : IAudioOutput
     {
         public event EventHandler<StoppedEventArgs>? PlaybackStopped { add { } remove { } }

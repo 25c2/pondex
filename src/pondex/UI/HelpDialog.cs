@@ -2,7 +2,9 @@ namespace pondex.UI;
 
 public sealed class HelpDialog : Form
 {
-    public HelpDialog()
+    public HelpDialog() : this(null) { }
+
+    internal HelpDialog(Action? emergencyStop)
     {
         Text = "pondex ヘルプ";
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -36,6 +38,12 @@ public sealed class HelpDialog : Form
         };
         var footer = new Panel { Dock = DockStyle.Bottom, Height = 52, Padding = new Padding(8) };
         footer.Controls.Add(closeButton);
+        if (emergencyStop is not null)
+        {
+            var stopButton = new Button { Text = "緊急停止", Dock = DockStyle.Left, Width = 110, Tag = UiTheme.DangerButtonRole };
+            stopButton.Click += (_, _) => emergencyStop();
+            footer.Controls.Add(stopButton);
+        }
         Controls.Add(content);
         Controls.Add(footer);
         AcceptButton = closeButton;
@@ -54,6 +62,7 @@ public sealed class HelpDialog : Form
         ・同じキーを複数音源へ設定すると、1回のキー操作でまとめて同時再生できます。同じグループ内でも同時再生されます。
         ・Alt＋音源の設定キーで、同じGroupの他音源を即時停止して切り替えます。Group専用キーは対象外です。
         ・Shift＋設定キーでその音源を停止します。Ctrl＋Rは全音源を停止します。
+        ・Ctrl＋Shift＋Rは緊急停止です。全音源を停止し、自動イベントを休止します。
         ・名前、キー、グループ、メモなどはEnterで確定、Escで変更を取り消せます。
         ・キーには空白を使えません。A、2、F1などのキー名を空白なしで指定してください。解釈できない値を入力した場合は元の割り当てを保ちます。
         ・Ctrl＋Sで保存、Ctrl＋Shift＋Sで名前を付けて保存、Ctrl＋Oで開く、Ctrl＋Nで新規作成できます。
