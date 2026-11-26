@@ -58,7 +58,8 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
             Assert.True(grownHeight > defaultHeight);
             var minimumTabsHeight = HeaderHeight.Scale(112, root.DeviceDpi);
             Assert.True(tabs.Height >= minimumTabsHeight,
-                $"Tab height {tabs.Height}px is below {minimumTabsHeight}px at {root.DeviceDpi} DPI.");
+                $"Tab height {tabs.Height}px is below {minimumTabsHeight}px at {root.DeviceDpi} DPI. "
+                + $"Client height: {root.ClientSize.Height}px. Row heights: {string.Join(", ", root.GetRowHeights())}.");
             Pump(preferences.PendingHeaderWrite);
             Assert.True(preferences.HeaderHeight.HasValue);
             Assert.False(manager.IsDirty);
@@ -469,7 +470,11 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
 
     private static void Initialize(MainForm form)
     {
+        // The Shown handler fits the window to the working area before UI operations.
+        var shown = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        form.Shown += (_, _) => shown.TrySetResult();
         form.Show();
+        Pump(shown.Task);
         Pump((Task)Field("_outputConfigurationTask").GetValue(form)!);
         ((System.Windows.Forms.Timer)Field("_clockTimer").GetValue(form)!).Stop();
     }
