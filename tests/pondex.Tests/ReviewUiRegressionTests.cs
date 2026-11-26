@@ -228,7 +228,7 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
     });
 
     [Fact]
-    public void OpenPonDashiProject_RendersCuesAndAppliesExclusiveGroupsOnNormalPlay() => WinFormsTest.Run(() =>
+    public void OpenPonDashiProject_RendersCuesAndAppliesExclusiveGroupsOnNormalPlay() => WinFormsTest.RunAsync(async () =>
     {
         using var directory = new TestDirectory();
         using var manager = new ProjectManager(new ProjectSerializer());
@@ -242,9 +242,13 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
             """);
         using var engine = new AudioEngine(new Logger(), (_, _) => new Output());
         using var form = CreateForm(manager, engine, new TriggerEngine(), () => Initial, directory.Path);
-        Initialize(form);
+        form.Show();
+        WinFormsTest.Note("import: configure initial output");
+        await (Task)Field("_outputConfigurationTask").GetValue(form)!;
+        ((System.Windows.Forms.Timer)Field("_clockTimer").GetValue(form)!).Stop();
 
-        Pump((Task)Method("OpenProjectAsync").Invoke(form, [project])!);
+        WinFormsTest.Note("import: open extensionless project");
+        await (Task)Method("OpenProjectAsync").Invoke(form, [project])!;
         Assert.True(manager.RequiresSaveAs);
         Assert.True(manager.IsDirty);
         Assert.Contains(Descendants(form).OfType<Label>(), label => label.Text == "最初");
@@ -252,9 +256,11 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
 
         var first = manager.Current.Sounds[0].Id;
         var next = manager.Current.Sounds[1].Id;
-        Pump((Task)Method("PlaySoundAsync").Invoke(form, [first])!);
+        WinFormsTest.Note("import: play first cue");
+        await (Task)Method("PlaySoundAsync").Invoke(form, [first])!;
         Assert.Equal(first, Assert.Single(engine.GetActiveSoundIds()));
-        Pump((Task)Method("PlaySoundAsync").Invoke(form, [next])!);
+        WinFormsTest.Note("import: play second cue");
+        await (Task)Method("PlaySoundAsync").Invoke(form, [next])!;
         Assert.Equal(next, Assert.Single(engine.GetActiveSoundIds()));
         form.CloseWithoutSavePromptForSmokeTest();
     });

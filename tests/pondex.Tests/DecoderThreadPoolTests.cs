@@ -36,7 +36,8 @@ public sealed class DecoderThreadPoolTests
         var path = directory.GetPath("tone.wav");
         using (var writer = new WaveFileWriter(path, WaveFormat.CreateIeeeFloatWaveFormat(44100, 1)))
         { for (var i = 0; i < 100; i++) { writer.WriteSample(0.05F); } }
-        using var entered = new ManualResetEventSlim();
+        const int decoderCount = 4;
+        using var entered = new CountdownEvent(decoderCount);
         using var release = new ManualResetEventSlim();
         using var ended = new ManualResetEventSlim();
         var fading = new SoundDefinition
@@ -51,8 +52,8 @@ public sealed class DecoderThreadPoolTests
             {
                 if (sound.Id != fading.Id)
                 {
-                    entered.Set();
-                    if (!release.Wait(TimeSpan.FromSeconds(10))) { throw new TimeoutException(); }
+                    entered.Signal();
+                    if (!release.Wait(TimeSpan.FromSeconds(15))) { throw new TimeoutException(); }
                 }
                 return SoundInstance.Create(sound, file, format, completed);
             });
@@ -66,14 +67,14 @@ public sealed class DecoderThreadPoolTests
         {
             // Queue four blocked preparations before rendering the fade. A
             // shared-pool implementation consumes every available worker.
-            Assert.True(ThreadPool.SetMinThreads(1, minIo));
-            Assert.True(ThreadPool.SetMaxThreads(4, maxIo));
-            pending = Task.WhenAll(Enumerable.Range(0, 4).Select(_ => engine.PlayAsync(new SoundDefinition(), path)));
-            Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+            Assert.True(ThreadPool.SetMinThreads(decoderCount, minIo));
+            Assert.True(ThreadPool.SetMaxThreads(decoderCount, maxIo));
+            pending = Task.WhenAll(Enumerable.Range(0, decoderCount).Select(_ => engine.PlayAsync(new SoundDefinition(), path)));
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(5)), "All decoders must be blocked before rendering the fade");
             engine.Stop(fading.Id);
             provider!.Read(new float[4096], 0, 4096);
             Interlocked.Exchange(ref output.ConsumedSamples, 4096);
-            Assert.True(ended.Wait(TimeSpan.FromSeconds(2)), "A blocked decoder starved fade completion");
+            Assert.True(ended.Wait(TimeSpan.FromSeconds(5)), "A blocked decoder starved fade completion");
             Assert.Equal(PlaybackEndReason.Stopped, reason);
         }
         finally

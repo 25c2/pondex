@@ -1002,7 +1002,8 @@ public sealed class MainFormRegressionTests
             Application.DoEvents();
             var checks = Descendants(settings).OfType<CheckBox>().ToArray();
             Func<bool>[] values = [() => settings.BackgroundInput, () => settings.SilentLoop,
-                () => settings.FadeOutOnStop, () => settings.FadeOutOnStopAll, () => settings.DarkMode, () => settings.DetailedLogging];
+                () => settings.FadeOutOnStop, () => settings.FadeOutOnStopAll, () => settings.DarkMode,
+                () => settings.DetailedLogging, () => settings.ExclusiveGroups];
             Assert.Equal(values.Length, checks.Length);
             for (var index = 0; index < checks.Length; index++)
             {
@@ -1088,7 +1089,7 @@ public sealed class MainFormRegressionTests
     private static void RunOnSta(Action action) => WinFormsTest.Run(action);
 
     [Fact]
-    public void EmergencyMenu_StopsImmediatelyAndDiscardsPreviouslyQueuedBackgroundKey() => RunOnSta(() =>
+    public void EmergencyMenu_StopsImmediatelyAndDiscardsPreviouslyQueuedBackgroundKey() => WinFormsTest.RunAsync(async () =>
     {
         using var directory = new TestDirectory();
         using var manager = new ProjectManager(new ProjectSerializer());
@@ -1102,10 +1103,14 @@ public sealed class MainFormRegressionTests
         manager.Current.Settings.FadeOutOnStopAll = true;
         manager.Current.Settings.BackgroundInput = true;
         using var engine = CreateEngine();
+        WinFormsTest.Note("emergency menu: create form");
         using var form = CreateForm(manager, engine, directory.Path);
         form.Show();
-        Application.DoEvents();
-        engine.PlayAsync(sound, wavePath).GetAwaiter().GetResult();
+        WinFormsTest.Note("emergency menu: configure output");
+        await (Task)Field("_outputConfigurationTask").GetValue(form)!;
+        WinFormsTest.Note("emergency menu: start playback");
+        await engine.PlayAsync(sound, wavePath);
+        Assert.Equal(sound.Id, Assert.Single(engine.GetActiveSoundIds()));
         var starts = 0;
         engine.PlaybackStarted += (_, _) => starts++;
         var dispatcher = (ShortcutDispatcher)typeof(MainForm).GetField("_shortcutDispatcher", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
@@ -1117,11 +1122,13 @@ public sealed class MainFormRegressionTests
             .Single(item => item.Name == "emergencyStopMenuItem");
         Assert.Equal(Keys.None, emergency.ShortcutKeys);
         emergency.PerformClick();
-        Application.DoEvents();
+        WinFormsTest.Note("emergency menu: await stop");
+        await (Task)Field("_manualEmergencyStopTask").GetValue(form)!;
         Assert.Equal(0, starts);
         Assert.Empty(engine.GetActiveSoundIds());
         Assert.True(manager.Current.Settings.FadeOutOnStopAll);
         Assert.Contains(Keys.B, held.Keys);
+        WinFormsTest.Note("emergency menu: close form");
         form.CloseWithoutSavePromptForSmokeTest();
     });
 

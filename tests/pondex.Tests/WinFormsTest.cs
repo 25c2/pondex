@@ -38,6 +38,22 @@ internal static class WinFormsTest
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetKeyboardState(byte[] keyState);
 
+    public static void RunAsync(Func<Task> action) => Run(() =>
+    {
+        using var context = new ApplicationContext();
+        using var dispatcher = new Control();
+        _ = dispatcher.Handle;
+        ExceptionDispatchInfo? failure = null;
+        dispatcher.BeginInvoke(async () =>
+        {
+            try { await action(); }
+            catch (Exception exception) { failure = ExceptionDispatchInfo.Capture(exception); }
+            finally { context.ExitThread(); }
+        });
+        Application.Run(context);
+        failure?.Throw();
+    });
+
     public static void Run(Action action, TimeSpan? timeout = null)
     {
         Exception? failure = null;
