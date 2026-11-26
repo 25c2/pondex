@@ -45,16 +45,24 @@ public sealed class ProjectSerializer
             var bytes = new byte[stream.Length];
             await stream.ReadExactlyAsync(bytes, cancellationToken);
             var payloadOffset = bytes.AsSpan().StartsWith(new byte[] { 0xef, 0xbb, 0xbf }) ? 3 : 0;
-            using var document = JsonDocument.Parse(
-                bytes.AsMemory(payloadOffset),
-                new JsonDocumentOptions
-                {
-                    AllowTrailingCommas = true,
-                    CommentHandling = JsonCommentHandling.Skip,
-                    MaxDepth = ProjectLimits.MaxJsonDepth
-                });
-            var model = DeserializeDocument(document.RootElement);
-            model.FileRevision = Convert.ToHexString(SHA256.HashData(bytes));
+            ProjectModel model;
+            if (PonDashiProjectReader.LooksLikeXml(bytes.AsSpan(payloadOffset)))
+            {
+                model = PonDashiProjectReader.Read(bytes, fullPath, cancellationToken);
+            }
+            else
+            {
+                using var document = JsonDocument.Parse(
+                    bytes.AsMemory(payloadOffset),
+                    new JsonDocumentOptions
+                    {
+                        AllowTrailingCommas = true,
+                        CommentHandling = JsonCommentHandling.Skip,
+                        MaxDepth = ProjectLimits.MaxJsonDepth
+                    });
+                model = DeserializeDocument(document.RootElement);
+                model.FileRevision = Convert.ToHexString(SHA256.HashData(bytes));
+            }
             ValidateAndNormalize(model);
             foreach (var sound in model.Sounds)
             {

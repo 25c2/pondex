@@ -218,6 +218,7 @@ public sealed class MainForm : Form
             _triggerEngine.SetTriggers(_projectManager.Current.Triggers, preserveRuntimeState: true);
             _projectManager.MarkDirty(shortcutBindingsChanged: false);
         };
+        _triggerPanel.BulkChangeCompleted += (message, skipped) => SetStatus(message, skipped);
         triggersTab.Controls.Add(_triggerPanel);
         _tabs.TabPages.Add(soundsTab);
         _tabs.TabPages.Add(triggersTab);
@@ -943,7 +944,7 @@ public sealed class MainForm : Form
         if (!CanEditProject()) { return; }
         using var dialog = new OpenFileDialog
         {
-            Filter = "pondexプロジェクト (*.pondex)|*.pondex|すべてのファイル (*.*)|*.*",
+            Filter = "すべてのファイル（拡張子なしを含む）|*.*|pondexプロジェクト (*.pondex)|*.pondex|XMLファイル (*.xml)|*.xml",
             CheckFileExists = true
         };
         if (dialog.ShowDialog(this) == DialogResult.OK)
@@ -994,22 +995,30 @@ public sealed class MainForm : Form
                     "欠落音源", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             RefreshRecentMenu();
+            var imported = _projectManager.Current.IsPonDashiImport;
             if (_projectManager.Current.LoadWarnings.Count > 0)
             {
-                var warningText = string.Join(Environment.NewLine, _projectManager.Current.LoadWarnings.Take(10));
-                _logger.Warning($"プロジェクトの一部を修復またはスキップしました:{Environment.NewLine}{warningText}");
+                var warnings = _projectManager.Current.LoadWarnings;
+                var warningText = string.Join(Environment.NewLine, warnings.Take(10));
+                if (warnings.Count > 10) { warningText += $"\nほか{warnings.Count - 10}件。詳細はログを確認してください。"; }
+                _logger.Warning($"プロジェクトの読み込み時の確認事項:{Environment.NewLine}{string.Join(Environment.NewLine, warnings)}");
                 MessageBox.Show(
                     this,
-                    $"読み込めた項目は使えます。変更を残すには、別の名前で保存してください。元のファイルは上書きできません。\n\n{warningText}",
-                    "一部の設定を読み込めませんでした",
+                    imported
+                        ? $"無印ポン出しくんから読み込みました。保存形式は .pondex です。\n\n{warningText}"
+                        : $"読み込めた項目は使えます。変更を残すには、別の名前で保存してください。元のファイルは上書きできません。\n\n{warningText}",
+                    imported ? "無印ポン出しくん 読み込み結果" : "一部の設定を読み込めませんでした",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
-                SetStatus($"警告付きで開きました（{_projectManager.Current.LoadWarnings.Count}件）。", true);
+                SetStatus(imported ? $"無印プロジェクトを読み込みました（確認事項{warnings.Count}件）。"
+                    : $"警告付きで開きました（{warnings.Count}件）。", true);
             }
             else
             {
                 var missing = _projectManager.Current.MissingSoundIds.Count;
-                SetStatus(missing == 0 ? "読み込み完了" : $"読み込み完了・欠落{missing}件", missing > 0);
+                SetStatus(imported
+                    ? $"無印プロジェクトを読み込みました。.pondex で保存できます。{(missing > 0 ? $" 欠落音源{missing}件。" : "")}"
+                    : missing == 0 ? "読み込み完了" : $"読み込み完了・欠落{missing}件", missing > 0);
             }
         }
         catch (Exception exception)
@@ -1726,14 +1735,14 @@ public sealed class MainForm : Form
     private Task<PlaybackStartResult> PlaySoundAsync(Guid soundId) =>
         PlaySoundFromAsync(soundId, "mouse", Stopwatch.GetTimestamp());
 
-    private async Task<PlaybackStartResult> PlaySoundFromAsync(Guid soundId, string origin, long processedAt)
+    private async Task<PlaybackStartResult> PlaySoundFromAsync(Guid soundId, string origin, long processedAt, bool exclusive = false)
     {
         CancelSoundPreflight();
         var detailed = _logger.DetailedLoggingEnabled;
         var timing = detailed || _audioEngine.PlaybackTimingEnabled ? new OperationTiming(processedAt) : null;
         try
         {
-            return await PlaySoundCoreAsync(soundId, timing, processedAt);
+            return await PlaySoundCoreAsync(soundId, timing, processedAt, exclusive);
         }
         finally
         {
@@ -1746,7 +1755,7 @@ public sealed class MainForm : Form
         }
     }
 
-    private async Task<PlaybackStartResult> PlaySoundCoreAsync(Guid soundId, OperationTiming? timing, long processedAt)
+    private async Task<PlaybackStartResult> PlaySoundCoreAsync(Guid soundId, OperationTiming? timing, long processedAt, bool exclusive)
     {
         void SetOutcome(string outcome)
         {
@@ -1758,11 +1767,31 @@ public sealed class MainForm : Form
             SetOutcome(_manualEmergencyStopping ? "emergency_stop" : "diagnostic_or_suspended");
             return PlaybackStartResult.Cancelled;
         }
+        var project = _projectManager.Current;
+        var sound = project.Sounds.FirstOrDefault(item => item.Id == soundId);
+        if (sound is null)
+        {
+            SetOutcome("sound_removed");
+            return PlaybackStartResult.Cancelled;
+        }
+        if ((exclusive || project.Settings.ExclusiveGroups) && !string.IsNullOrWhiteSpace(sound.Group))
+        {
+            var group = sound.Group.Trim();
+            var active = _audioEngine.GetActiveSoundIds().ToHashSet();
+            foreach (var peer in project.Sounds)
+            {
+                if (peer.Id != soundId && (active.Contains(peer.Id) || _pendingPlayback.ContainsKey(peer.Id))
+                    && string.Equals(peer.Group.Trim(), group, StringComparison.OrdinalIgnoreCase))
+                {
+                    StopSound(peer.Id, immediately: exclusive);
+                }
+            }
+        }
         var generation = Interlocked.Read(ref _playbackGeneration);
         var version = _uiPlayVersions.GetValueOrDefault(soundId) + 1;
         _uiPlayVersions[soundId] = version;
         bool IsCurrent() => !IsDisposed && !Disposing && generation == Interlocked.Read(ref _playbackGeneration)
-            && _uiPlayVersions.GetValueOrDefault(soundId) == version;
+            && ReferenceEquals(project, _projectManager.Current) && _uiPlayVersions.GetValueOrDefault(soundId) == version;
         SetPendingPlayback(soundId, PlaybackState.CheckingOutput);
         using (timing?.Measure("output_config"))
         {
@@ -1785,14 +1814,6 @@ public sealed class MainForm : Form
             SetStatus("このPCで出力先を選び直してください。", true);
             return PlaybackStartResult.Failed;
         }
-        var sound = _projectManager.Current.Sounds.FirstOrDefault(item => item.Id == soundId);
-        if (sound is null)
-        {
-            SetOutcome("sound_removed");
-            CompletePlaybackDisplay(soundId, PlaybackState.Stopped);
-            return PlaybackStartResult.Cancelled;
-        }
-
         var path = _projectManager.SnapshotPlaybackPath(sound);
         SetPendingPlayback(soundId, PlaybackState.Preparing);
         var result = PlaybackStartResult.Started;
@@ -2065,16 +2086,7 @@ public sealed class MainForm : Form
                     _ = PlaySoundFromAsync(playId, "shortcut", processedAt);
                     break;
                 case ShortcutCommandType.PlayExclusive when command.SoundId is { } exclusiveId:
-                    var target = _projectManager.Current.Sounds.FirstOrDefault(sound => sound.Id == exclusiveId);
-                    if (target is not null && !string.IsNullOrWhiteSpace(target.Group))
-                    {
-                        foreach (var peer in _projectManager.Current.Sounds.Where(sound => sound.Id != exclusiveId
-                            && string.Equals(sound.Group.Trim(), target.Group.Trim(), StringComparison.OrdinalIgnoreCase)))
-                        {
-                            StopSound(peer.Id, immediately: true);
-                        }
-                    }
-                    _ = PlaySoundFromAsync(exclusiveId, "shortcut", processedAt);
+                    _ = PlaySoundFromAsync(exclusiveId, "shortcut", processedAt, exclusive: true);
                     break;
                 case ShortcutCommandType.Stop when command.SoundId is { } stopId:
                     StopSound(stopId);
@@ -2161,7 +2173,7 @@ public sealed class MainForm : Form
             dialog.SoundListColumns,
             projectName,
             dialog.ThemeColor,
-            dialog.DetailedLogging);
+            dialog.DetailedLogging) || settings.ExclusiveGroups != dialog.ExclusiveGroups;
         if (selectedDevice is not null && _logger.DetailedLoggingEnabled)
         {
             _logger.Debug($"output_selection previous={settings.OutputDevice} requested={selectedId} number={selectedDevice.DeviceNumber}");
@@ -2171,6 +2183,7 @@ public sealed class MainForm : Form
         settings.SilentLoop = dialog.SilentLoop;
         settings.FadeOutOnStop = dialog.FadeOutOnStop;
         settings.FadeOutOnStopAll = dialog.FadeOutOnStopAll;
+        settings.ExclusiveGroups = dialog.ExclusiveGroups;
         settings.DarkMode = dialog.DarkMode;
         settings.DetailedLogging = dialog.DetailedLogging;
         settings.SoundListColumns = dialog.SoundListColumns;
@@ -3147,7 +3160,7 @@ public sealed class MainForm : Form
         }
     }
 
-    private void OnDragDrop(object? sender, DragEventArgs eventArgs)
+    private async void OnDragDrop(object? sender, DragEventArgs eventArgs)
     {
         if (_editingLocked || _projectOperationInProgress || _diagnosticCancellation is not null)
         {
@@ -3156,6 +3169,11 @@ public sealed class MainForm : Form
 
         if (eventArgs.Data?.GetData(DataFormats.FileDrop) is string[] paths)
         {
+            if (paths.Length == 1 && Path.GetExtension(paths[0]).ToLowerInvariant() is "" or ".pondex" or ".xml")
+            {
+                await OpenProjectAsync(paths[0]);
+                return;
+            }
             AddSoundFiles(paths);
         }
     }

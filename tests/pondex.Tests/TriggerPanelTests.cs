@@ -1,3 +1,4 @@
+using System.Drawing;
 using System.Reflection;
 using pondex.Project;
 using pondex.UI;
@@ -69,6 +70,81 @@ public sealed class TriggerPanelTests
         typeof(TriggerPanel).GetMethod("AddTrigger", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(panel, null);
         Assert.Equal(ProjectLimits.MaxTriggers, definitions.Count);
     }
+
+    [Fact]
+    public void BulkButtons_UpdateEligibleTriggersOnceAndRespectEditingLock() => WinFormsTest.Run(() =>
+    {
+        var sound = new SoundDefinition { Group = "SE" };
+        var clock = new TriggerDefinition
+        {
+            Enabled = false,
+            TargetSoundId = sound.Id,
+            TriggerType = TriggerType.ClockTime,
+            Parameters = new TriggerParameters { ClockTime = new TimeOnly(12, 0) }
+        };
+        var group = new TriggerDefinition
+        {
+            Enabled = false,
+            TargetGroup = "se",
+            TriggerType = TriggerType.SoundElapsed,
+            Parameters = new TriggerParameters { Elapsed = TimeSpan.Zero, SourceSoundId = sound.Id }
+        };
+        var held = new TriggerDefinition { Enabled = false, TargetGroup = "SE", TargetGroupOnHold = true };
+        var missingGroup = new TriggerDefinition
+        {
+            Enabled = false,
+            TargetGroup = "missing",
+            TriggerType = TriggerType.StopwatchElapsed,
+            Parameters = new TriggerParameters { Elapsed = TimeSpan.Zero }
+        };
+        var missingSource = new TriggerDefinition
+        {
+            Enabled = false,
+            TargetSoundId = sound.Id,
+            TriggerType = TriggerType.SoundEnded,
+            Parameters = new TriggerParameters { SourceSoundId = Guid.NewGuid() }
+        };
+        var missingTime = new TriggerDefinition { Enabled = false, TargetSoundId = sound.Id, TriggerType = TriggerType.ClockTime };
+        List<TriggerDefinition> triggers = [clock, group, held, missingGroup, missingSource, missingTime];
+        using var form = new Form { ClientSize = new Size(440, 300) };
+        using var panel = new TriggerPanel { Dock = DockStyle.Fill };
+        form.Controls.Add(panel);
+        panel.SetData(triggers, [sound]);
+        form.Show();
+        Application.DoEvents();
+
+        var toolbar = panel.Controls[0].Controls.OfType<FlowLayoutPanel>().Single();
+        var allOn = toolbar.Controls.OfType<Button>().Single(button => button.Text == "全ON");
+        var allOff = toolbar.Controls.OfType<Button>().Single(button => button.Text == "全OFF");
+        Assert.All(toolbar.Controls.OfType<Button>(), button => Assert.True(toolbar.ClientRectangle.Contains(button.Bounds)));
+
+        var changes = 0;
+        var lastMessage = string.Empty;
+        var areAnySkipped = false;
+        panel.DefinitionsChanged += (_, _) => changes++;
+        panel.BulkChangeCompleted += (message, skipped) => { lastMessage = message; areAnySkipped = skipped; };
+        allOn.PerformClick();
+        Assert.True(clock.Enabled);
+        Assert.True(group.Enabled);
+        Assert.All(triggers.Skip(2), item => Assert.False(item.Enabled));
+        Assert.True(areAnySkipped);
+        Assert.Contains("4件", lastMessage);
+        Assert.Equal(1, changes);
+        allOn.PerformClick();
+        Assert.Equal(1, changes);
+
+        allOff.PerformClick();
+        Assert.All(triggers, item => Assert.False(item.Enabled));
+        Assert.False(areAnySkipped);
+        Assert.Equal(2, changes);
+
+        panel.SetEditingLocked(true);
+        Assert.False(allOn.Enabled);
+        Assert.False(allOff.Enabled);
+        allOn.PerformClick();
+        Assert.All(triggers, item => Assert.False(item.Enabled));
+        Assert.Equal(2, changes);
+    });
 
     private static DataGridView GetGrid(TriggerPanel panel) =>
         (DataGridView)(typeof(TriggerPanel).GetField("_grid", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(panel)

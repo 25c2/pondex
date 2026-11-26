@@ -95,11 +95,14 @@ public sealed class ProjectManager : IDisposable
         CancellationToken cancellationToken = default)
     {
         var requestId = Interlocked.Increment(ref _replaceRequestId);
-        var fullPath = ProjectPath.GetSafeFullPath(path, "プロジェクトパス");
         await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(true);
         try
         {
-            var candidate = await Task.Run(() => _serializer.LoadAsync(fullPath, cancellationToken), cancellationToken).ConfigureAwait(true);
+            var (fullPath, candidate) = await Task.Run(async () =>
+            {
+                var resolved = ProjectPath.GetSafeFullPath(path, "プロジェクトパス");
+                return (resolved, await _serializer.LoadAsync(resolved, cancellationToken).ConfigureAwait(false));
+            }, cancellationToken).ConfigureAwait(true);
             if (requestId != Interlocked.Read(ref _replaceRequestId)
                 || (authorize is not null && !authorize(candidate, fullPath)))
             {
@@ -113,11 +116,11 @@ public sealed class ProjectManager : IDisposable
                     return false;
                 }
 
-                _protectedSourcePath = candidate.LoadWarnings.Count > 0 ? fullPath : null;
+                _protectedSourcePath = candidate.IsPonDashiImport || candidate.LoadWarnings.Count > 0 ? fullPath : null;
                 _current = candidate;
                 Interlocked.Increment(ref _shortcutBindingsVersion);
                 _currentPath = fullPath;
-                _isDirty = false;
+                _isDirty = candidate.IsPonDashiImport;
                 _stateVersion++;
             }
 
@@ -220,6 +223,10 @@ public sealed class ProjectManager : IDisposable
 
             var newPath = destination.Path;
             lock (_stateLock) { EnsureSafeSavePath(newPath); }
+            if (current.IsPonDashiImport && !string.Equals(Path.GetExtension(newPath), ".pondex", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("無印ポン出しくんから読み込んだプロジェクトは .pondex 形式で保存してください。");
+            }
 
             using (timing?.Measure("rebase_paths"))
             {
@@ -228,6 +235,7 @@ public sealed class ProjectManager : IDisposable
                     foreach (var sound in snapshot.Sounds)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
+                        if (string.IsNullOrWhiteSpace(sound.File)) { continue; }
                         var resolvedPath = approvedPaths.TryGetValue(sound.Id, out var approved)
                             ? approved : ResolveSoundPath(sound, oldPath);
                         sound.File = ProjectPath.ToStoredPath(newPath, resolvedPath);
@@ -259,6 +267,7 @@ public sealed class ProjectManager : IDisposable
                     }
 
                     _currentPath = newPath;
+                    current.IsPonDashiImport = false;
                     current.FileRevision = LastSaveResult.FileRevision;
                     _isDirty = false;
                     _stateVersion++;
@@ -316,7 +325,9 @@ public sealed class ProjectManager : IDisposable
     {
         if (string.Equals(path, _protectedSourcePath, StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException("読込時に一部の設定を復元できなかったため、元ファイルには上書きできません。別の名前で保存してください。");
+            throw new InvalidOperationException(_current.IsPonDashiImport
+                ? "元のポン出しくんファイルには上書きできません。別の .pondex ファイルに保存してください。"
+                : "読込時に一部の設定を復元できなかったため、元ファイルには上書きできません。別の名前で保存してください。");
         }
     }
 

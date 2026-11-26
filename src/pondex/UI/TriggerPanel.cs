@@ -6,6 +6,8 @@ public sealed class TriggerPanel : UserControl
 {
     private readonly DataGridView _grid;
     private readonly Button _addButton;
+    private readonly Button _enableAllButton;
+    private readonly Button _disableAllButton;
     private IReadOnlyList<SoundDefinition> _sounds = [];
     private List<TriggerDefinition> _triggers = [];
     private bool _refreshing;
@@ -47,16 +49,24 @@ public sealed class TriggerPanel : UserControl
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "操作", DataPropertyName = nameof(TriggerRow.Action), FillWeight = 14, ReadOnly = true });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "対象", DataPropertyName = nameof(TriggerRow.Target), FillWeight = 28, ReadOnly = true });
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1 };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(4) };
+        var toolbar = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Padding = new Padding(4)
+        };
         _toolbar = toolbar;
         var addButton = new Button { Text = "＋ 追加", Width = 90, Height = 32 };
         _addButton = addButton;
         var editButton = new Button { Text = "編集", Width = 90, Height = 32 };
         var deleteButton = new Button { Text = "削除", Width = 90, Height = 32 };
         var toggleButton = new Button { Text = "有効/無効", Width = 100, Height = 32 };
-        toolbar.Controls.AddRange([addButton, editButton, deleteButton, toggleButton]);
+        _enableAllButton = new Button { Text = "全ON", Width = 66, Height = 32, Enabled = false };
+        _disableAllButton = new Button { Text = "全OFF", Width = 66, Height = 32, Enabled = false };
+        toolbar.Controls.AddRange([addButton, editButton, deleteButton, toggleButton, _enableAllButton, _disableAllButton]);
         root.Controls.Add(toolbar, 0, 0);
         root.Controls.Add(_grid, 0, 1);
         Controls.Add(root);
@@ -65,6 +75,8 @@ public sealed class TriggerPanel : UserControl
         editButton.Click += (_, _) => EditSelectedTrigger();
         deleteButton.Click += (_, _) => DeleteSelectedTrigger();
         toggleButton.Click += (_, _) => ToggleSelectedTrigger();
+        _enableAllButton.Click += (_, _) => SetAllEnabled(true);
+        _disableAllButton.Click += (_, _) => SetAllEnabled(false);
         _grid.CellDoubleClick += (_, eventArgs) =>
         {
             if (eventArgs.RowIndex >= 0 && eventArgs.ColumnIndex != 0)
@@ -105,13 +117,15 @@ public sealed class TriggerPanel : UserControl
 
     public event EventHandler? DefinitionsChanged;
 
+    internal event Action<string, bool>? BulkChangeCompleted;
+
     internal void SetEditingLocked(bool locked)
     {
         _editingLocked = locked;
         _grid.CancelEdit();
         _grid.ReadOnly = locked;
         _toolbar.Enabled = !locked;
-        _addButton.Enabled = !locked && _triggers.Count < ProjectLimits.MaxTriggers;
+        UpdateToolbarButtons();
     }
 
     internal void RefreshSoundNames()
@@ -219,15 +233,64 @@ public sealed class TriggerPanel : UserControl
         Changed();
     }
 
+    private void SetAllEnabled(bool enabled)
+    {
+        if (_editingLocked || _triggers.Count == 0) { return; }
+
+        var soundIds = _sounds.Select(sound => sound.Id).ToHashSet();
+        var groups = _sounds.Where(sound => !string.IsNullOrWhiteSpace(sound.Group))
+            .Select(sound => sound.Group).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var changed = 0;
+        var skipped = 0;
+        foreach (var trigger in _triggers)
+        {
+            if (trigger.Enabled == enabled) { continue; }
+            if (enabled && !CanEnable(trigger, soundIds, groups))
+            {
+                skipped++;
+                continue;
+            }
+            trigger.Enabled = enabled;
+            changed++;
+        }
+
+        if (changed > 0) { Changed(); }
+        var message = enabled ? $"イベントを{changed}件有効にしました。" : $"イベントを{changed}件無効にしました。";
+        if (skipped > 0) { message += $" 保留中や条件・対象を確認できない{skipped}件は無効のままです。"; }
+        BulkChangeCompleted?.Invoke(message, skipped > 0);
+    }
+
+    private static bool CanEnable(TriggerDefinition trigger, HashSet<Guid> soundIds, HashSet<string> groups)
+    {
+        if (trigger.TargetGroupOnHold || !Enum.IsDefined(trigger.Action)) { return false; }
+        var targetExists = string.IsNullOrWhiteSpace(trigger.TargetGroup)
+            ? soundIds.Contains(trigger.TargetSoundId) : groups.Contains(trigger.TargetGroup);
+        return targetExists && trigger.TriggerType switch
+        {
+            TriggerType.ClockTime => trigger.Parameters.ClockTime is not null,
+            TriggerType.StopwatchElapsed => trigger.Parameters.Elapsed >= TimeSpan.Zero,
+            TriggerType.SoundEnded => trigger.Parameters.SourceSoundId is { } source && soundIds.Contains(source),
+            TriggerType.SoundElapsed => trigger.Parameters.SourceSoundId is { } source && soundIds.Contains(source)
+                && trigger.Parameters.Elapsed >= TimeSpan.Zero,
+            _ => false
+        };
+    }
+
     private void Changed()
     {
         RefreshGrid();
         DefinitionsChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private void RefreshGrid()
+    private void UpdateToolbarButtons()
     {
         _addButton.Enabled = !_editingLocked && _triggers.Count < ProjectLimits.MaxTriggers;
+        _enableAllButton.Enabled = _disableAllButton.Enabled = !_editingLocked && _triggers.Count > 0;
+    }
+
+    private void RefreshGrid()
+    {
+        UpdateToolbarButtons();
         _refreshing = true;
         try
         {

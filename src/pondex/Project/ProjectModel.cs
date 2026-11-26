@@ -32,6 +32,8 @@ public sealed class ProjectModel
 
     internal string? FileRevision { get; set; }
 
+    internal bool IsPonDashiImport { get; set; }
+
     internal HashSet<Guid> MissingSoundIds { get; } = [];
 }
 
@@ -61,6 +63,9 @@ public sealed class ProjectSettings
     public bool FadeOutOnStop { get; set; } = true;
 
     public bool FadeOutOnStopAll { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ExclusiveGroups { get; set; }
 
     public bool DarkMode { get; set; }
 

@@ -228,6 +228,38 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
     });
 
     [Fact]
+    public void OpenPonDashiProject_RendersCuesAndAppliesExclusiveGroupsOnNormalPlay() => WinFormsTest.Run(() =>
+    {
+        using var directory = new TestDirectory();
+        using var manager = new ProjectManager(new ProjectSerializer());
+        var wave = Path.GetFileName(CreateWave(directory));
+        var project = directory.GetPath("show");
+        File.WriteAllText(project, $"""
+            <ProjectSettings><element>
+              <SoundElement><name>最初</name><groupNo>1</groupNo><shortCutKey>1</shortCutKey><filePathRel>{wave}</filePathRel></SoundElement>
+              <SoundElement><name>次</name><groupNo>1</groupNo><shortCutKey>2</shortCutKey><filePathRel>{wave}</filePathRel></SoundElement>
+            </element></ProjectSettings>
+            """);
+        using var engine = new AudioEngine(new Logger(), (_, _) => new Output());
+        using var form = CreateForm(manager, engine, new TriggerEngine(), () => Initial, directory.Path);
+        Initialize(form);
+
+        Pump((Task)Method("OpenProjectAsync").Invoke(form, [project])!);
+        Assert.True(manager.RequiresSaveAs);
+        Assert.True(manager.IsDirty);
+        Assert.Contains(Descendants(form).OfType<Label>(), label => label.Text == "最初");
+        Assert.Contains(Descendants(form).OfType<Label>(), label => label.Text == "次");
+
+        var first = manager.Current.Sounds[0].Id;
+        var next = manager.Current.Sounds[1].Id;
+        Pump((Task)Method("PlaySoundAsync").Invoke(form, [first])!);
+        Assert.Equal(first, Assert.Single(engine.GetActiveSoundIds()));
+        Pump((Task)Method("PlaySoundAsync").Invoke(form, [next])!);
+        Assert.Equal(next, Assert.Single(engine.GetActiveSoundIds()));
+        form.CloseWithoutSavePromptForSmokeTest();
+    });
+
+    [Fact]
     public void ExclusiveSwitch_StopsFadingPeerImmediately() => WinFormsTest.Run(() =>
     {
         using var directory = new TestDirectory();

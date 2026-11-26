@@ -18,6 +18,7 @@ public sealed class SettingsDialog : Form
     private readonly CheckBox _silentLoopCheck;
     private readonly CheckBox _fadeOutOnStopCheck;
     private readonly CheckBox _fadeOutOnStopAllCheck;
+    private readonly CheckBox _exclusiveGroupsCheck;
     private readonly CheckBox _darkModeCheck;
     private readonly CheckBox _detailedLoggingCheck;
     private readonly TextBox _projectNameText;
@@ -33,7 +34,7 @@ public sealed class SettingsDialog : Form
         StartPosition = FormStartPosition.CenterParent;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(560, 514);
+        ClientSize = new Size(560, 550);
         MinimumSize = new Size(440, 300);
         DpiWindowHelper.Attach(this);
 
@@ -44,7 +45,7 @@ public sealed class SettingsDialog : Form
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Padding = new Padding(14),
             ColumnCount = 2,
-            RowCount = 10
+            RowCount = 11
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -58,6 +59,7 @@ public sealed class SettingsDialog : Form
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
 
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         _projectNameText = new TextBox { Text = string.Empty, Dock = DockStyle.Fill, MaxLength = ProjectLimits.MaxNameLength };
@@ -125,6 +127,12 @@ public sealed class SettingsDialog : Form
             Checked = settings.FadeOutOnStopAll,
             AutoSize = true
         };
+        _exclusiveGroupsCheck = new CheckBox
+        {
+            Text = "再生時に同じGroupの音源を止める",
+            Checked = settings.ExclusiveGroups,
+            AutoSize = true
+        };
         _darkModeCheck = new CheckBox
         {
             Text = "ダークモード",
@@ -166,12 +174,15 @@ public sealed class SettingsDialog : Form
         root.Controls.Add(_darkModeCheck, 1, 8);
         root.Controls.Add(new Label { Text = "診断", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 9);
         root.Controls.Add(_detailedLoggingCheck, 1, 9);
+        root.Controls.Add(new Label { Text = "Group", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 10);
+        root.Controls.Add(_exclusiveGroupsCheck, 1, 10);
 
         _toolTip.SetToolTip(_themeColorText, "色を#RRGGBB形式で指定します。例: #202020");
         _toolTip.SetToolTip(_backgroundInputCheck, "別のアプリを操作中も、音源の割り当てキーを受け付けます。");
         _toolTip.SetToolTip(_silentLoopCheck, "出力ストリームを維持し、再生の頭切れを防ぎます。");
         _toolTip.SetToolTip(_fadeOutOnStopCheck, "通常の停止時に、その音源のFade Out設定を使います。");
         _toolTip.SetToolTip(_fadeOutOnStopAllCheck, "全停止時に、それぞれの音源のFade Out設定を使います。緊急停止は常に即時停止です。");
+        _toolTip.SetToolTip(_exclusiveGroupsCheck, "無印ポン出しくんと同様に、同じGroupで鳴っている音源を停止してから再生します。");
         _toolTip.SetToolTip(_detailedLoggingCheck, "再生要求・準備時間・停止理由などを記録します。音源パスを含むため、共有前に内容を確認してください。");
         _backgroundInputCheck.AccessibleDescription = "他のアプリが前面でも音源の割り当てキーを受け付ける";
         _silentLoopCheck.AccessibleDescription = "無音出力を維持して頭切れを防ぐ";
@@ -289,6 +300,8 @@ public sealed class SettingsDialog : Form
     public bool FadeOutOnStopAll => _fadeOutOnStopAllCheck.Checked;
 
     public bool DarkMode => _darkModeCheck.Checked;
+
+    internal bool ExclusiveGroups => _exclusiveGroupsCheck.Checked;
 
     public bool DetailedLogging => _detailedLoggingCheck.Checked;
 
