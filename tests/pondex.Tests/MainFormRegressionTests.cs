@@ -986,7 +986,11 @@ public sealed class MainFormRegressionTests
         using var manager = new ProjectManager(new ProjectSerializer());
         manager.Current.Settings.DarkMode = darkMode;
         var sound = new SoundDefinition();
-        var trigger = new TriggerDefinition { TargetSoundId = sound.Id };
+        var trigger = new TriggerDefinition
+        {
+            TargetSoundId = sound.Id,
+            Parameters = new TriggerParameters { ClockTime = new TimeOnly(12, 0) }
+        };
         manager.Current.Sounds.Add(sound);
         manager.Current.Triggers.Add(trigger);
         using var engine = CreateEngine();

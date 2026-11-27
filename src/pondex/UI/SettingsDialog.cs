@@ -333,6 +333,14 @@ public sealed class SettingsDialog : Form
 
     public string ThemeColor => _themeColorText.Text.Trim();
 
+    internal (string Name, string ThemeColor) GetEditedProjectMetadata(ProjectMetadata current)
+    {
+        var name = _projectNameText.Text == current.Name
+            ? current.Name : ProjectName.Length == 0 ? "名称未設定" : ProjectName;
+        var themeColor = _themeColorText.Text == current.ThemeColor ? current.ThemeColor : ThemeColor;
+        return (name, themeColor);
+    }
+
     public void SetProjectMetadata(ProjectMetadata metadata)
     {
         _projectNameText.Text = metadata.Name;

@@ -204,7 +204,7 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
         var path = directory.GetPath("show.pondex");
         var serializer = new ProjectSerializer();
         var model = new ProjectModel();
-        model.Project.Name = "Show";
+        model.Project.Name = " Show ";
         model.Settings.OutputDevice = "console";
         model.Settings.MasterVolume = 0.23f;
         model.Settings.ExtensionData = new() { ["extra"] = JsonSerializer.SerializeToElement(123) };
@@ -258,6 +258,7 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
             Assert.False(manager.IsDirty);
             Assert.Equal(revision, manager.Current.FileRevision);
             Assert.Equal("console", manager.Current.Settings.OutputDevice);
+            Assert.Equal(" Show ", manager.Current.Project.Name);
             Assert.Equal(0.23f, manager.Current.Settings.MasterVolume);
             Assert.Equal(123, manager.Current.Settings.ExtensionData!["extra"].GetInt32());
             if (firstVisit && expectedDevice == 3)
@@ -516,6 +517,10 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
         Assert.True((bool)Field("_outputUnavailable").GetValue(form)!);
         Method("ApplyProjectSettings").Invoke(form, null);
         Pump((Task)Field("_outputConfigurationTask").GetValue(form)!);
+        Assert.True((bool)Field("_outputUnavailable").GetValue(form)!);
+        var confirmed = form.ConfirmOutputSelectionAsync(AudioOutputBinding.Create("default", Initial)!);
+        Pump(confirmed);
+        Assert.True(confirmed.GetAwaiter().GetResult());
         Assert.False((bool)Field("_outputUnavailable").GetValue(form)!);
         Assert.True(trigger.IsSuspended);
         form.CloseWithoutSavePromptForSmokeTest();

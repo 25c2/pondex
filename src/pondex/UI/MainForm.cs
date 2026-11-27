@@ -2185,9 +2185,7 @@ public sealed class MainForm : Form
             savedOutput = result.Value;
         }
         var project = _projectManager.Current.Project;
-        var projectName = string.IsNullOrWhiteSpace(dialog.ProjectName)
-            ? "名称未設定"
-            : dialog.ProjectName;
+        var (projectName, themeColor) = dialog.GetEditedProjectMetadata(project);
         var changed = HasProjectSettingsChanges(
             settings,
             project,
@@ -2198,7 +2196,7 @@ public sealed class MainForm : Form
             dialog.DarkMode,
             dialog.SoundListColumns,
             projectName,
-            dialog.ThemeColor,
+            themeColor,
             dialog.DetailedLogging) || settings.ExclusiveGroups != dialog.ExclusiveGroups;
         settings.BackgroundInput = dialog.BackgroundInput;
         settings.SilentLoop = dialog.SilentLoop;
@@ -2209,7 +2207,7 @@ public sealed class MainForm : Form
         settings.DetailedLogging = dialog.DetailedLogging;
         settings.SoundListColumns = dialog.SoundListColumns;
         project.Name = projectName;
-        project.ThemeColor = dialog.ThemeColor;
+        project.ThemeColor = themeColor;
         if (changed)
         {
             _projectManager.MarkDirty(shortcutBindingsChanged: false);
