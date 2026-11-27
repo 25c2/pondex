@@ -49,7 +49,7 @@ public sealed class TriggerDialogTests
 
         var targetCombo = Descendants(dialog)
             .OfType<ComboBox>()
-            .Single(combo => combo.Items.Count == 2);
+            .Single(combo => combo.GetItemText(combo.SelectedItem) == "グループ: SE");
         Assert.Equal("グループ: SE", targetCombo.GetItemText(targetCombo.SelectedItem));
     }
 

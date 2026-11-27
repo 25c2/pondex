@@ -1,6 +1,5 @@
 using System.Security;
 using System.Text;
-using pondex.Audio;
 using pondex.Project;
 
 namespace pondex.Tests;
@@ -68,7 +67,7 @@ public sealed class PonDashiImportTests
         Assert.True(model.Settings.SilentLoop);
         Assert.True(model.Settings.ExclusiveGroups);
         Assert.True(model.Settings.FadeOutOnStopAll);
-        Assert.Null(AudioDeviceManager.FindConfiguredDevice([AudioDeviceInfo.Default], model.Settings.OutputDevice));
+        Assert.Null(model.Settings.OutputDevice);
         Assert.Contains(model.LoadWarnings, warning => warning.Contains("nanoKONTROL", StringComparison.Ordinal));
         Assert.Empty(model.MissingFiles);
 
@@ -151,12 +150,17 @@ public sealed class PonDashiImportTests
         Assert.True(await manager.OpenAsync(xml));
         Assert.Equal(2, manager.Current.MissingFiles.Count);
         Assert.Empty(manager.Current.Sounds[1].File);
-        Assert.Empty(manager.Current.Triggers);
+        var held = Assert.Single(manager.Current.Triggers);
+        Assert.False(held.Enabled);
+        Assert.Equal(Guid.Empty, held.TargetSoundId);
+        Assert.True(held.TargetGroupOnHold);
         Assert.Contains(manager.Current.LoadWarnings, warning => warning.Contains("重複", StringComparison.Ordinal));
 
         var destination = directory.GetPath("converted.pondex");
         await manager.SaveAsAsync(destination);
         Assert.True(await manager.OpenAsync(destination));
+        Assert.False(manager.RequiresSaveAs);
+        Assert.True(Assert.Single(manager.Current.Triggers).TargetGroupOnHold);
         Assert.Equal(2, manager.Current.MissingFiles.Count);
         Assert.Equal(directory.GetPath(Path.Combine("sounds", "missing.wav")), manager.ResolvePlaybackPath(manager.Current.Sounds[0]));
         Assert.Empty(manager.Current.Sounds[1].File);
@@ -183,10 +187,110 @@ public sealed class PonDashiImportTests
         Assert.Empty(manager.Current.Sounds);
     }
 
+    [Fact]
+    public async Task Import_MalformedAndDuplicateFieldsNeverRaiseLevelsOrEnableInput()
+    {
+        using var directory = new TestDirectory();
+        var source = directory.GetPath("show");
+        await File.WriteAllTextAsync(source, """
+            <ProjectSettings><masterVolume>999999999999999999999</masterVolume>
+              <allowBackgroundInput>true</allowBackgroundInput><allowBackgroundInput>false</allowBackgroundInput>
+              <mute>maybe</mute><windowLocation><X>10</X><Y>20</Y></windowLocation><newSetting>value</newSetting>
+              <element>
+                <SoundElement><name>A</name><filePathRel>a.wav</filePathRel><volume>101</volume><pitch>NaN</pitch><pan>-105</pan><fadeinTime>INF</fadeinTime><loop>maybe</loop><loopInSample>-1</loopInSample></SoundElement>
+                <SoundElement><name>B</name><filePathRel>b.wav</filePathRel><volume>100</volume><volume>50</volume><fadeoutTime>-4</fadeoutTime></SoundElement>
+                <SoundElement><name>C</name><filePathRel>c.wav</filePathRel></SoundElement>
+              </element>
+              <evlistInfo>
+                <EventTriggerInfo><enable>maybe</enable><eventName>Keep</eventName><destName>A</destName></EventTriggerInfo>
+                <EventTriggerInfo><eventName>Skip</eventName><destName>B</destName><conditionType>3</conditionType><conditionStr>A</conditionStr><conditionTime>999999999999999999999</conditionTime><commandType>0</commandType></EventTriggerInfo>
+              </evlistInfo>
+            </ProjectSettings>
+            """);
+        var model = await new ProjectSerializer().LoadAsync(source);
+        Assert.Equal(0, model.Settings.MasterVolume);
+        Assert.True(model.Settings.MasterMute);
+        Assert.False(model.Settings.BackgroundInput);
+        Assert.All(model.Sounds, sound => Assert.Equal(0, sound.Volume));
+        Assert.Equal(1, model.Sounds[0].Speed);
+        Assert.Equal(-1, model.Sounds[0].Pan);
+        Assert.False(model.Sounds[0].Loop.Enabled);
+        Assert.False(model.Sounds[0].FadeIn.Enabled);
+        Assert.False(model.Sounds[1].FadeOut.Enabled);
+        Assert.False(Assert.Single(model.Triggers).Enabled);
+        Assert.Contains(model.LoadWarnings, warning => warning.Contains("newSetting", StringComparison.Ordinal));
+        Assert.DoesNotContain(model.LoadWarnings, warning => warning.Contains("windowLocation", StringComparison.Ordinal));
+        Assert.Contains(model.LoadWarnings, warning => warning.Contains("volume", StringComparison.Ordinal)
+            && warning.Contains("重複", StringComparison.Ordinal));
+        Assert.Contains(model.LoadWarnings, warning => warning.Contains("Skip", StringComparison.Ordinal)
+            && warning.Contains("操作 0", StringComparison.Ordinal) && warning.Contains("対象「B」", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Import_WarningsAreBoundedForLongUnknownFieldsAndUnsupportedEvents()
+    {
+        using var directory = new TestDirectory();
+        var source = directory.GetPath("show.xml");
+        var value = new string('s', 4000);
+        var events = $"""
+            <EventTriggerInfo><eventName>{value}</eventName><commandType>999</commandType><conditionStr>{value}</conditionStr><destName>{value}</destName></EventTriggerInfo>
+            """;
+        await File.WriteAllTextAsync(source, $"<ProjectSettings><element/><evlistInfo>{string.Concat(Enumerable.Repeat(events, 60))}</evlistInfo></ProjectSettings>");
+        var model = await new ProjectSerializer().LoadAsync(source);
+        Assert.Empty(model.Triggers);
+        Assert.InRange(model.LoadWarnings.Count, 2, 33);
+        Assert.All(model.LoadWarnings, warning => Assert.True(warning.Length < 320));
+        Assert.Contains(model.LoadWarnings, warning => warning.Contains("表示上限", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Import_DecodesFileUriOnceAndUsesExistingAbsolutePathBeforeAbsoluteUriFallback()
+    {
+        using var directory = new TestDirectory();
+        var source = directory.GetPath("show");
+        var uriPath = directory.GetPath("日本語 %20 #.wav");
+        var preferred = directory.GetPath("absolute.wav");
+        await File.WriteAllBytesAsync(uriPath, [1]);
+        await File.WriteAllBytesAsync(preferred, [2]);
+        var fileUri = new Uri(directory.Path + Path.DirectorySeparatorChar).AbsoluteUri
+            + Uri.EscapeDataString(Path.GetFileName(uriPath));
+        await File.WriteAllTextAsync(source, $"""
+            <ProjectSettings><element>
+              <SoundElement><filePathRel>{SecurityElement.Escape(fileUri)}</filePathRel><filePath>{SecurityElement.Escape(preferred)}</filePath></SoundElement>
+              <SoundElement><filePathRel>{SecurityElement.Escape(fileUri)}</filePathRel><filePath>missing.wav</filePath></SoundElement>
+            </element></ProjectSettings>
+            """);
+        var model = await new ProjectSerializer().LoadAsync(source);
+        Assert.Empty(model.MissingFiles);
+        Assert.Equal(preferred, model.Sounds[0].File);
+        Assert.Equal(uriPath, model.Sounds[1].File);
+    }
+
+    [Fact]
+    public async Task Import_FailedOrCancelledSaveKeepsTheProtectedSource()
+    {
+        using var directory = new TestDirectory();
+        var source = directory.GetPath("show");
+        const string xml = "<ProjectSettings><element /></ProjectSettings>";
+        await File.WriteAllTextAsync(source, xml);
+        using var manager = new ProjectManager(new ProjectSerializer());
+        Assert.True(await manager.OpenAsync(source));
+        var blocked = directory.GetPath("occupied");
+        await File.WriteAllTextAsync(blocked, "file");
+        await Assert.ThrowsAnyAsync<IOException>(() => manager.SaveAsAsync(Path.Combine(blocked, "show.pondex")));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            manager.SaveAsAsync(directory.GetPath("cancelled.pondex"), new CancellationToken(canceled: true)));
+        Assert.Equal(xml, await File.ReadAllTextAsync(source));
+        Assert.True(manager.IsDirty);
+        Assert.True(manager.RequiresSaveAs);
+        Assert.True(manager.Current.IsPonDashiImport);
+    }
+
     [Theory]
     [InlineData("<!DOCTYPE ProjectSettings [<!ELEMENT ProjectSettings ANY>]><ProjectSettings><element /></ProjectSettings>")]
     [InlineData("<Unrelated><element /></Unrelated>")]
     [InlineData("<ProjectSettings><element><Unsupported /></element></ProjectSettings>")]
+    [InlineData("<ProjectSettings><element /><element /></ProjectSettings>")]
     [InlineData("<ProjectSettings><element>")]
     public async Task Import_RejectsDtdUnrelatedOrMalformedXml(string contents)
     {

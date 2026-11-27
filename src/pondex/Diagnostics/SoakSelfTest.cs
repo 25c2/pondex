@@ -36,6 +36,7 @@ internal static class SoakSelfTest
 
     public static async Task<SoakSelfTestResult> RunAsync(
         TimeSpan duration,
+        string outputId,
         IAppLogger logger,
         CancellationToken cancellationToken = default)
     {
@@ -67,8 +68,8 @@ internal static class SoakSelfTest
                     failures.Enqueue($"{eventArgs.Message} {eventArgs.Exception.Message}");
                 var devices = new AudioDeviceManager();
                 var snapshot = await devices.CaptureSnapshotAsync().WaitAsync(TimeSpan.FromSeconds(2), cancellationToken);
-                var binding = AudioOutputBinding.Create(AudioDeviceInfo.Default.PersistentId, snapshot)
-                    ?? throw new InvalidOperationException("Windows既定の出力先を識別できません。");
+                var binding = AudioOutputBinding.Create(outputId, snapshot)
+                    ?? throw new InvalidOperationException("診断の出力先を識別できません。設定で出力先を選び直してください。");
                 engine.SelectOutputDevice(binding.Device.DeviceNumber);
                 engine.SilentLoopEnabled = true;
                 DecodeEntireFile(mp3Path);

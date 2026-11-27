@@ -35,7 +35,7 @@
 
 ## 開発
 
-ソースからのビルド、テスト、配布物の作成などについては[開発・リリース手順](docs/development.md)を参照してください。コントリビューション時の注意事項は[CONTRIBUTING.md](CONTRIBUTING.md)にあります。
+ソースからのビルド、テスト、配布物の作成などについては[開発・リリース手順](https://github.com/25c2/pondex/blob/main/docs/development.md)を参照してください。コントリビューション時の注意事項は[CONTRIBUTING.md](https://github.com/25c2/pondex/blob/main/CONTRIBUTING.md)にあります。
 
 ## プライバシー
 

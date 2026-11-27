@@ -1,6 +1,8 @@
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
+using pondex.Audio;
 using pondex.UI;
+using pondex.Utility;
 
 namespace pondex.Tests;
 
@@ -17,6 +19,13 @@ internal static class WinFormsTest
     private static Action<string>? _note;
 
     internal static void Note(string phase) => _note?.Invoke(phase);
+
+    internal static OutputDevicePreferences RememberDefaultOutput(string directory, IAppLogger logger)
+    {
+        var preferences = new OutputDevicePreferences(Path.Combine(directory, "Audio"));
+        Assert.True(preferences.TrySave(AudioDeviceInfo.Default.PersistentId, logger));
+        return preferences;
+    }
 
     internal static void WithNeutralKeyboard(Action action)
     {

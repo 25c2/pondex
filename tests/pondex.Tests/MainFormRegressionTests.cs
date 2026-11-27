@@ -34,7 +34,7 @@ public sealed class MainFormRegressionTests
             return new FakeOutput();
         });
         using var form = new MainForm(manager, engine, new AudioDeviceManager(() => Volatile.Read(ref snapshot)), triggers,
-            new NullLogger(), directory.Path)
+            new NullLogger(), directory.Path, null, null, WinFormsTest.RememberDefaultOutput(directory.Path, new NullLogger()))
         { ShowInTaskbar = false, Opacity = 0 };
         form.Show();
         PumpUntil((Task)Field("_outputConfigurationTask").GetValue(form)!);
@@ -91,7 +91,7 @@ public sealed class MainFormRegressionTests
             return new FakeOutput();
         });
         using var form = new MainForm(manager, engine, new AudioDeviceManager(() => Volatile.Read(ref snapshot)),
-            triggers, new NullLogger(), directory.Path)
+            triggers, new NullLogger(), directory.Path, null, null, WinFormsTest.RememberDefaultOutput(directory.Path, new NullLogger()))
         { ShowInTaskbar = false, Opacity = 0 };
         form.Show();
         PumpUntil((Task)Field("_outputConfigurationTask").GetValue(form)!);
@@ -1065,7 +1065,8 @@ public sealed class MainFormRegressionTests
 
     private static MainForm CreateForm(ProjectManager manager, AudioEngine engine, string logDirectory, IAppLogger? logger = null) =>
         new(manager, engine, new AudioDeviceManager(() => new AudioDeviceSnapshot(
-            [AudioDeviceInfo.Default, new AudioDeviceInfo(0, "Test output", "test-output")], new DefaultOutputIdentity(0, "test-endpoint"))), new TriggerEngine(), logger ?? new NullLogger(), logDirectory)
+            [AudioDeviceInfo.Default, new AudioDeviceInfo(0, "Test output", "test-output")], new DefaultOutputIdentity(0, "test-endpoint"))),
+            new TriggerEngine(), logger ?? new NullLogger(), logDirectory, null, null, WinFormsTest.RememberDefaultOutput(logDirectory, new NullLogger()))
         { ShowInTaskbar = false, Opacity = 0, Font = UiTheme.CreateFont(10F) };
 
     private static AudioEngine CreateEngine() => new(new NullLogger(), (_, _) => new FakeOutput());

@@ -203,7 +203,6 @@ public sealed class SoundOrderingTests
         var changed = MainForm.HasProjectSettingsChanges(
             settings,
             project,
-            "default",
             backgroundInput: true,
             silentLoop: true,
             fadeOutOnStop: true,
@@ -223,7 +222,7 @@ public sealed class SoundOrderingTests
         var project = new ProjectMetadata();
 
         bool Changed(bool detailedLogging) => MainForm.HasProjectSettingsChanges(
-            settings, project, settings.OutputDevice, settings.BackgroundInput, settings.SilentLoop,
+            settings, project, settings.BackgroundInput, settings.SilentLoop,
             settings.FadeOutOnStop, settings.FadeOutOnStopAll, settings.DarkMode,
             settings.SoundListColumns, project.Name, project.ThemeColor, detailedLogging);
 
@@ -243,7 +242,6 @@ public sealed class SoundOrderingTests
         var changed = MainForm.HasProjectSettingsChanges(
             settings,
             project,
-            settings.OutputDevice,
             settings.BackgroundInput,
             settings.SilentLoop,
             settings.FadeOutOnStop,

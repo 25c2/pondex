@@ -14,6 +14,7 @@ public sealed class SettingsDialog : Form
     private bool _requireOutputSelection;
     private bool _refreshingDevices;
     private bool _outputRefreshFailed;
+    private bool _showingLegacyCandidate;
     private readonly CheckBox _backgroundInputCheck;
     private readonly CheckBox _silentLoopCheck;
     private readonly CheckBox _fadeOutOnStopCheck;
@@ -26,9 +27,16 @@ public sealed class SettingsDialog : Form
     private readonly NumericUpDown _soundListColumns;
 
     public SettingsDialog(ProjectSettings settings, IReadOnlyList<AudioDeviceInfo> devices, bool requireOutputSelection = false)
+        : this(settings, devices, requireOutputSelection, AudioDeviceInfo.Default.PersistentId, null)
+    {
+    }
+
+    internal SettingsDialog(ProjectSettings settings, IReadOnlyList<AudioDeviceInfo> devices, bool requireOutputSelection,
+        string? outputId, AudioOutputBinding? legacyCandidate)
     {
         Text = "設定";
         _requireOutputSelection = requireOutputSelection;
+        _showingLegacyCandidate = legacyCandidate is not null;
         AutoScaleMode = AutoScaleMode.Dpi;
         FormBorderStyle = FormBorderStyle.Sizable;
         StartPosition = FormStartPosition.CenterParent;
@@ -73,26 +81,30 @@ public sealed class SettingsDialog : Form
             Dock = DockStyle.Fill,
             DataSource = GetDeviceChoices(devices)
         };
-        var selectedDevice = AudioDeviceManager.FindConfiguredDevice(devices, settings.OutputDevice)
-            ?? AudioDeviceInfo.Default;
-        _deviceCombo.SelectedValue = selectedDevice.DeviceNumber;
-        if (_deviceCombo.SelectedIndex < 0)
+        var selectedDevice = legacyCandidate?.Device
+            ?? (!requireOutputSelection && outputId is not null ? AudioDeviceManager.FindConfiguredDevice(devices, outputId) : null);
+        void SelectInitialOutput()
         {
-            _deviceCombo.SelectedValue = -1;
+            if (selectedDevice is null) { _deviceCombo.SelectedIndex = -1; }
+            else { _deviceCombo.SelectedValue = selectedDevice.DeviceNumber; }
+            OutputSelectionExplicit = _showingLegacyCandidate && _deviceCombo.SelectedIndex >= 0;
         }
+        SelectInitialOutput();
 
         _deviceCombo.SelectionChangeCommitted += (_, _) =>
         {
+            _showingLegacyCandidate = false;
             OutputSelectionExplicit = _deviceCombo.SelectedIndex >= 0;
             UpdateOutputConfirmation();
         };
+        Shown += (_, _) =>
+        {
+            SelectInitialOutput();
+            UpdateOutputConfirmation();
+            if (_requireOutputSelection) { _deviceCombo.Focus(); }
+        };
         if (requireOutputSelection)
         {
-            Shown += (_, _) =>
-            {
-                _deviceCombo.SelectedIndex = -1;
-                _deviceCombo.Focus();
-            };
             _deviceCombo.AccessibleName = "出力デバイスを選び直す";
         }
 
@@ -236,15 +248,23 @@ public sealed class SettingsDialog : Form
         {
             var snapshot = await capture();
             if (IsDisposed || Disposing) { return; }
-            var changed = OutputSnapshot is null || AudioDeviceSnapshotChanges.Differ(OutputSnapshot, snapshot);
+            var previous = OutputSnapshot;
             OutputSnapshot = snapshot;
             _outputRefreshFailed = false;
-            if (changed)
+            if (previous is null || AudioDeviceSnapshotChanges.Differ(previous, snapshot))
             {
+                var selected = _deviceCombo.SelectedItem as DeviceChoice;
+                var keepSelection = selected is not null && previous is not null
+                    && AudioOutputBinding.Create(selected.SelectionId, previous)?.Matches(snapshot) == true;
                 _deviceCombo.DataSource = GetDeviceChoices(snapshot.Devices);
-                _deviceCombo.SelectedIndex = -1;
-                OutputSelectionExplicit = false;
-                _requireOutputSelection = true;
+                if (keepSelection) { _deviceCombo.SelectedValue = selected!.DeviceNumber; }
+                else
+                {
+                    _deviceCombo.SelectedIndex = -1;
+                    OutputSelectionExplicit = false;
+                    _showingLegacyCandidate = false;
+                    _requireOutputSelection = true;
+                }
             }
             UpdateOutputConfirmation();
         }
@@ -254,6 +274,7 @@ public sealed class SettingsDialog : Form
             _deviceCombo.Enabled = false;
             _deviceCombo.SelectedIndex = -1;
             _requireOutputSelection = true;
+            _showingLegacyCandidate = false;
             OutputSelectionExplicit = false;
         }
         catch (Exception) when (IsDisposed || Disposing) { }
@@ -268,13 +289,13 @@ public sealed class SettingsDialog : Form
         }
     }
 
-    private sealed record DeviceChoice(int DeviceNumber, string DisplayName);
+    private sealed record DeviceChoice(int DeviceNumber, string SelectionId, string DisplayName);
 
     private static DeviceChoice[] GetDeviceChoices(IReadOnlyList<AudioDeviceInfo> devices)
     {
         var duplicateNames = devices.GroupBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
             .Where(group => group.Count() > 1).Select(group => group.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return devices.Select(device => new DeviceChoice(device.DeviceNumber,
+        return devices.Select(device => new DeviceChoice(device.DeviceNumber, device.SelectionId,
             device.DeviceNumber >= 0 && duplicateNames.Contains(device.Name)
                 ? $"{device.Name}（番号 {device.DeviceNumber}）" : device.Name)).ToArray();
     }
@@ -282,6 +303,7 @@ public sealed class SettingsDialog : Form
     private void UpdateOutputConfirmation()
     {
         _outputLabel.Text = _outputRefreshFailed ? "出力（確認失敗）"
+            : _showingLegacyCandidate ? "旧出力先（確認）"
             : _requireOutputSelection && !OutputSelectionExplicit ? "出力（要選択）" : "出力デバイス";
         _deviceCombo.Enabled = !_outputRefreshFailed;
         _okButton.Enabled = !_refreshingDevices && !_outputRefreshFailed && (!_requireOutputSelection || OutputSelectionExplicit);

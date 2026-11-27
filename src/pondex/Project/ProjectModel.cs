@@ -49,10 +49,15 @@ public sealed class ProjectMetadata
 
 public sealed class ProjectSettings
 {
+    internal const string ImportOutputPlaceholder = "pondashi-output-reselection";
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? ExtensionData { get; set; }
 
-    public string OutputDevice { get; set; } = "default";
+    // Retain pre-existing project IDs for older releases. The running app uses a local preference.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonConverter(typeof(LegacyOutputIdConverter))]
+    public string? OutputDevice { get; set; }
 
     public float MasterVolume { get; set; } = 1.0f;
 
@@ -74,6 +79,22 @@ public sealed class ProjectSettings
     public bool DetailedLogging { get; set; }
 
     public int SoundListColumns { get; set; } = 1;
+}
+
+internal sealed class LegacyOutputIdConverter : JsonConverter<string>
+{
+    public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType != JsonTokenType.String)
+        {
+            reader.Skip();
+            return null;
+        }
+        var id = reader.GetString();
+        return id is { Length: <= ProjectLimits.MaxOutputDeviceLength } ? id : null;
+    }
+
+    public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options) => writer.WriteStringValue(value);
 }
 
 public sealed class SoundDefinition

@@ -372,10 +372,13 @@ public sealed class ProjectSerializer
         model.Settings ??= new ProjectSettings();
         model.Project.Name ??= "名称未設定";
         model.Project.ThemeColor ??= "#202020";
-        model.Settings.OutputDevice ??= "default";
+        if (string.Equals(model.Settings.OutputDevice, ProjectSettings.ImportOutputPlaceholder, StringComparison.OrdinalIgnoreCase))
+        {
+            model.Settings.OutputDevice = null;
+        }
         ValidateString(model.Project.Name, ProjectLimits.MaxNameLength, "プロジェクト名");
         ValidateString(model.Project.ThemeColor, ProjectLimits.MaxThemeColorLength, "テーマ色");
-        ValidateString(model.Settings.OutputDevice, ProjectLimits.MaxOutputDeviceLength, "出力デバイス名");
+        ValidateString(model.Settings.OutputDevice ?? string.Empty, ProjectLimits.MaxOutputDeviceLength, "出力デバイス名");
         model.Settings.MasterVolume = Math.Clamp(model.Settings.MasterVolume, 0.0f, 1.0f);
         model.Settings.SoundListColumns = Math.Clamp(model.Settings.SoundListColumns, 1, 8);
 
@@ -470,11 +473,11 @@ public sealed class ProjectSerializer
                 model.LoadWarnings.Add($"イベント「{trigger.Memo}」が重複した音源IDを参照しています。対象を選び直してください。");
             }
 
-            if ((trigger.TargetGroup.Length > 0 && !trigger.TargetGroupOnHold && !model.Sounds.Any(sound =>
+            if (!trigger.TargetGroupOnHold && ((trigger.TargetGroup.Length > 0 && !model.Sounds.Any(sound =>
                     string.Equals(sound.Group, trigger.TargetGroup, StringComparison.OrdinalIgnoreCase)))
                 || (trigger.TargetGroup.Length == 0 && !soundIds.Contains(trigger.TargetSoundId))
                 || (trigger.TriggerType is TriggerType.SoundEnded or TriggerType.SoundElapsed
-                    && (trigger.Parameters.SourceSoundId is not { } sourceId || !soundIds.Contains(sourceId))))
+                    && (trigger.Parameters.SourceSoundId is not { } sourceId || !soundIds.Contains(sourceId)))))
             {
                 model.LoadWarnings.Add($"イベント「{trigger.Memo}」の参照先が見つかりません。対象音源・グループと条件音源を確認してください。");
             }

@@ -22,6 +22,8 @@ internal static class Program
         var smokeTest = args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase);
         var localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var userDirectory = Path.Combine(localApplicationData, "pondex");
+        var outputPreferences = string.IsNullOrEmpty(localApplicationData)
+            ? null : new OutputDevicePreferences(Path.Combine(userDirectory, "Audio"));
         var storage = AppStoragePaths.Resolve(AppContext.BaseDirectory, userDirectory, Path.GetTempPath());
         var uiPreferences = new UiPreferences(Path.Combine(userDirectory, "UI"));
         var (logger, logDirectory, localLogFailed) = CreateLogger(storage,
@@ -49,7 +51,8 @@ internal static class Program
         {
             if (SoakSelfTest.TryParseDuration(args, out var soakDuration))
             {
-                var result = SoakSelfTest.RunAsync(soakDuration, logger).GetAwaiter().GetResult();
+                if (GetDiagnosticOutputId(outputPreferences, logger) is not { } outputId) { return 3; }
+                var result = SoakSelfTest.RunAsync(soakDuration, outputId, logger).GetAwaiter().GetResult();
                 var reportPath = SoakSelfTest.SaveReport(result, logDirectory);
                 logger.Info($"soak診断を完了しました: {(result.Success ? "PASS" : "FAIL")} — {reportPath}");
                 return result.Success ? 0 : 3;
@@ -57,10 +60,16 @@ internal static class Program
 
             if (args.Contains("--audio-self-test", StringComparer.OrdinalIgnoreCase))
             {
+                if (GetDiagnosticOutputId(outputPreferences, logger) is not { } outputId) { return 2; }
                 using var diagnosticEngine = new AudioEngine(logger);
                 var devices = new AudioDeviceManager();
-                var binding = AudioOutputBinding.Create(AudioDeviceInfo.Default.PersistentId, devices.CaptureSnapshot())
-                    ?? throw new InvalidOperationException("Windows既定の出力先を識別できません。");
+                var initialSnapshot = devices.CaptureSnapshotAsync().WaitAsync(TimeSpan.FromSeconds(2)).GetAwaiter().GetResult();
+                var binding = AudioOutputBinding.Create(outputId, initialSnapshot);
+                if (binding is null)
+                {
+                    logger.Warning("診断の出力先を識別できません。設定で出力先を選び直してください。");
+                    return 2;
+                }
                 diagnosticEngine.SelectOutputDevice(binding.Device.DeviceNumber);
                 using var diagnosticCancellation = new CancellationTokenSource();
                 var result = AudioSelfTest.RunAsync(diagnosticEngine, async cancellationToken =>
@@ -102,7 +111,8 @@ internal static class Program
                 new RecentProjectStore(Path.Combine(storage.DataDirectory, "recent-projects.json"),
                     Path.Combine(userDirectory, "recent-projects.json"), AppContext.BaseDirectory,
                     additionalLegacyPaths: [AppStoragePaths.GetLegacyHistoryPath(localApplicationData)]),
-                uiPreferences);
+                uiPreferences,
+                outputPreferences);
             if (logger.CurrentLogPath is null)
             {
                 mainForm.Shown += (_, _) => mainForm.ReportLoggingUnavailable();
@@ -141,6 +151,13 @@ internal static class Program
             logger.Info("pondexを終了しました。");
             logger.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
+    }
+
+    private static string? GetDiagnosticOutputId(OutputDevicePreferences? preferences, FileLogger logger)
+    {
+        var id = preferences?.Load(logger).SelectionId;
+        if (id is null) { logger.Warning("診断の前に、設定でこのPCの出力先を確定してください。"); }
+        return id;
     }
 
     private static Mutex OpenInstanceMarker(out bool firstInstance)

@@ -12,8 +12,6 @@ pondex の配布物には、以下の第三者製ソフトウェアが含まれ�
 | Concentus | 2.2.2 | Managed Opusデコーダ | BSD-3-Clause系（下記参照） | https://github.com/lostromb/concentus |
 | .NET Runtime / Windows Desktop Runtime | 10.0.15 | self-contained実行環境 | MITおよび同梱notice記載の各ライセンス | https://github.com/dotnet/runtime |
 
-テスト専用依存（Microsoft.NET.Test.Sdk、xUnit、xunit.runner.visualstudio）は最終アプリ配布物には含めません。
-
 ## MIT License
 
 以下は各バージョンのLICENSEおよびNuGetパッケージに記載された著作権表記です。

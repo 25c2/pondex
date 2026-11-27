@@ -32,7 +32,7 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
         manager.Current.Settings.DarkMode = dark;
         using var engine = new AudioEngine(new Logger(), (_, _) => new Output());
         MainForm Create() => new(manager, engine, new AudioDeviceManager(() => Initial), new TriggerEngine(), new Logger(),
-            directory.Path, null, preferences);
+            directory.Path, null, preferences, WinFormsTest.RememberDefaultOutput(directory.Path, new Logger()));
         int defaultHeight;
         int grownHeight;
         using (var form = Create())
@@ -154,7 +154,7 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
     {
         var refresh = new TaskCompletionSource<AudioDeviceSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
         var stopped = false;
-        using var dialog = new SettingsDialog(new ProjectSettings { OutputDevice = "console" }, Initial.Devices);
+        using var dialog = new SettingsDialog(new ProjectSettings(), Initial.Devices, false, "console", null);
         dialog.ConfigureOutputRefresh(Initial, () => refresh.Task, () => stopped = true);
         dialog.Show();
         var refreshButton = Descendants(dialog).OfType<Button>().Single(button => button.Text == "更新");
@@ -178,6 +178,208 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
             .Invoke(combo, [EventArgs.Empty]);
         Assert.True(dialog.OutputSelectionExplicit);
         Assert.True(((Button)dialog.AcceptButton!).Enabled);
+    });
+
+    [Fact]
+    public void OutputRefresh_KeepsSameEndpointWhenAnotherDeviceIsAdded() => WinFormsTest.RunAsync(async () =>
+    {
+        var updated = Initial with { Devices = [.. Initial.Devices, new(9, "Other", "other")] };
+        using var dialog = new SettingsDialog(new ProjectSettings(), Initial.Devices, false, "console", null);
+        dialog.ConfigureOutputRefresh(Initial, () => Task.FromResult(updated), () => { });
+        var shown = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        dialog.Shown += (_, _) => shown.SetResult();
+        dialog.Show();
+        await shown.Task;
+        Descendants(dialog).OfType<Button>().Single(button => button.Text == "更新").PerformClick();
+        Assert.Equal(updated, dialog.OutputSnapshot);
+        Assert.Equal(0, dialog.SelectedDeviceNumber);
+        Assert.True(((Button)dialog.AcceptButton!).Enabled);
+        Assert.False(dialog.OutputSelectionExplicit);
+    });
+
+    [Fact]
+    public void LocalOutputs_FollowEachPcAcrossProjectLoadsAndRestartsWithoutSavingProjectIds() => WinFormsTest.RunAsync(async () =>
+    {
+        using var directory = new TestDirectory();
+        var path = directory.GetPath("show.pondex");
+        var serializer = new ProjectSerializer();
+        var model = new ProjectModel();
+        model.Project.Name = "Show";
+        model.Settings.OutputDevice = "console";
+        model.Settings.MasterVolume = 0.23f;
+        model.Settings.ExtensionData = new() { ["extra"] = JsonSerializer.SerializeToElement(123) };
+        await serializer.SaveAsync(path, model);
+        var original = await File.ReadAllBytesAsync(path);
+        var logger = new Logger();
+        var pcA = new OutputDevicePreferences(Path.Combine(directory.Path, "A", "Audio"));
+        var pcB = new OutputDevicePreferences(Path.Combine(directory.Path, "B", "Audio"));
+        var outputB = new AudioDeviceInfo(3, "Stage", "stage");
+        var snapshotB = new AudioDeviceSnapshot([AudioDeviceInfo.Default, outputB], new(3, "stage-endpoint"));
+
+        await OpenOnPc(pcA, Initial, "console", expectedDevice: 0, firstVisit: true);
+        await OpenOnPc(pcB, snapshotB, "stage", expectedDevice: 3, firstVisit: true);
+        await OpenOnPc(pcA, Initial, "console", expectedDevice: 0, firstVisit: false);
+        Assert.Equal(original, await File.ReadAllBytesAsync(path));
+
+        async Task OpenOnPc(OutputDevicePreferences store, AudioDeviceSnapshot snapshot, string id, int expectedDevice, bool firstVisit)
+        {
+            using var manager = new ProjectManager(serializer);
+            var opens = new List<int>();
+            using var engine = new AudioEngine(logger, (number, _) => { opens.Add(number); return new Output(); });
+            using var form = new MainForm(manager, engine, new AudioDeviceManager(() => snapshot), new TriggerEngine(),
+                logger, directory.Path, null, null, store)
+            { Opacity = 0, ShowInTaskbar = false };
+            form.Show();
+            await (Task)Field("_outputConfigurationTask").GetValue(form)!;
+            await (Task)Method("OpenProjectAsync").Invoke(form, [path])!;
+            await (Task)Field("_outputConfigurationTask").GetValue(form)!;
+            var revision = manager.Current.FileRevision;
+            if (firstVisit)
+            {
+                Assert.Empty(opens);
+                Assert.True((bool)Field("_outputUnavailable").GetValue(form)!);
+                Assert.False(store.Load(logger).FileExists);
+                Assert.Equal(id == "console" ? "console" : null,
+                    store.Load(logger).FindLegacyCandidate(manager.Current.Settings.OutputDevice, snapshot)?.ConfiguredId);
+                if (id == "console")
+                {
+                    await CloseLegacySettingsAsync(form, DialogResult.Cancel);
+                    Assert.False(store.Load(logger).FileExists);
+                    Assert.Empty(opens);
+                    await CloseLegacySettingsAsync(form, DialogResult.OK);
+                }
+                else
+                {
+                    Assert.True(await form.ConfirmOutputSelectionAsync(AudioOutputBinding.Create(id, snapshot)!));
+                }
+            }
+            Assert.Equal(expectedDevice, Assert.Single(opens));
+            Assert.False((bool)Field("_outputUnavailable").GetValue(form)!);
+            Assert.False(manager.IsDirty);
+            Assert.Equal(revision, manager.Current.FileRevision);
+            Assert.Equal("console", manager.Current.Settings.OutputDevice);
+            Assert.Equal(0.23f, manager.Current.Settings.MasterVolume);
+            Assert.Equal(123, manager.Current.Settings.ExtensionData!["extra"].GetInt32());
+            if (firstVisit && expectedDevice == 3)
+            {
+                var copy = directory.GetPath("copy.pondex");
+                await manager.SaveAsAsync(copy);
+                var copyModel = await serializer.LoadAsync(copy);
+                Assert.Equal("console", copyModel.Settings.OutputDevice);
+                Assert.Equal(123, copyModel.Settings.ExtensionData!["extra"].GetInt32());
+
+                await (Task)Method("NewProjectAsync").Invoke(form, null)!;
+                await (Task)Field("_outputConfigurationTask").GetValue(form)!;
+                var freshPath = directory.GetPath("fresh.pondex");
+                await manager.SaveAsAsync(freshPath);
+                Assert.Null((await serializer.LoadAsync(freshPath)).Settings.OutputDevice);
+                Assert.DoesNotContain("\"outputDevice\"", await File.ReadAllTextAsync(freshPath));
+                Assert.Equal(expectedDevice, engine.OutputDeviceNumber);
+            }
+            form.CloseWithoutSavePromptForSmokeTest();
+        }
+    });
+
+    private static async Task CloseLegacySettingsAsync(MainForm form, DialogResult choice)
+    {
+        using var timer = new System.Windows.Forms.Timer { Interval = 50 };
+        Exception? failure = null;
+        timer.Tick += (_, _) =>
+        {
+            var dialog = form.OwnedForms.OfType<SettingsDialog>().SingleOrDefault(window => window.Visible);
+            if (dialog is null) { return; }
+            timer.Stop();
+            try
+            {
+                Assert.True(dialog.OutputSelectionExplicit);
+                Assert.Equal(0, dialog.SelectedDeviceNumber);
+                ((Button)(choice == DialogResult.OK ? dialog.AcceptButton! : dialog.CancelButton!)).PerformClick();
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+                dialog.DialogResult = DialogResult.Cancel;
+                dialog.Close();
+            }
+        };
+        timer.Start();
+        await (Task)Method("ShowSettings").Invoke(form, null)!;
+        Assert.Null(failure);
+        Assert.False(timer.Enabled);
+    }
+
+    [Fact]
+    public void LocalOutput_RejectsStaleConfirmationAndRequiresExplicitRecoveryAfterDefaultChanges() => WinFormsTest.RunAsync(async () =>
+    {
+        using var directory = new TestDirectory();
+        using var manager = new ProjectManager(new ProjectSerializer());
+        var logger = new Logger();
+        var store = WinFormsTest.RememberDefaultOutput(directory.Path, logger);
+        var current = Initial;
+        var triggers = new TriggerEngine();
+        using var engine = new AudioEngine(logger, (_, _) => new Output());
+        using var form = new MainForm(manager, engine, new AudioDeviceManager(() => Volatile.Read(ref current)), triggers,
+            logger, directory.Path, null, null, store)
+        { Opacity = 0, ShowInTaskbar = false };
+        form.Show();
+        await (Task)Field("_outputConfigurationTask").GetValue(form)!;
+        Assert.Equal(0, engine.OutputDeviceNumber);
+
+        var changed = Initial with { DefaultOutput = new(1, "speakers-endpoint") };
+        Volatile.Write(ref current, changed);
+        await (Task)Method("CheckSelectedDeviceAvailability").Invoke(form, [true])!;
+        Assert.True(triggers.IsSuspended);
+        Assert.True((bool)Field("_outputUnavailable").GetValue(form)!);
+        await (Task)Method("NewProjectAsync").Invoke(form, null)!;
+        await (Task)Field("_outputConfigurationTask").GetValue(form)!;
+        Assert.Equal(0, engine.OutputDeviceNumber);
+        Assert.True((bool)Field("_outputUnavailable").GetValue(form)!);
+
+        Assert.Null(await form.ConfirmOutputSelectionAsync(AudioOutputBinding.Create("default", Initial)!));
+        Assert.True((bool)Field("_outputUnavailable").GetValue(form)!);
+        manager.Current.Settings.SilentLoop = true;
+        Assert.True(await form.ConfirmOutputSelectionAsync(AudioOutputBinding.Create("speakers", changed)!));
+        Assert.False(manager.IsDirty);
+        Assert.Equal(1, engine.OutputDeviceNumber);
+        Assert.False(engine.SilentLoopEnabled);
+        Assert.True(triggers.IsSuspended);
+        Assert.Equal("speakers", store.Load(logger).SelectionId);
+        form.CloseWithoutSavePromptForSmokeTest();
+    });
+
+    [Fact]
+    public void LocalOutput_EmergencyInvalidatesConfirmationBeforeItCanOpenOrPersist() => WinFormsTest.RunAsync(async () =>
+    {
+        using var directory = new TestDirectory();
+        using var manager = new ProjectManager(new ProjectSerializer());
+        using var release = new ManualResetEventSlim();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var logger = new Logger();
+        var store = new OutputDevicePreferences(directory.Path);
+        var opens = 0;
+        var devices = new AudioDeviceManager(() =>
+        {
+            entered.TrySetResult();
+            if (!release.Wait(TimeSpan.FromSeconds(5))) { throw new TimeoutException(); }
+            return Initial;
+        });
+        using var engine = new AudioEngine(logger, (_, _) => { opens++; return new Output(); });
+        using var form = new MainForm(manager, engine, devices, new TriggerEngine(), logger, directory.Path, null, null, store)
+        { Opacity = 0, ShowInTaskbar = false };
+        form.Show();
+        var configuring = form.ConfirmOutputSelectionAsync(AudioOutputBinding.Create("console", Initial)!);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Method("QueueEmergencyStop").Invoke(form, null);
+            await (Task)Field("_manualEmergencyStopTask").GetValue(form)!;
+        }
+        finally { release.Set(); }
+        Assert.Null(await configuring);
+        Assert.Equal(0, opens);
+        Assert.False(store.Load(logger).FileExists);
+        Assert.False(manager.IsDirty);
+        form.CloseWithoutSavePromptForSmokeTest();
     });
 
     [Fact]
@@ -236,9 +438,9 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
         var wave = Path.GetFileName(CreateWave(directory));
         var project = directory.GetPath("show");
         File.WriteAllText(project, $"""
-            <ProjectSettings><element>
-              <SoundElement><name>最初</name><groupNo>1</groupNo><shortCutKey>1</shortCutKey><filePathRel>{wave}</filePathRel></SoundElement>
-              <SoundElement><name>次</name><groupNo>1</groupNo><shortCutKey>2</shortCutKey><filePathRel>{wave}</filePathRel></SoundElement>
+            <ProjectSettings><masterVolume>1000</masterVolume><element>
+              <SoundElement><name>最初</name><volume>100</volume><groupNo>1</groupNo><shortCutKey>1</shortCutKey><filePathRel>{wave}</filePathRel></SoundElement>
+              <SoundElement><name>次</name><volume>100</volume><groupNo>1</groupNo><shortCutKey>2</shortCutKey><filePathRel>{wave}</filePathRel></SoundElement>
             </element></ProjectSettings>
             """);
         using var engine = new AudioEngine(new Logger(), (_, _) => new Output());
@@ -465,7 +667,8 @@ public sealed class ReviewUiRegressionTests(ITestOutputHelper output)
 
     private static MainForm CreateForm(ProjectManager manager, AudioEngine engine, TriggerEngine triggers,
         Func<AudioDeviceSnapshot> probe, string directory) =>
-        new(manager, engine, new AudioDeviceManager(probe), triggers, new Logger(), directory)
+        new(manager, engine, new AudioDeviceManager(probe), triggers, new Logger(), directory, null, null,
+            WinFormsTest.RememberDefaultOutput(directory, new Logger()))
         { ShowInTaskbar = false, Opacity = 0, Font = UiTheme.CreateFont(10F) };
 
     private static void Initialize(MainForm form)

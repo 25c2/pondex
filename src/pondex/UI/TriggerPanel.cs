@@ -99,7 +99,9 @@ public sealed class TriggerPanel : UserControl
                 return;
             }
 
-            if (_editingLocked || row.Definition.TargetGroupOnHold)
+            if (row.Definition.Enabled == row.Enabled) { return; }
+            var problem = row.Enabled ? new TriggerEnableRules(_sounds).GetProblem(row.Definition) : null;
+            if (_editingLocked || problem is not null)
             {
                 _refreshing = true;
                 try
@@ -108,6 +110,7 @@ public sealed class TriggerPanel : UserControl
                     _grid.Rows[eventArgs.RowIndex].Cells[0].Value = row.Enabled;
                 }
                 finally { _refreshing = false; }
+                if (!_editingLocked && problem is not null) { ReportCannotEnable(problem); }
                 return;
             }
             row.Definition.Enabled = row.Enabled;
@@ -117,7 +120,7 @@ public sealed class TriggerPanel : UserControl
 
     public event EventHandler? DefinitionsChanged;
 
-    internal event Action<string, bool>? BulkChangeCompleted;
+    internal event Action<string, bool>? OperationCompleted;
 
     internal void SetEditingLocked(bool locked)
     {
@@ -193,7 +196,7 @@ public sealed class TriggerPanel : UserControl
 
         using var dialog = new TriggerDialog(selected, _sounds);
         UiTheme.Apply(dialog, _darkMode);
-        if (dialog.ShowDialog(this) == DialogResult.OK)
+        if (dialog.ShowDialog(this) == DialogResult.OK && dialog.HasChanges)
         {
             Changed();
         }
@@ -224,30 +227,33 @@ public sealed class TriggerPanel : UserControl
             return;
         }
 
-        if (selected.TargetGroupOnHold)
+        if (!selected.Enabled && new TriggerEnableRules(_sounds).GetProblem(selected) is { } problem)
         {
-            MessageBox.Show(this, "保留中のイベントは「編集」で対象を選び直してください。", "イベントトリガ");
+            ReportCannotEnable(problem);
             return;
         }
         selected.Enabled = !selected.Enabled;
         Changed();
     }
 
+    private void ReportCannotEnable(string problem) =>
+        OperationCompleted?.Invoke($"イベントを有効にできません。編集で確認してください（{problem}）。", true);
+
     private void SetAllEnabled(bool enabled)
     {
         if (_editingLocked || _triggers.Count == 0) { return; }
 
-        var soundIds = _sounds.Select(sound => sound.Id).ToHashSet();
-        var groups = _sounds.Where(sound => !string.IsNullOrWhiteSpace(sound.Group))
-            .Select(sound => sound.Group).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var rules = new TriggerEnableRules(_sounds);
+        var reasons = new Dictionary<string, int>();
         var changed = 0;
         var skipped = 0;
         foreach (var trigger in _triggers)
         {
             if (trigger.Enabled == enabled) { continue; }
-            if (enabled && !CanEnable(trigger, soundIds, groups))
+            if (enabled && rules.GetProblem(trigger) is { } problem)
             {
                 skipped++;
+                reasons[problem] = reasons.GetValueOrDefault(problem) + 1;
                 continue;
             }
             trigger.Enabled = enabled;
@@ -256,24 +262,12 @@ public sealed class TriggerPanel : UserControl
 
         if (changed > 0) { Changed(); }
         var message = enabled ? $"イベントを{changed}件有効にしました。" : $"イベントを{changed}件無効にしました。";
-        if (skipped > 0) { message += $" 保留中や条件・対象を確認できない{skipped}件は無効のままです。"; }
-        BulkChangeCompleted?.Invoke(message, skipped > 0);
-    }
-
-    private static bool CanEnable(TriggerDefinition trigger, HashSet<Guid> soundIds, HashSet<string> groups)
-    {
-        if (trigger.TargetGroupOnHold || !Enum.IsDefined(trigger.Action)) { return false; }
-        var targetExists = string.IsNullOrWhiteSpace(trigger.TargetGroup)
-            ? soundIds.Contains(trigger.TargetSoundId) : groups.Contains(trigger.TargetGroup);
-        return targetExists && trigger.TriggerType switch
+        if (skipped > 0)
         {
-            TriggerType.ClockTime => trigger.Parameters.ClockTime is not null,
-            TriggerType.StopwatchElapsed => trigger.Parameters.Elapsed >= TimeSpan.Zero,
-            TriggerType.SoundEnded => trigger.Parameters.SourceSoundId is { } source && soundIds.Contains(source),
-            TriggerType.SoundElapsed => trigger.Parameters.SourceSoundId is { } source && soundIds.Contains(source)
-                && trigger.Parameters.Elapsed >= TimeSpan.Zero,
-            _ => false
-        };
+            var summary = string.Join("、", reasons.Select(reason => $"{reason.Key} {reason.Value}件"));
+            message += $" {skipped}件は無効のままです（{summary}）。";
+        }
+        OperationCompleted?.Invoke(message, skipped > 0);
     }
 
     private void Changed()

@@ -62,6 +62,9 @@ public sealed class MainForm : Form
     private DateTimeOffset _nextDeviceAvailabilityCheck = DateTimeOffset.MinValue;
     private long _playbackGeneration;
     private bool _outputUnavailable;
+    private bool _outputNeedsReselection;
+    private readonly OutputDevicePreferences? _outputPreferences;
+    private OutputDevicePreference _outputPreference;
     private bool _editingLocked;
     private readonly List<ToolStripItem> _editingCommands = [];
     private ToolStripMenuItem _editLockMenuItem = null!;
@@ -107,7 +110,7 @@ public sealed class MainForm : Form
 
     internal MainForm(ProjectManager projectManager, IAudioEngine audioEngine, AudioDeviceManager deviceManager,
         TriggerEngine triggerEngine, IAppLogger logger, string logDirectory,
-        RecentProjectStore? recentProjects, UiPreferences? uiPreferences)
+        RecentProjectStore? recentProjects, UiPreferences? uiPreferences, OutputDevicePreferences? outputPreferences = null)
     {
         UiTheme.ConfigureApplicationColors(projectManager.Current.Settings.DarkMode);
         _projectManager = projectManager;
@@ -116,6 +119,8 @@ public sealed class MainForm : Form
         _deviceManager = deviceManager;
         _triggerEngine = triggerEngine;
         _logger = logger;
+        _outputPreferences = outputPreferences;
+        _outputPreference = outputPreferences?.Load(logger) ?? default;
         _logDirectory = Path.GetFullPath(logDirectory);
         _uiPreferences = uiPreferences;
         _requestedHeaderHeight = uiPreferences?.HeaderHeight;
@@ -218,7 +223,7 @@ public sealed class MainForm : Form
             _triggerEngine.SetTriggers(_projectManager.Current.Triggers, preserveRuntimeState: true);
             _projectManager.MarkDirty(shortcutBindingsChanged: false);
         };
-        _triggerPanel.BulkChangeCompleted += (message, skipped) => SetStatus(message, skipped);
+        _triggerPanel.OperationCompleted += (message, warning) => SetStatus(message, warning);
         triggersTab.Controls.Add(_triggerPanel);
         _tabs.TabPages.Add(soundsTab);
         _tabs.TabPages.Add(triggersTab);
@@ -270,6 +275,10 @@ public sealed class MainForm : Form
             if (_outputUnavailable) { SetStatus("設定で出力先を確認してから再開してください。", true); return; }
             _triggerEngine.Resume(DateTimeOffset.Now, _stopwatch.Elapsed, _stopwatch.IsRunning);
             _resumeTriggersButton.Visible = false;
+            if (_projectManager.Current.Settings.SilentLoop)
+            {
+                _outputConfigurationTask = ApplySilentLoopAsync(_projectManager.Current.Settings, _outputConfigurationVersion);
+            }
             if (_logger.DetailedLoggingEnabled) { _logger.Debug("automatic triggers resumed"); }
             SetStatus("自動イベントを再開しました。", false);
         };
@@ -944,7 +953,7 @@ public sealed class MainForm : Form
         if (!CanEditProject()) { return; }
         using var dialog = new OpenFileDialog
         {
-            Filter = "すべてのファイル（拡張子なしを含む）|*.*|pondexプロジェクト (*.pondex)|*.pondex|XMLファイル (*.xml)|*.xml",
+            Filter = "pondexプロジェクト (*.pondex)|*.pondex|すべてのファイル (*.*)|*.*",
             CheckFileExists = true
         };
         if (dialog.ShowDialog(this) == DialogResult.OK)
@@ -1005,7 +1014,7 @@ public sealed class MainForm : Form
                 MessageBox.Show(
                     this,
                     imported
-                        ? $"無印ポン出しくんから読み込みました。保存形式は .pondex です。\n\n{warningText}"
+                        ? $"無印ポン出しくんから読み込みました。保存形式は .pondex です。変換前の元ファイルも保管してください。\n\n{warningText}"
                         : $"読み込めた項目は使えます。変更を残すには、別の名前で保存してください。元のファイルは上書きできません。\n\n{warningText}",
                     imported ? "無印ポン出しくん 読み込み結果" : "一部の設定を読み込めませんでした",
                     MessageBoxButtons.OK,
@@ -1017,7 +1026,7 @@ public sealed class MainForm : Form
             {
                 var missing = _projectManager.Current.MissingSoundIds.Count;
                 SetStatus(imported
-                    ? $"無印プロジェクトを読み込みました。.pondex で保存できます。{(missing > 0 ? $" 欠落音源{missing}件。" : "")}"
+                    ? $"無印プロジェクトを読み込みました。.pondex で保存し、元のファイルも保管してください。{(missing > 0 ? $" 欠落音源{missing}件。" : "")}"
                     : missing == 0 ? "読み込み完了" : $"読み込み完了・欠落{missing}件", missing > 0);
             }
         }
@@ -1762,7 +1771,8 @@ public sealed class MainForm : Form
             if (timing is not null) { timing.Outcome = outcome; }
         }
 
-        if (_diagnosticCancellation is not null || _systemSuspended || _manualEmergencyStopping)
+        if (_diagnosticCancellation is not null || _systemSuspended || _manualEmergencyStopping
+            || (_projectOperationInProgress && !_savingProject))
         {
             SetOutcome(_manualEmergencyStopping ? "emergency_stop" : "diagnostic_or_suspended");
             return PlaybackStartResult.Cancelled;
@@ -1982,6 +1992,7 @@ public sealed class MainForm : Form
         catch (Exception exception)
         {
             _outputUnavailable = true;
+            _outputNeedsReselection = true;
             _logger.Error("緊急停止中に音声出力を終了できませんでした。", exception);
         }
         finally
@@ -2022,6 +2033,7 @@ public sealed class MainForm : Form
         catch (Exception exception)
         {
             _outputUnavailable = true;
+            _outputNeedsReselection = true;
             _logger.Error("緊急停止中に音声出力を終了できませんでした。", exception);
         }
         ShowEmergencyStopResult();
@@ -2029,7 +2041,11 @@ public sealed class MainForm : Form
 
     private void ShowEmergencyStopResult()
     {
-        if (_audioEngine is AudioEngine { IsOutputFaulted: true }) { _outputUnavailable = true; }
+        if (_audioEngine is AudioEngine { IsOutputFaulted: true })
+        {
+            _outputUnavailable = true;
+            _outputNeedsReselection = true;
+        }
         if (_outputUnavailable)
         {
             _deviceLabel.Text = "出力: エラー（設定で選び直す）";
@@ -2130,7 +2146,9 @@ public sealed class MainForm : Form
         }
         if (IsDisposed || Disposing || !ReferenceEquals(openingProject, _projectManager.Current) || !CanEditProject()) { return; }
         if (_outputBinding is { } current && !current.Matches(snapshot)) { MarkOutputChanged(current); }
-        using var dialog = new SettingsDialog(_projectManager.Current.Settings, snapshot.Devices, _outputUnavailable || snapshot.Devices.Count == 0);
+        var legacyCandidate = _outputPreference.FindLegacyCandidate(openingProject.Settings.OutputDevice, snapshot);
+        using var dialog = new SettingsDialog(openingProject.Settings, snapshot.Devices,
+            _outputUnavailable || snapshot.Devices.Count == 0, _outputPreference.SelectionId, legacyCandidate);
         dialog.ConfigureOutputRefresh(snapshot, async () =>
         {
             var refreshed = await CaptureOutputSnapshotAsync("settings_refresh");
@@ -2144,18 +2162,27 @@ public sealed class MainForm : Form
             return;
         }
         await _manualEmergencyStopTask;
+        if (IsDisposed || Disposing || !ReferenceEquals(openingProject, _projectManager.Current) || !CanEditProject()) { return; }
 
         snapshot = dialog.OutputSnapshot ?? snapshot;
         var settings = _projectManager.Current.Settings;
         var selectedDevice = dialog.OutputSelectionExplicit
             ? snapshot.Devices.FirstOrDefault(device => device.DeviceNumber == dialog.SelectedDeviceNumber)
             : null;
-        var selectedId = selectedDevice?.SelectionId ?? settings.OutputDevice;
-        var selectedBinding = selectedDevice is null ? null : AudioOutputBinding.Create(selectedId, snapshot);
-        if (selectedDevice is not null && selectedBinding is null)
+        var savedOutput = true;
+        if (dialog.OutputSelectionExplicit)
         {
-            SetStatus("選択した出力先を識別できません。接続を確認して設定を開き直してください。", true);
-            return;
+            var selectedBinding = selectedDevice is null ? null : AudioOutputBinding.Create(selectedDevice.SelectionId, snapshot);
+            if (selectedBinding is null)
+            {
+                SetStatus("選択した出力先を識別できません。接続を確認して設定を開き直してください。", true);
+                return;
+            }
+            var result = await ConfirmOutputSelectionAsync(selectedBinding,
+                legacyCandidate?.Device.SelectionId == selectedBinding.ConfiguredId);
+            if (result is null || IsDisposed || Disposing || !ReferenceEquals(openingProject, _projectManager.Current)
+                || !CanEditProject()) { return; }
+            savedOutput = result.Value;
         }
         var project = _projectManager.Current.Project;
         var projectName = string.IsNullOrWhiteSpace(dialog.ProjectName)
@@ -2164,7 +2191,6 @@ public sealed class MainForm : Form
         var changed = HasProjectSettingsChanges(
             settings,
             project,
-            selectedId,
             dialog.BackgroundInput,
             dialog.SilentLoop,
             dialog.FadeOutOnStop,
@@ -2174,11 +2200,6 @@ public sealed class MainForm : Form
             projectName,
             dialog.ThemeColor,
             dialog.DetailedLogging) || settings.ExclusiveGroups != dialog.ExclusiveGroups;
-        if (selectedDevice is not null && _logger.DetailedLoggingEnabled)
-        {
-            _logger.Debug($"output_selection previous={settings.OutputDevice} requested={selectedId} number={selectedDevice.DeviceNumber}");
-        }
-        settings.OutputDevice = selectedId;
         settings.BackgroundInput = dialog.BackgroundInput;
         settings.SilentLoop = dialog.SilentLoop;
         settings.FadeOutOnStop = dialog.FadeOutOnStop;
@@ -2194,15 +2215,15 @@ public sealed class MainForm : Form
             _projectManager.MarkDirty(shortcutBindingsChanged: false);
         }
 
-        ApplyProjectSettingsCore(allowOutputRebind: selectedDevice is not null, selectedBinding);
+        ApplyProjectSettingsCore(allowOutputRebind: false);
         ResizeSoundCards();
-        if (!_outputUnavailable) { SetStatus(changed ? "設定を更新" : "変更なし", false); }
+        if (!savedOutput) { SetStatus("出力先を保存できませんでした。この起動中のみ有効です。", true); }
+        else if (!_outputUnavailable) { SetStatus(changed || selectedDevice is not null ? "設定を更新" : "変更なし", false); }
     }
 
     internal static bool HasProjectSettingsChanges(
         ProjectSettings settings,
         ProjectMetadata project,
-        string outputDevice,
         bool backgroundInput,
         bool silentLoop,
         bool fadeOutOnStop,
@@ -2212,8 +2233,7 @@ public sealed class MainForm : Form
         string projectName,
         string themeColor,
         bool detailedLogging = false) =>
-        !string.Equals(settings.OutputDevice, outputDevice, StringComparison.Ordinal)
-        || settings.BackgroundInput != backgroundInput
+        settings.BackgroundInput != backgroundInput
         || settings.SilentLoop != silentLoop
         || settings.FadeOutOnStop != fadeOutOnStop
         || settings.FadeOutOnStopAll != fadeOutOnStopAll
@@ -2453,7 +2473,7 @@ public sealed class MainForm : Form
 
     private void ApplyProjectSettings() => ApplyProjectSettingsCore(allowOutputRebind: true);
 
-    private void ApplyProjectSettingsCore(bool allowOutputRebind, AudioOutputBinding? expectedBinding = null)
+    private void ApplyProjectSettingsCore(bool allowOutputRebind)
     {
         var settings = _projectManager.Current.Settings;
         _logger.DetailedLoggingEnabled = settings.DetailedLogging;
@@ -2461,7 +2481,7 @@ public sealed class MainForm : Form
         {
             _logger.Debug($"settings applied: app={Application.ProductVersion} runtime={Environment.Version} os={Environment.OSVersion} dpi={DeviceDpi} "
                 + $"sounds={_projectManager.Current.Sounds.Count} triggers={_projectManager.Current.Triggers.Count} "
-                + $"output={settings.OutputDevice} master_volume={settings.MasterVolume} mute={settings.MasterMute} "
+                + $"output={_outputPreference.SelectionId ?? "unselected"} master_volume={settings.MasterVolume} mute={settings.MasterMute} "
                 + $"silent_loop={settings.SilentLoop} fade_stop={settings.FadeOutOnStop} fade_all={settings.FadeOutOnStopAll} background_input={settings.BackgroundInput}");
         }
         _applyingProjectSettings = true;
@@ -2481,9 +2501,10 @@ public sealed class MainForm : Form
 
         if (allowOutputRebind)
         {
-            _outputConfigurationTask = ConfigureOutputAsync(settings, ++_outputConfigurationVersion, expectedBinding);
+            _outputConfigurationTask = ConfigureOutputAsync(settings, ++_outputConfigurationVersion);
         }
-        else if (!_outputUnavailable && !_systemSuspended && _audioEngine.SilentLoopEnabled != settings.SilentLoop)
+        else if (!_outputUnavailable && !_systemSuspended
+            && _audioEngine.SilentLoopEnabled != (settings.SilentLoop && !_triggerEngine.IsSuspended))
         {
             _outputConfigurationTask = ApplySilentLoopAsync(settings, _outputConfigurationVersion);
         }
@@ -2606,7 +2627,7 @@ public sealed class MainForm : Form
         _previousClockTick = (now, timestamp);
         if (_systemSuspended || _manualEmergencyStopping) { return; }
         _ = CheckSelectedDeviceAvailability();
-        if (_projectOperationInProgress && !_savingProject) { return; }
+        if (_outputUnavailable || (_projectOperationInProgress && !_savingProject)) { return; }
         _triggerEngine.Tick(now, _stopwatch.Elapsed, _stopwatch.IsRunning);
     }
 
@@ -2614,7 +2635,7 @@ public sealed class MainForm : Form
     {
         await CheckSelectedDeviceAvailability(force: true);
         if (IsDisposed || Disposing || _outputUnavailable || _systemSuspended || version != _outputConfigurationVersion) { return; }
-        try { _audioEngine.SilentLoopEnabled = settings.SilentLoop; }
+        try { _audioEngine.SilentLoopEnabled = settings.SilentLoop && !_triggerEngine.IsSuspended; }
         catch (Exception exception)
         {
             OnOutputDeviceFallback(this, new OutputDeviceFallbackEventArgs(_audioEngine.OutputDeviceNumber, false, exception));
@@ -2622,44 +2643,92 @@ public sealed class MainForm : Form
         }
     }
 
-    private async Task ConfigureOutputAsync(ProjectSettings settings, long version, AudioOutputBinding? expectedBinding)
+    internal async Task<bool?> ConfirmOutputSelectionAsync(AudioOutputBinding selection, bool legacyCandidate = false)
+    {
+        if (IsDisposed || Disposing || _systemSuspended || !CanEditProject()
+            || !OutputDevicePreferences.IsValidId(selection.ConfiguredId)) { return null; }
+        SetProjectOperationBusy(true);
+        try
+        {
+            var version = ++_outputConfigurationVersion;
+            var configuring = ConfigureOutputAsync(_projectManager.Current.Settings, version, selection);
+            _outputConfigurationTask = configuring;
+            if (!await configuring || IsDisposed || Disposing || _systemSuspended || version != _outputConfigurationVersion) { return null; }
+            _outputPreference = new(selection.ConfiguredId, true);
+            if (_outputPreferences is null) { _logger.Warning("このPCの出力設定の保存先を利用できません。"); }
+            var saved = _outputPreferences is not null
+                && await Task.Run(() => _outputPreferences.TrySave(selection.ConfiguredId, _logger));
+            if (_logger.DetailedLoggingEnabled)
+            {
+                _logger.Debug($"output_selection source={(legacyCandidate ? "legacy_confirmation" : "user_selection")} persisted={saved}");
+            }
+            return saved;
+        }
+        finally { if (!IsDisposed && !Disposing) { SetProjectOperationBusy(false); } }
+    }
+
+    private async Task<bool> ConfigureOutputAsync(ProjectSettings settings, long version, AudioOutputBinding? expectedBinding = null)
     {
         _outputUnavailable = true;
+        var configuredId = expectedBinding?.ConfiguredId ?? _outputPreference.SelectionId;
+        if (expectedBinding is null && (_outputNeedsReselection || configuredId is null))
+        {
+            if (_logger.DetailedLoggingEnabled)
+            {
+                var reason = _outputNeedsReselection ? "confirmation_required" : _outputPreference.FileExists ? "invalid_local" : "no_local";
+                _logger.Debug($"output_refused source=configure reason={reason}");
+            }
+            ShowOutputReselection("設定でこのPCの出力先を確定してください。");
+            return false;
+        }
         try
         {
             var snapshot = await CaptureOutputSnapshotAsync("configure");
             if (IsDisposed || Disposing || version != _outputConfigurationVersion
-                || _systemSuspended || !ReferenceEquals(settings, _projectManager.Current.Settings)) { return; }
+                || _systemSuspended || !ReferenceEquals(settings, _projectManager.Current.Settings)) { return false; }
             if (expectedBinding is not null && !expectedBinding.Matches(snapshot))
             {
                 throw new InvalidOperationException("設定画面を開いた後に出力先が変化しました。設定で選び直してください。");
             }
-            var binding = AudioOutputBinding.Create(settings.OutputDevice, snapshot)
+            var binding = AudioOutputBinding.Create(configuredId!, snapshot)
                 ?? throw new InvalidOperationException("出力先を安全に識別できません。設定で特定の出力デバイスを選び直してください。");
-            if (_outputBinding is not null && _outputBinding != binding) { StopForEmergency(invalidateConfiguration: false); }
+            if (_outputBinding is { } previous && (_outputNeedsReselection || !previous.Matches(snapshot)
+                || !string.Equals(previous.ConfiguredId, binding.ConfiguredId, StringComparison.OrdinalIgnoreCase)))
+            {
+                if (expectedBinding is null)
+                {
+                    throw new InvalidOperationException("出力先の切断または変更を検出しました。");
+                }
+                StopForEmergency(invalidateConfiguration: false);
+            }
+            if (_triggerEngine.IsSuspended || !settings.SilentLoop) { _audioEngine.SilentLoopEnabled = false; }
             _audioEngine.SelectOutputDevice(binding.Device.DeviceNumber);
-            _audioEngine.SilentLoopEnabled = settings.SilentLoop;
+            _audioEngine.SilentLoopEnabled = settings.SilentLoop && !_triggerEngine.IsSuspended;
             if (_logger.DetailedLoggingEnabled)
             {
-                _logger.Debug($"output_bound previous={_outputBinding?.Device.SelectionId ?? "none"} current={binding.Device.SelectionId} number={binding.Device.DeviceNumber}");
+                _logger.Debug($"output_bound source={(expectedBinding is null ? "local" : "confirmed")} current={binding.Device.SelectionId} number={binding.Device.DeviceNumber}");
             }
             _outputBinding = binding;
             _outputUnavailable = false;
-            _deviceLabel.Text = settings.OutputDevice == "default"
+            _outputNeedsReselection = false;
+            _deviceLabel.Text = string.Equals(configuredId, "default", StringComparison.OrdinalIgnoreCase)
                 ? $"出力: 既定 → {binding.Device.Name}" : $"出力: {binding.Device.Name}";
             _headerToolTip.SetToolTip(_deviceLabel, _deviceLabel.Text);
+            return true;
         }
         catch (Exception exception)
         {
-            if (IsDisposed || Disposing || version != _outputConfigurationVersion) { return; }
+            if (IsDisposed || Disposing || version != _outputConfigurationVersion) { return false; }
             _outputUnavailable = true;
+            _outputNeedsReselection = true;
             EmergencyStopAll();
             _logger.Error("出力デバイスを使用できません。", exception);
             if (_logger.DetailedLoggingEnabled)
             {
-                _logger.Debug($"output_refused source=configure configured={settings.OutputDevice} reason={exception.GetType().Name}");
+                _logger.Debug($"output_refused source=configure reason={exception.GetType().Name}");
             }
             ShowOutputReselection(exception.Message);
+            return false;
         }
     }
 
@@ -2722,6 +2791,7 @@ public sealed class MainForm : Form
     {
         if (IsDisposed || Disposing || !ReferenceEquals(binding, _outputBinding) || _outputUnavailable) { return; }
         _outputUnavailable = true;
+        _outputNeedsReselection = true;
         EmergencyStopAll();
         _logger.Warning("出力デバイスまたはWindows既定出力の変更を検出し、安全停止しました。");
         if (_logger.DetailedLoggingEnabled)
@@ -2886,6 +2956,7 @@ public sealed class MainForm : Form
 
         // Even a legacy/recovered notification must never authorize automatic rerouting.
         _outputUnavailable = true;
+        _outputNeedsReselection = true;
         EmergencyStopAll();
         ShowOutputReselection("音声出力デバイス異常を検出しました。接続とWindowsの設定を確認してください。");
     }

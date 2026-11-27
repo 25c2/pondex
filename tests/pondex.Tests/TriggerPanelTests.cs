@@ -122,7 +122,7 @@ public sealed class TriggerPanelTests
         var lastMessage = string.Empty;
         var areAnySkipped = false;
         panel.DefinitionsChanged += (_, _) => changes++;
-        panel.BulkChangeCompleted += (message, skipped) => { lastMessage = message; areAnySkipped = skipped; };
+        panel.OperationCompleted += (message, skipped) => { lastMessage = message; areAnySkipped = skipped; };
         allOn.PerformClick();
         Assert.True(clock.Enabled);
         Assert.True(group.Enabled);
@@ -144,6 +144,50 @@ public sealed class TriggerPanelTests
         allOn.PerformClick();
         Assert.All(triggers, item => Assert.False(item.Enabled));
         Assert.Equal(2, changes);
+    });
+
+    [Fact]
+    public void IndividualEnablePathsRejectInvalidRulesAndStillAllowDisabling() => WinFormsTest.Run(() =>
+    {
+        var sound = new SoundDefinition();
+        var missingSound = new TriggerDefinition { Enabled = false, TargetSoundId = Guid.NewGuid() };
+        var held = new TriggerDefinition { TargetSoundId = sound.Id, TargetGroupOnHold = true };
+        var badAction = new TriggerDefinition { Enabled = false, TargetSoundId = sound.Id, Action = (TriggerAction)99 };
+        var badTime = new TriggerDefinition
+        {
+            Enabled = false,
+            TargetSoundId = sound.Id,
+            TriggerType = TriggerType.StopwatchElapsed,
+            Parameters = new TriggerParameters { Elapsed = TimeSpan.FromDays(8) }
+        };
+        using var form = new Form();
+        using var panel = new TriggerPanel { Dock = DockStyle.Fill };
+        form.Controls.Add(panel);
+        panel.SetData([missingSound, held, badAction, badTime], [sound]);
+        form.Show();
+        Application.DoEvents();
+        var grid = GetGrid(panel);
+        var toggle = panel.Controls[0].Controls.OfType<FlowLayoutPanel>().Single().Controls
+            .OfType<Button>().Single(button => button.Text == "有効/無効");
+        var reasons = new List<string>();
+        var changes = 0;
+        panel.OperationCompleted += (message, warning) => { if (warning) { reasons.Add(message); } };
+        panel.DefinitionsChanged += (_, _) => changes++;
+
+        grid.Rows[0].Cells[0].Value = true;
+        grid.Rows[1].Cells[0].Value = false;
+        grid.CurrentCell = grid.Rows[1].Cells[1];
+        toggle.PerformClick();
+        grid.CurrentCell = grid.Rows[2].Cells[1];
+        toggle.PerformClick();
+        grid.Rows[3].Cells[0].Value = true;
+
+        Assert.False(missingSound.Enabled);
+        Assert.False(held.Enabled);
+        Assert.False(badAction.Enabled);
+        Assert.False(badTime.Enabled);
+        Assert.Equal(1, changes);
+        Assert.Equal(4, reasons.Count);
     });
 
     private static DataGridView GetGrid(TriggerPanel panel) =>

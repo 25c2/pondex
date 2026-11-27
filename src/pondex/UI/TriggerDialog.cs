@@ -12,12 +12,14 @@ public sealed class TriggerDialog : Form
     private readonly ComboBox _actionCombo;
     private readonly ComboBox _targetSoundCombo;
     private readonly CheckBox _enabledCheck;
+    private readonly TriggerEnableRules _enableRules;
 
     public TriggerDialog(
         TriggerDefinition definition,
         IReadOnlyList<SoundDefinition> sounds)
     {
         Definition = definition;
+        _enableRules = new TriggerEnableRules(sounds);
         Text = "イベントトリガ";
         AutoScaleMode = AutoScaleMode.Dpi;
         FormBorderStyle = FormBorderStyle.Sizable;
@@ -58,13 +60,13 @@ public sealed class TriggerDialog : Form
         _elapsedSeconds = new NumericUpDown
         {
             Minimum = 0,
-            Maximum = 7 * 24 * 60 * 60,
+            Maximum = TriggerEnableRules.MaxElapsedSeconds,
             DecimalPlaces = 1,
             Increment = 0.1m,
             Value = (decimal)Math.Clamp(
                 definition.Parameters.Elapsed?.TotalSeconds ?? 0,
                 0,
-                7 * 24 * 60 * 60),
+                TriggerEnableRules.MaxElapsedSeconds),
             Width = 140
         };
         var names = BuildSoundNames(sounds);
@@ -74,8 +76,8 @@ public sealed class TriggerDialog : Form
         var targetItems = soundItems
             .Select(sound => new TargetItem(sound.Id, null, $"音源: {sound.DisplayName}"))
             .Concat(sounds
-                .Select(sound => sound.Group.Trim())
-                .Where(group => group.Length > 0)
+                .Select(sound => sound.Group)
+                .Where(group => !string.IsNullOrWhiteSpace(group))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Select(group => new TargetItem(null, group, $"グループ: {group}")))
             .ToList();
@@ -127,6 +129,8 @@ public sealed class TriggerDialog : Form
 
     public TriggerDefinition Definition { get; }
 
+    internal bool HasChanges { get; private set; }
+
     private void SaveAndClose()
     {
         if (_targetSoundCombo.SelectedItem is not TargetItem { Missing: false } target)
@@ -147,24 +151,49 @@ public sealed class TriggerDialog : Form
             return;
         }
 
-        Definition.Enabled = _enabledCheck.Checked;
-        Definition.Memo = _memoText.Text;
-        Definition.TriggerType = type;
-        Definition.Action = action;
-        Definition.TargetSoundId = target.SoundId ?? Guid.Empty;
-        Definition.TargetGroup = target.Group ?? string.Empty;
-        Definition.TargetGroupOnHold = false;
-        Definition.Parameters = new TriggerParameters
+        var edited = new TriggerDefinition
         {
-            ExtensionData = Definition.Parameters.ExtensionData,
-            ClockTime = type == TriggerType.ClockTime ? TimeOnly.FromDateTime(_clockTime.Value) : null,
-            Elapsed = type is TriggerType.StopwatchElapsed or TriggerType.SoundElapsed
-                ? TimeSpan.FromSeconds((double)_elapsedSeconds.Value)
-                : null,
-            SourceSoundId = needsSource && _sourceSoundCombo.SelectedItem is SoundItem source
-                ? source.Id
-                : null
+            Enabled = _enabledCheck.Checked,
+            Memo = _memoText.Text,
+            TriggerType = type,
+            Action = action,
+            TargetSoundId = target.SoundId ?? Guid.Empty,
+            TargetGroup = target.Group ?? string.Empty,
+            Parameters = new TriggerParameters
+            {
+                ExtensionData = Definition.Parameters.ExtensionData,
+                ClockTime = type == TriggerType.ClockTime ? TimeOnly.FromDateTime(_clockTime.Value) : null,
+                Elapsed = type is TriggerType.StopwatchElapsed or TriggerType.SoundElapsed
+                    ? TimeSpan.FromSeconds((double)_elapsedSeconds.Value)
+                    : null,
+                SourceSoundId = needsSource && _sourceSoundCombo.SelectedItem is SoundItem source
+                    ? source.Id
+                    : null
+            }
         };
+        if (edited.Enabled && _enableRules.GetProblem(edited) is { } problem)
+        {
+            MessageBox.Show(this, problem, "イベントを有効にできません", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        HasChanges = edited.Enabled != Definition.Enabled || edited.Memo != Definition.Memo
+            || edited.TriggerType != Definition.TriggerType || edited.Action != Definition.Action
+            || edited.TargetSoundId != Definition.TargetSoundId || edited.TargetGroup != Definition.TargetGroup
+            || Definition.TargetGroupOnHold
+            || edited.Parameters.ClockTime != Definition.Parameters.ClockTime
+            || edited.Parameters.Elapsed != Definition.Parameters.Elapsed
+            || edited.Parameters.SourceSoundId != Definition.Parameters.SourceSoundId;
+        if (HasChanges)
+        {
+            Definition.Enabled = edited.Enabled;
+            Definition.Memo = edited.Memo;
+            Definition.TriggerType = edited.TriggerType;
+            Definition.Action = edited.Action;
+            Definition.TargetSoundId = edited.TargetSoundId;
+            Definition.TargetGroup = edited.TargetGroup;
+            Definition.TargetGroupOnHold = false;
+            Definition.Parameters = edited.Parameters;
+        }
         DialogResult = DialogResult.OK;
         Close();
     }
@@ -238,9 +267,11 @@ public sealed class TriggerDialog : Form
             }
         }
 
-        if (combo.SelectedIndex < 0 && combo.Items.Count > 0)
+        if (combo.SelectedIndex < 0)
         {
-            combo.SelectedIndex = 0;
+            var unselected = new SoundItem(Guid.Empty, "条件の音源を選んでください", Missing: true);
+            combo.Items.Insert(0, unselected);
+            combo.SelectedItem = unselected;
         }
 
         return combo;
